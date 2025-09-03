@@ -1,0 +1,12 @@
+{
+  "forex_majors": {
+    "name": "Forex Majors",
+    "asset_type": "forex",
+    "symbols": [
+      "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X", "AUDUSD=X",
+      "USDCAD=X", "NZDUSD=X", "EURJPY=X", "GBPJPY=X", "EURGBP=X"
+    ],
+    "initial_capital": 10000,
+    "commission": 0.0002
+  }
+}

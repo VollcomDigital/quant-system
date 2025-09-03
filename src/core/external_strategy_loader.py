@@ -43,23 +43,43 @@ class ExternalStrategyLoader:
         self._discover_strategies()
 
     def _discover_strategies(self) -> None:
-        """Discover available strategy modules"""
-        if not self.strategies_path.exists():
-            logger.warning("Strategies path does not exist: %s", self.strategies_path)
-            return
+        """Discover available strategy modules.
 
-        # Look for Python strategy files
-        for strategy_file in self.strategies_path.glob("*.py"):
-            if (
-                not strategy_file.name.startswith("_")
-                and strategy_file.name != "README.py"
-            ):
+        Prefer importing strategies from the 'algorithms/python' subdirectory of the
+        provided strategies_path. If that subdirectory is missing but the provided
+        strategies_path itself contains standalone Python strategy files (common when
+        mounting ./quant-strategies/algorithms/python directly to the container root),
+        fall back to loading .py files from the root of strategies_path.
+        This keeps imports safe while allowing flexible mount layouts.
+        """
+        try:
+            alg_py = Path(self.strategies_path) / "algorithms" / "python"
+            search_dir = None
+
+            # Primary: explicit algorithms/python directory
+            if alg_py.exists() and alg_py.is_dir():
+                search_dir = alg_py
+            else:
+                # Fallback: if the strategies_path itself directly contains .py files,
+                # use that directory (handles mounts like ./quant-strategies/algorithms/python:/app/external_strategies)
+                sp = Path(self.strategies_path)
+                if sp.exists() and any(sp.glob("*.py")):
+                    search_dir = sp
+
+            if search_dir is None:
+                logger.warning(
+                    "algorithms/python directory not found under strategies_path: %s",
+                    alg_py,
+                )
+                return
+
+            for strategy_file in search_dir.glob("*.py"):
+                if strategy_file.name.startswith("_"):
+                    continue
                 self._load_strategy_file(strategy_file)
 
-        # Also look for directory-based strategies with adapters
-        for strategy_dir in self.strategies_path.iterdir():
-            if strategy_dir.is_dir() and not strategy_dir.name.startswith("."):
-                self._load_strategy_dir(strategy_dir)
+        except Exception as e:
+            logger.error("Error discovering strategies in algorithms/python: %s", e)
 
     def _load_strategy_file(self, strategy_file: Path) -> None:
         """
@@ -181,6 +201,43 @@ class ExternalStrategyLoader:
         """Get list of available strategy names"""
         return list(self.loaded_strategies.keys())
 
+    def list_strategy_candidates(self) -> list[str]:
+        """
+        Non-import-based discovery: list candidate strategy names (file stems and dirs)
+        without attempting to import them. This is safe in minimal environments and
+        useful for CLI discovery (--strategies=all) when imports would fail due to
+        missing optional dependencies.
+        """
+        candidates: set[str] = set()
+        try:
+            if not self.strategies_path or not Path(self.strategies_path).exists():
+                return []
+            sp = Path(self.strategies_path)
+            # Python files in root
+            for f in sp.glob("*.py"):
+                if not f.name.startswith("_") and f.name != "README.py":
+                    candidates.add(f.stem)
+            # Files under algorithms/python
+            alg_py = sp / "algorithms" / "python"
+            if alg_py.exists():
+                for f in alg_py.glob("*.py"):
+                    if not f.name.startswith("_"):
+                        candidates.add(f.stem)
+            # Files under algorithms/original (some are .py)
+            alg_orig = sp / "algorithms" / "original"
+            if alg_orig.exists():
+                for f in alg_orig.glob("*.py"):
+                    if not f.name.startswith("_"):
+                        candidates.add(f.stem)
+            # Directory-based strategies
+            for d in sp.iterdir():
+                if d.is_dir() and not d.name.startswith("."):
+                    candidates.add(d.name.replace("-", "_"))
+        except Exception:
+            # Best-effort: return whatever we have collected so far
+            pass
+        return sorted(candidates)
+
     def get_strategy_info(self, strategy_name: str) -> dict[str, Any]:
         """
         Get information about a strategy
@@ -238,10 +295,28 @@ def get_strategy_loader(strategies_path: str | None = None) -> ExternalStrategyL
 
     Returns:
         ExternalStrategyLoader instance
+
+    Behavior:
+      - If strategies_path is provided, use it.
+      - Otherwise prefer the project 'external_strategies' directory (for Docker mounts).
+      - If that doesn't exist, fall back to the bundled 'quant-strategies' directory.
+      - If neither exists, initialize loader with None (loader will simply have no strategies).
     """
     global _strategy_loader
     if _strategy_loader is None:
-        _strategy_loader = ExternalStrategyLoader(strategies_path)
+        resolved = strategies_path
+        if resolved is None:
+            # Resolve sensible defaults relative to project root
+            project_root = Path(__file__).parent.parent.parent
+            external_dir = project_root / "external_strategies"
+            quant_dir = project_root / "quant-strategies"
+            if external_dir.exists():
+                resolved = str(external_dir)
+            elif quant_dir.exists():
+                resolved = str(quant_dir)
+            else:
+                resolved = None
+        _strategy_loader = ExternalStrategyLoader(resolved)
     return _strategy_loader
 
 

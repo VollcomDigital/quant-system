@@ -1,0 +1,12 @@
+{
+  "stocks_us_mega_core": {
+    "name": "US Mega-Cap Core",
+    "asset_type": "stocks",
+    "symbols": [
+      "AAPL", "MSFT", "GOOGL", "AMZN", "META",
+      "NVDA", "TSLA", "BRK-B", "JPM", "JNJ"
+    ],
+    "initial_capital": 10000,
+    "commission": 0.001
+  }
+}

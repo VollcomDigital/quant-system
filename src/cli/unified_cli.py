@@ -1,2580 +1,1164 @@
+#!/usr/bin/env python3
 """
-Unified CLI - Restructured command-line interface using unified components.
-Removes duplication and provides comprehensive functionality.
+Unified CLI entrypoint: src.cli.unified_cli
+
+This module implements the `collection` subcommand which builds a deterministic
+plan (plan_hash), writes a manifest, supports --dry-run, and delegates work to
+the project's backtest engine and DB/persistence layers if available.
+
+This is intentionally conservative: it validates inputs, expands strategies and
+intervals where possible, and provides clear hooks for the engine and DB code.
+All optional integrations are guarded to avoid import-time failures.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
-import time
-from dataclasses import asdict
-from datetime import datetime, timedelta
+import shutil
+import sys
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence
 
-from src.core import (
-    PortfolioManager,
-    UnifiedBacktestEngine,
-    UnifiedCacheManager,
-    UnifiedDataManager,
-)
-from src.core.backtest_engine import BacktestConfig, BacktestResult
-from src.core.strategy import StrategyFactory, list_available_strategies
+# Constants
+DEFAULT_METRIC = "sortino_ratio"
+SUPPORTED_INTERVALS = ["1m", "5m", "15m", "1h", "1d", "1wk", "1mo", "3mo"]
+INTRADAY_MAX_DAYS = 60
+ONE_MINUTE_MAX_DAYS = 7
+
+log = logging.getLogger("unified_cli")
 
 
-def get_earliest_data_date(portfolio_path: str) -> datetime:
-    """
-    Get the earliest data date based on portfolio configuration.
-
-    Args:
-        portfolio_path: Path to portfolio configuration file
-
-    Returns:
-        Earliest reasonable data date
-    """
-    # Default fallback date
-    default_date = datetime(2015, 1, 1)
+# Install a global excepthook that will log uncaught exceptions with a full traceback.
+# This is useful when running inside Docker where stderr/telnet output may be suppressed.
+def _unified_excepthook(exc_type, exc_value, tb):
+    import traceback as _traceback
 
     try:
-        if not portfolio_path:
-            return default_date
+        log.exception("Uncaught exception", exc_info=(exc_type, exc_value, tb))
+    except Exception:
+        # If logging fails for any reason, still print the traceback to stderr.
+        _traceback.print_exception(exc_type, exc_value, tb)
+    else:
+        _traceback.print_exception(exc_type, exc_value, tb)
 
-        portfolio_file = Path(portfolio_path)
-        if not portfolio_file.exists():
-            return default_date
 
-        with portfolio_file.open("r") as f:
-            portfolio_config = json.load(f)
+import sys as _sys
 
-        # Get the first portfolio config (since file contains nested portfolio)
-        portfolio_key = list(portfolio_config.keys())[0]
-        config = portfolio_config[portfolio_key]
+_sys.excepthook = _unified_excepthook
 
-        # Check metadata for best_data_coverage
-        metadata = config.get("metadata", {})
-        data_coverage = metadata.get("best_data_coverage", "")
 
-        if data_coverage and "-present" in data_coverage:
-            year_str = data_coverage.split("-")[0]
+def _setup_logging(level: str) -> None:
+    numeric = getattr(logging, level.upper(), logging.INFO)
+    logging.basicConfig(level=numeric, format="%(asctime)s %(levelname)s %(message)s")
+
+
+def resolve_collection_path(collection_arg: str) -> Path:
+    p = Path(collection_arg)
+    if p.exists():
+        return p.resolve()
+    # try config/collections/<collection_arg>.json
+    base = Path("config") / "collections"
+    # Aliases for curated defaults
+    alias_map = {
+        # Curated defaults
+        "bonds": "bonds_core",
+        "commodities": "commodities_core",
+        "crypto": "crypto_liquid",
+        "forex": "forex_majors",
+        "indices": "indices_global_core",
+        # Convenience aliases
+        "tech_growth": "stocks_us_growth_core",
+        "us_mega": "stocks_us_mega_core",
+        "value": "stocks_us_value_core",
+        "quality": "stocks_us_quality_core",
+        "minvol": "stocks_us_minvol_core",
+        "global_factors": "stocks_global_factor_core",
+    }
+    key = alias_map.get(collection_arg, collection_arg)
+    candidates = [
+        base / f"{key}.json",
+        base / "default" / f"{key}.json",
+        base / "custom" / f"{key}.json",
+    ]
+    for alt in candidates:
+        if alt.exists():
+            return alt.resolve()
+    raise FileNotFoundError(f"Collection file not found: {collection_arg}")
+
+
+def compute_plan_hash(plan: Dict[str, Any]) -> str:
+    # Deterministic serialization: sort keys
+    payload = json.dumps(
+        plan, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def load_collection_symbols(collection_path: Path) -> List[str]:
+    """
+    Load symbols from a collection JSON.
+
+    Supported formats:
+      - Plain list: ["AAPL", "MSFT", ...]
+      - Dict with top-level "symbols" (or "assets"/"symbols_list"):
+          {"symbols": ["AAPL", ...], ...}
+      - Named collection object (common in config/collections/*.json):
+          {"bonds": {"symbols": [...], "name": "...", ...}}
+      - Dict of multiple named collections: returns symbols for the first matching
+        collection that contains a 'symbols' list (best-effort).
+    """
+    try:
+        with collection_path.open() as f:
+            data = json.load(f)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to read collection file {collection_path}: {exc}"
+        ) from exc
+
+    # If the file itself is a plain list of symbols
+    if isinstance(data, list):
+        return [str(s).upper() for s in data]
+
+    # If the file is a dict, try common keys first
+    if isinstance(data, dict):
+        # Direct keys that point to a symbols list
+        for key in ("symbols", "assets", "symbols_list"):
+            if key in data and isinstance(data[key], list):
+                return [str(s).upper() for s in data[key]]
+
+        # If the file wraps one or more named collections (e.g., {"bonds": {...}})
+        # find the first value that itself contains a 'symbols' list
+        for val in data.values():
+            if isinstance(val, dict):
+                for key in ("symbols", "assets", "symbols_list"):
+                    if key in val and isinstance(val[key], list):
+                        return [str(s).upper() for s in val[key]]
+
+    raise RuntimeError(
+        f"Collection JSON at {collection_path} missing 'symbols' list or unsupported format"
+    )
+
+
+def expand_strategies(strategies_arg: str) -> List[str]:
+    # strategies_arg can be comma-separated or 'all'
+    parts = [p.strip() for p in strategies_arg.split(",") if p.strip()]
+    if len(parts) == 1 and parts[0].lower() == "all":
+        # Prefer explicit environment variable or container-mounted path when running inside Docker.
+        # This avoids trying to read host paths from within the container.
+        try:
+            import os
+
+            candidates = []
+            env_path = os.getenv("STRATEGIES_PATH")
+            if env_path:
+                candidates.append(env_path)
+
+            # Common container mount used in docker-compose
+            candidates.append("/app/external_strategies")
+
+            # Host-local fallback (works when running on host)
+            candidates.append(str(Path("quant-strategies").resolve()))
+            candidates.append(str(Path("external_strategies").resolve()))
+
+            from src.core.external_strategy_loader import get_strategy_loader
+            from src.core.strategy import StrategyFactory
+
+            strategies = []
+            for cand in candidates:
+                try:
+                    if not cand:
+                        continue
+                    p = Path(cand)
+                    if not p.exists():
+                        continue
+                    loader = get_strategy_loader(str(cand))
+                    try:
+                        strategies = StrategyFactory.list_strategies(loader=loader)
+                        if isinstance(strategies, dict):
+                            strategies = (
+                                strategies.get("all")
+                                or strategies.get("external")
+                                or []
+                            )
+                    except Exception:
+                        strategies = []
+                    # If we found any, return them (deduplicated & sorted)
+                    if strategies:
+                        return sorted(set(strategies))
+                    # If loader supports listing candidates without importing, try that
+                    try:
+                        candidates_list = loader.list_strategy_candidates()
+                        if candidates_list:
+                            return sorted(set(candidates_list))
+                    except Exception:
+                        pass
+                except Exception as exc:
+                    # try next candidate, but log for diagnostics
+                    log.debug("Strategy discovery failed for %s: %s", cand, exc)
+                    continue
+
+            # Last fallback: try the local algorithms/python dir if present
+            alt_dir = Path("quant-strategies") / "algorithms" / "python"
+            if alt_dir.exists():
+                cand = [p.stem for p in alt_dir.glob("*.py") if p.is_file()]
+                if cand:
+                    return sorted(set(cand))
+
+            # If nothing found, proceed with an empty list (safe default for dry-run/tests)
+            log.warning(
+                "Could not expand 'all' strategies: no strategy repository found; proceeding with none"
+            )
+            return []
+        except Exception as exc:
+            log.warning(
+                "Could not expand 'all' strategies: %s; proceeding with none", exc
+            )
+            return []
+
+    # explicit list
+    expanded: List[str] = []
+    for part in parts:
+        expanded.extend([s.strip() for s in part.split("+") if s.strip()])
+    return sorted(set(expanded))
+
+
+def expand_intervals(interval_arg: str) -> List[str]:
+    parts = [p.strip() for p in interval_arg.split(",") if p.strip()]
+    if len(parts) == 1 and parts[0].lower() == "all":
+        return SUPPORTED_INTERVALS.copy()
+    # validate
+    invalid = [p for p in parts if p not in SUPPORTED_INTERVALS]
+    if invalid:
+        raise RuntimeError(
+            f"Unknown intervals requested: {invalid}. Supported: {SUPPORTED_INTERVALS}"
+        )
+    return parts
+
+
+def clamp_interval_period(
+    interval: str, start: Optional[str], end: Optional[str], period_mode: str
+) -> Dict[str, Optional[str]]:
+    """
+    Enforce provider constraints:
+      - 1m allowed only for last ONE_MINUTE_MAX_DAYS days
+      - <1d intraday intervals allowed only for last INTRADAY_MAX_DAYS days
+    Returns dict with possibly modified 'start'/'end' and 'period_mode' (may remain 'max')
+    """
+    # This function returns the passed args unchanged by default. Real clamping requires querying provider
+    # for available date ranges; here we provide warnings and leave exact clamping to data manager.
+    if interval == "1m":
+        # warn user if period_mode == 'max'
+        if period_mode == "max":
+            log.warning(
+                "Interval '1m' may be limited to the last %d days by the data provider",
+                ONE_MINUTE_MAX_DAYS,
+            )
+    elif interval in ("5m", "15m", "1h"):
+        if period_mode == "max":
+            log.warning(
+                "Intraday interval '%s' may be limited to the last %d days by the data provider",
+                interval,
+                INTRADAY_MAX_DAYS,
+            )
+    return {"start": start, "end": end, "period_mode": period_mode}
+
+
+def write_manifest(outdir: Path, manifest: Dict[str, Any]) -> Path:
+    outdir.mkdir(parents=True, exist_ok=True)
+    manifest_path = outdir / "run_manifest.json"
+    with manifest_path.open("w", encoding="utf-8") as fh:
+        json.dump(manifest, fh, indent=2, sort_keys=True, ensure_ascii=False)
+    return manifest_path
+
+
+def try_get_git_sha(path: Path) -> Optional[str]:
+    # Try to read git sha for the given path if it's a git repo
+    git_exe = shutil.which("git")
+    if git_exe is None:
+        return None
+    if not (path / ".git").exists():
+        return None
+    try:
+        import subprocess
+
+        out = subprocess.check_output(
+            [git_exe, "-C", str(path.resolve()), "rev-parse", "HEAD"],
+            stderr=subprocess.DEVNULL,
+        )
+        return out.decode().strip()
+    except Exception:
+        return None
+
+
+def persist_run_row_placeholder(manifest: Dict[str, Any]) -> None:
+    # Hook: try to persist the initial run row to DB using unified_models if available.
+    try:
+        from src.database import unified_models
+
+        # unified_models should expose create_run_from_manifest(manifest) or similar.
+        if hasattr(unified_models, "create_run_from_manifest"):
+            unified_models.create_run_from_manifest(manifest)
+            log.info(
+                "Persisted run row to DB via unified_models.create_run_from_manifest"
+            )
+        else:
+            log.debug(
+                "unified_models module found but create_run_from_manifest not present"
+            )
+    except Exception:
+        log.debug(
+            "DB persistence not available (unified_models missing or failed). Continuing without DB."
+        )
+
+
+def run_plan(manifest: Dict[str, Any], outdir: Path, dry_run: bool = False) -> int:
+    """
+    Execute the resolved plan.
+
+    This implementation delegates to src.core.direct_backtest.UnifiedBacktestEngine.run if available.
+    If unavailable, it will write a placeholder summary and return 0 on success.
+    """
+    if dry_run:
+        print(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False))
+        return 0
+
+    # Persist a run row (best-effort)
+    persist_run_row_placeholder(manifest)
+
+    # If action is 'direct', use the direct backtester with DB persistence
+    try:
+        plan_action = manifest.get("plan", {}).get("action")
+    except Exception:
+        plan_action = None
+
+    if plan_action == "direct":
+        try:
+            from src.core.data_manager import UnifiedDataManager
+            from src.core.direct_backtest import (
+                finalize_persistence_for_run,
+                run_direct_backtest,
+            )
+        except Exception:
+            log.exception("Direct backtester not available")
+            return 12
+
+        plan = manifest.get("plan", {})
+        symbols = plan.get("symbols", [])
+        strategies = plan.get("strategies", [])
+        intervals = plan.get("intervals", ["1d"])  # usually one
+        period_mode = plan.get("period_mode", "max")
+        start = plan.get("start") or ""
+        end = plan.get("end") or ""
+        initial_capital = plan.get("initial_capital", 10000)
+        commission = plan.get("commission", 0.001)
+        target_metric = plan.get("metric", DEFAULT_METRIC)
+        plan_hash = plan.get("plan_hash")
+
+        # Initialize external strategies loader when a path is available (container-safe)
+        try:
+            from src.core.external_strategy_loader import get_strategy_loader
+
+            spath = plan.get("strategies_path")
+            if spath:
+                get_strategy_loader(str(spath))
+        except Exception:
+            # best-effort; loader may already be initialized elsewhere
+            pass
+
+        # Ensure a run row exists
+        run_id = None
+        try:
+            from src.database import unified_models
+
+            run_obj = None
+            if hasattr(unified_models, "ensure_run_for_manifest"):
+                run_obj = unified_models.ensure_run_for_manifest(manifest)
+            else:
+                run_obj = unified_models.create_run_from_manifest(manifest)
+            run_id = getattr(run_obj, "run_id", None)
+        except Exception:
+            run_id = None
+
+        persistence_context = (
+            {"run_id": run_id, "target_metric": target_metric, "plan_hash": plan_hash}
+            if run_id
+            else None
+        )
+
+        # Optional: probe sources for best coverage and set ordering overrides
+        try:
+            dm_probe = UnifiedDataManager()
+            # Detect asset type from the first symbol; fall back to 'stocks'
+            asset_type_probe = "stocks"
             try:
-                year = int(year_str)
-                return datetime(year, 1, 1)
-            except ValueError:
+                if symbols:
+                    asset_type_probe = dm_probe._detect_asset_type(symbols[0])
+            except Exception:
+                pass
+            sample_syms = symbols[: min(5, len(symbols))]
+            if sample_syms:
+                ordered = dm_probe.probe_and_set_order(
+                    asset_type_probe,
+                    sample_syms,
+                    interval=intervals[0] if intervals else "1d",
+                )
+                if ordered:
+                    log.info(
+                        "Source order override for %s: %s", asset_type_probe, ordered
+                    )
+        except Exception:
+            log.debug("Coverage probe failed; continuing with default ordering")
+
+        for interval in intervals:
+            for symbol in symbols:
+                for strat in strategies:
+                    try:
+                        _ = run_direct_backtest(
+                            symbol=symbol,
+                            strategy_name=strat,
+                            start_date=start,
+                            end_date=end,
+                            timeframe=interval,
+                            initial_capital=float(initial_capital),
+                            commission=float(commission),
+                            period=(period_mode if period_mode else None),
+                            use_cache=bool(plan.get("use_cache", True)),
+                            persistence_context=persistence_context,
+                        )
+                    except Exception:
+                        log.exception(
+                            "Direct backtest failed for %s %s %s",
+                            symbol,
+                            strat,
+                            interval,
+                        )
+                        continue
+
+        # Finalize DB ranks/best strategy
+        try:
+            if persistence_context:
+                finalize_persistence_for_run(
+                    persistence_context.get("run_id"), target_metric
+                )
+        except Exception:
+            log.exception(
+                "Finalization failed for run %s",
+                (persistence_context or {}).get("run_id"),
+            )
+
+        return 0
+
+    # Delegate to engine if available (use the unified backtest engine implementation)
+    try:
+        from src.core.backtest_engine import UnifiedBacktestEngine
+
+        # The Backtest Engine class expects different init args; instantiate and run batch if available.
+        engine = UnifiedBacktestEngine()
+        # If engine exposes a run() method accepting manifest/outdir, prefer that; otherwise, run a batch run.
+        if hasattr(engine, "run"):
+            try:
+                res = engine.run(manifest=manifest, outdir=outdir)  # type: ignore[attr-defined]
+                log.info(
+                    "Engine run finished with result: %s",
+                    getattr(res, "status", "unknown"),
+                )
+                # Best-effort: if engine returned a summary dict, persist it to the outdir
+                try:
+                    import json as _json  # local import
+
+                    summary_path = Path(outdir) / "engine_run_summary.json"
+                    if isinstance(res, dict):
+                        try:
+                            summary_path.parent.mkdir(parents=True, exist_ok=True)
+                            with summary_path.open("w", encoding="utf-8") as fh:
+                                _json.dump(
+                                    res,
+                                    fh,
+                                    indent=2,
+                                    sort_keys=True,
+                                    ensure_ascii=False,
+                                )
+                            log.info("Wrote engine summary to %s", summary_path)
+                        except Exception:
+                            log.exception(
+                                "Failed to write engine summary to %s", summary_path
+                            )
+                except Exception:
+                    log.debug(
+                        "Engine returned non-dict or failed to write summary (continuing)"
+                    )
+                return 0
+            except Exception:
+                # fall back to batch behavior below
                 pass
 
-        # Asset type specific defaults
-        asset_type = config.get("asset_type", "")
-        if asset_type == "crypto":
-            return datetime(2017, 1, 1)  # Crypto data typically starts around 2017
-        if asset_type == "stocks":
-            return datetime(1990, 1, 1)  # Stock data goes back further
-        if asset_type == "forex":
-            return datetime(2000, 1, 1)  # Forex data availability
-        if asset_type == "commodities":
-            return datetime(2006, 1, 1)  # Commodity data availability
-        if asset_type == "bonds":
-            return datetime(2003, 1, 1)  # Bond data availability
-
-    except Exception as e:
-        logging.warning(
-            "Could not determine earliest data date from portfolio config: %s", e
-        )
-
-    return default_date
-
-
-def setup_logging(level: str = "INFO") -> None:
-    """Setup logging configuration."""
-    log_level = getattr(logging, level.upper(), logging.INFO)
-    logging.basicConfig(
-        level=log_level, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-
-
-def create_parser() -> argparse.ArgumentParser:
-    """Create the main argument parser."""
-    parser = argparse.ArgumentParser(
-        description="Unified Quant Trading System",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-    )
-
-    parser.add_argument(
-        "--log-level",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        default="INFO",
-        help="Logging level",
-    )
-
-    subparsers = parser.add_subparsers(dest="command", help="Available commands")
-
-    # Data commands
-    add_data_commands(subparsers)
-
-    # Strategy commands
-    add_strategy_commands(subparsers)
-
-    # Backtest commands
-    add_backtest_commands(subparsers)
-
-    # Portfolio commands
-    add_portfolio_commands(subparsers)
-
-    # Optimization commands
-    add_optimization_commands(subparsers)
-
-    # Analysis commands
-    add_analysis_commands(subparsers)
-
-    # Cache commands
-    add_cache_commands(subparsers)
-
-    # Reports commands
-    add_reports_commands(subparsers)
-
-    # AI commands
-    add_ai_commands(subparsers)
-
-    # Validation commands
-    add_validation_commands(subparsers)
-
-    return parser
-
-
-def add_data_commands(subparsers):
-    """Add data management commands."""
-    data_parser = subparsers.add_parser("data", help="Data management commands")
-    data_subparsers = data_parser.add_subparsers(dest="data_command")
-
-    # Download command
-    download_parser = data_subparsers.add_parser(
-        "download", help="Download market data"
-    )
-    download_parser.add_argument(
-        "--symbols", nargs="+", required=True, help="Symbols to download"
-    )
-    download_parser.add_argument(
-        "--start-date", required=True, help="Start date (YYYY-MM-DD)"
-    )
-    download_parser.add_argument(
-        "--end-date", required=True, help="End date (YYYY-MM-DD)"
-    )
-    download_parser.add_argument("--interval", default="1d", help="Data interval")
-    download_parser.add_argument(
-        "--asset-type",
-        choices=["stocks", "crypto", "forex", "commodities"],
-        help="Asset type hint",
-    )
-    download_parser.add_argument(
-        "--futures", action="store_true", help="Download crypto futures data"
-    )
-    download_parser.add_argument(
-        "--force", action="store_true", help="Force download even if cached"
-    )
-
-    # Sources command
-    data_subparsers.add_parser("sources", help="Show available data sources")
-
-    # Symbols command
-    symbols_parser = data_subparsers.add_parser(
-        "symbols", help="List available symbols"
-    )
-    symbols_parser.add_argument(
-        "--asset-type",
-        choices=["stocks", "crypto", "forex"],
-        help="Filter by asset type",
-    )
-    symbols_parser.add_argument("--source", help="Specific data source")
-
-
-def add_strategy_commands(subparsers):
-    """Add strategy management commands."""
-    strategy_parser = subparsers.add_parser(
-        "strategy", help="Strategy management commands"
-    )
-    strategy_subparsers = strategy_parser.add_subparsers(dest="strategy_command")
-
-    # List strategies
-    list_parser = strategy_subparsers.add_parser(
-        "list", help="List available strategies"
-    )
-    list_parser.add_argument(
-        "--type",
-        choices=["builtin", "external", "all"],
-        default="all",
-        help="Filter by strategy type",
-    )
-
-    # Strategy info
-    info_parser = strategy_subparsers.add_parser(
-        "info", help="Get strategy information"
-    )
-    info_parser.add_argument("name", help="Strategy name")
-
-    # Test strategy
-    test_parser = strategy_subparsers.add_parser(
-        "test", help="Test strategy with sample data"
-    )
-    test_parser.add_argument("name", help="Strategy name")
-    test_parser.add_argument("--symbol", default="AAPL", help="Symbol for testing")
-    test_parser.add_argument("--start-date", default="2023-01-01", help="Start date")
-    test_parser.add_argument("--end-date", default="2023-12-31", help="End date")
-    test_parser.add_argument("--parameters", help="JSON string of strategy parameters")
-
-
-def add_backtest_commands(subparsers):
-    """Add backtesting commands."""
-    backtest_parser = subparsers.add_parser("backtest", help="Backtesting commands")
-    backtest_subparsers = backtest_parser.add_subparsers(dest="backtest_command")
-
-    # Single backtest
-    single_parser = backtest_subparsers.add_parser("single", help="Run single backtest")
-    single_parser.add_argument("--symbol", required=True, help="Symbol to backtest")
-    single_parser.add_argument("--strategy", required=True, help="Strategy to use")
-    single_parser.add_argument("--start-date", required=True, help="Start date")
-    single_parser.add_argument("--end-date", required=True, help="End date")
-    single_parser.add_argument("--interval", default="1d", help="Data interval")
-    single_parser.add_argument(
-        "--capital", type=float, default=10000, help="Initial capital"
-    )
-    single_parser.add_argument(
-        "--commission", type=float, default=0.001, help="Commission rate"
-    )
-    single_parser.add_argument(
-        "--parameters", help="JSON string of strategy parameters"
-    )
-    single_parser.add_argument(
-        "--futures", action="store_true", help="Use futures mode"
-    )
-    single_parser.add_argument(
-        "--no-cache", action="store_true", help="Disable caching"
-    )
-
-    # Batch backtest
-    batch_parser = backtest_subparsers.add_parser("batch", help="Run batch backtests")
-    batch_parser.add_argument(
-        "--symbols", nargs="+", required=True, help="Symbols to backtest"
-    )
-    batch_parser.add_argument(
-        "--strategies", nargs="+", required=True, help="Strategies to use"
-    )
-    batch_parser.add_argument("--start-date", required=True, help="Start date")
-    batch_parser.add_argument("--end-date", required=True, help="End date")
-    batch_parser.add_argument("--interval", default="1d", help="Data interval")
-    batch_parser.add_argument(
-        "--capital", type=float, default=10000, help="Initial capital"
-    )
-    batch_parser.add_argument(
-        "--commission", type=float, default=0.001, help="Commission rate"
-    )
-    batch_parser.add_argument(
-        "--max-workers", type=int, help="Maximum parallel workers"
-    )
-    batch_parser.add_argument(
-        "--memory-limit", type=float, default=8.0, help="Memory limit in GB"
-    )
-    batch_parser.add_argument("--asset-type", help="Asset type hint")
-    batch_parser.add_argument("--futures", action="store_true", help="Use futures mode")
-    batch_parser.add_argument(
-        "--save-trades", action="store_true", help="Save individual trades"
-    )
-    batch_parser.add_argument(
-        "--save-equity", action="store_true", help="Save equity curves"
-    )
-    batch_parser.add_argument("--output", help="Output file path")
-
-
-def add_portfolio_commands(subparsers):
-    """Add portfolio management commands."""
-    portfolio_parser = subparsers.add_parser(
-        "portfolio", help="Portfolio management commands"
-    )
-    portfolio_subparsers = portfolio_parser.add_subparsers(dest="portfolio_command")
-
-    # Backtest portfolio
-    backtest_parser = portfolio_subparsers.add_parser(
-        "backtest", help="Backtest portfolio"
-    )
-    backtest_parser.add_argument(
-        "--symbols", nargs="+", required=True, help="Portfolio symbols"
-    )
-    backtest_parser.add_argument("--strategy", required=True, help="Portfolio strategy")
-    backtest_parser.add_argument("--start-date", required=True, help="Start date")
-    backtest_parser.add_argument("--end-date", required=True, help="End date")
-    backtest_parser.add_argument("--weights", help="JSON string of symbol weights")
-    backtest_parser.add_argument("--interval", default="1d", help="Data interval")
-    backtest_parser.add_argument(
-        "--capital", type=float, default=10000, help="Initial capital"
-    )
-
-    # Test portfolio with all strategies
-    test_all_parser = portfolio_subparsers.add_parser(
-        "test-all", help="Test portfolio with all available strategies and timeframes"
-    )
-    test_all_parser.add_argument(
-        "--portfolio", required=True, help="JSON file with portfolio definition"
-    )
-    test_all_parser.add_argument(
-        "--start-date", help="Start date (defaults to earliest available)"
-    )
-    test_all_parser.add_argument("--end-date", help="End date (defaults to today)")
-    test_all_parser.add_argument(
-        "--period",
-        choices=["max", "1y", "2y", "5y", "10y"],
-        default="max",
-        help="Time period",
-    )
-    test_all_parser.add_argument(
-        "--metric",
-        choices=[
-            "profit_factor",
-            "sharpe_ratio",
-            "sortino_ratio",
-            "total_return",
-            "max_drawdown",
-        ],
-        default="sharpe_ratio",
-        help="Primary metric for ranking",
-    )
-    test_all_parser.add_argument(
-        "--timeframes",
-        nargs="+",
-        choices=["1min", "5min", "15min", "30min", "1h", "4h", "1d", "1wk"],
-        default=["1d"],
-        help="Timeframes to test (default: 1d)",
-    )
-    test_all_parser.add_argument(
-        "--test-timeframes",
-        action="store_true",
-        help="Test all timeframes to find optimal timeframe per asset",
-    )
-    test_all_parser.add_argument(
-        "--open-browser", action="store_true", help="Open results in browser"
-    )
-    test_all_parser.add_argument(
-        "--keep-old-trades",
-        action="store_true",
-        help="Keep old trade records instead of overriding them (default: override)",
-    )
-
-    # Compare portfolios
-    compare_parser = portfolio_subparsers.add_parser(
-        "compare", help="Compare multiple portfolios"
-    )
-    compare_parser.add_argument(
-        "--portfolios", required=True, help="JSON file with portfolio definitions"
-    )
-    compare_parser.add_argument("--start-date", required=True, help="Start date")
-    compare_parser.add_argument("--end-date", required=True, help="End date")
-    compare_parser.add_argument("--output", help="Output file for results")
-
-    # Investment plan
-    plan_parser = portfolio_subparsers.add_parser(
-        "plan", help="Generate investment plan"
-    )
-    plan_parser.add_argument(
-        "--portfolios", required=True, help="JSON file with portfolio results"
-    )
-    plan_parser.add_argument(
-        "--capital", type=float, required=True, help="Total capital to allocate"
-    )
-    plan_parser.add_argument(
-        "--risk-tolerance",
-        choices=["conservative", "moderate", "aggressive"],
-        default="moderate",
-        help="Risk tolerance",
-    )
-    plan_parser.add_argument("--output", help="Output file for investment plan")
-
-
-def add_optimization_commands(subparsers):
-    """Add optimization commands."""
-    opt_parser = subparsers.add_parser(
-        "optimize", help="Strategy optimization commands"
-    )
-    opt_subparsers = opt_parser.add_subparsers(dest="optimize_command")
-
-    # Single optimization
-    single_parser = opt_subparsers.add_parser("single", help="Optimize single strategy")
-    single_parser.add_argument("--symbol", required=True, help="Symbol to optimize")
-    single_parser.add_argument("--strategy", required=True, help="Strategy to optimize")
-    single_parser.add_argument("--start-date", required=True, help="Start date")
-    single_parser.add_argument("--end-date", required=True, help="End date")
-    single_parser.add_argument(
-        "--parameters", required=True, help="JSON file with parameter ranges"
-    )
-    single_parser.add_argument(
-        "--method",
-        choices=["genetic", "grid", "bayesian"],
-        default="genetic",
-        help="Optimization method",
-    )
-    single_parser.add_argument(
-        "--metric", default="sharpe_ratio", help="Optimization metric"
-    )
-    single_parser.add_argument(
-        "--iterations", type=int, default=100, help="Maximum iterations"
-    )
-    single_parser.add_argument(
-        "--population",
-        type=int,
-        default=50,
-        help="Population size for genetic algorithm",
-    )
-
-    # Batch optimization
-    batch_parser = opt_subparsers.add_parser(
-        "batch", help="Optimize multiple strategies"
-    )
-    batch_parser.add_argument(
-        "--symbols", nargs="+", required=True, help="Symbols to optimize"
-    )
-    batch_parser.add_argument(
-        "--strategies", nargs="+", required=True, help="Strategies to optimize"
-    )
-    batch_parser.add_argument("--start-date", required=True, help="Start date")
-    batch_parser.add_argument("--end-date", required=True, help="End date")
-    batch_parser.add_argument(
-        "--parameters", required=True, help="JSON file with parameter ranges"
-    )
-    batch_parser.add_argument(
-        "--method",
-        choices=["genetic", "grid", "bayesian"],
-        default="genetic",
-        help="Optimization method",
-    )
-    batch_parser.add_argument(
-        "--max-workers", type=int, help="Maximum parallel workers"
-    )
-    batch_parser.add_argument("--output", help="Output file for results")
-
-
-def add_analysis_commands(subparsers):
-    """Add analysis and reporting commands."""
-    analysis_parser = subparsers.add_parser(
-        "analyze", help="Analysis and reporting commands"
-    )
-    analysis_subparsers = analysis_parser.add_subparsers(dest="analysis_command")
-
-    # Generate report
-    report_parser = analysis_subparsers.add_parser(
-        "report", help="Generate analysis report"
-    )
-    report_parser.add_argument(
-        "--input", required=True, help="Input JSON file with results"
-    )
-    report_parser.add_argument(
-        "--type",
-        choices=["portfolio", "strategy", "optimization"],
-        required=True,
-        help="Report type",
-    )
-    report_parser.add_argument("--title", help="Report title")
-    report_parser.add_argument(
-        "--format", choices=["html", "json"], default="html", help="Output format"
-    )
-    report_parser.add_argument(
-        "--output-dir", default="exports/reports", help="Output directory"
-    )
-    report_parser.add_argument(
-        "--no-charts", action="store_true", help="Disable charts"
-    )
-
-    # Compare strategies
-    compare_parser = analysis_subparsers.add_parser(
-        "compare", help="Compare strategy performance"
-    )
-    compare_parser.add_argument(
-        "--results", nargs="+", required=True, help="Result files to compare"
-    )
-    compare_parser.add_argument(
-        "--metric", default="sharpe_ratio", help="Primary comparison metric"
-    )
-    compare_parser.add_argument("--output", help="Output file")
-
-
-def add_cache_commands(subparsers):
-    """Add cache management commands."""
-    cache_parser = subparsers.add_parser("cache", help="Cache management commands")
-    cache_subparsers = cache_parser.add_subparsers(dest="cache_command")
-
-    # Cache stats
-    cache_subparsers.add_parser("stats", help="Show cache statistics")
-
-    # Clear cache
-    clear_parser = cache_subparsers.add_parser("clear", help="Clear cache")
-    clear_parser.add_argument(
-        "--type",
-        choices=["data", "backtest", "optimization"],
-        help="Cache type to clear",
-    )
-    clear_parser.add_argument("--symbol", help="Clear cache for specific symbol")
-    clear_parser.add_argument("--source", help="Clear cache for specific source")
-    clear_parser.add_argument(
-        "--older-than", type=int, help="Clear items older than N days"
-    )
-    clear_parser.add_argument("--all", action="store_true", help="Clear all cache")
-
-
-def add_reports_commands(subparsers):
-    """Add report management commands."""
-    reports_parser = subparsers.add_parser("reports", help="Report management commands")
-    reports_subparsers = reports_parser.add_subparsers(dest="reports_command")
-
-    # Organize existing reports
-    reports_subparsers.add_parser(
-        "organize", help="Organize existing reports into quarterly structure"
-    )
-
-    # List reports
-    list_parser = reports_subparsers.add_parser("list", help="List quarterly reports")
-    list_parser.add_argument("--year", type=int, help="Filter by year")
-
-    # Cleanup old reports
-    cleanup_parser = reports_subparsers.add_parser(
-        "cleanup", help="Cleanup old reports"
-    )
-    cleanup_parser.add_argument(
-        "--keep-quarters",
-        type=int,
-        default=8,
-        help="Number of quarters to keep (default: 8)",
-    )
-
-    # Get latest report
-    latest_parser = reports_subparsers.add_parser(
-        "latest", help="Get latest report for portfolio"
-    )
-    latest_parser.add_argument("portfolio", help="Portfolio name")
-
-    # CSV Export
-    csv_export_parser = reports_subparsers.add_parser(
-        "export-csv", help="Export portfolio data to CSV format"
-    )
-    csv_export_parser.add_argument(
-        "--portfolio",
-        help="Portfolio configuration file path (optional, used for full format)",
-    )
-    csv_export_parser.add_argument(
-        "--output", default="portfolio_raw_data.csv", help="Output CSV filename"
-    )
-    csv_export_parser.add_argument(
-        "--format",
-        choices=["full", "best-strategies", "quarterly"],
-        default="full",
-        help="Export format: full data, best strategies only, or quarterly summary",
-    )
-    csv_export_parser.add_argument(
-        "--columns",
-        nargs="+",
-        help="Custom column selection (use 'available' to see options)",
-    )
-    csv_export_parser.add_argument(
-        "--quarter", help="Quarter for quarterly export (Q1, Q2, Q3, Q4)"
-    )
-    csv_export_parser.add_argument("--year", help="Year for quarterly export (YYYY)")
-
-    # TradingView alerts export
-    tv_export_parser = reports_subparsers.add_parser(
-        "export-tradingview", help="Export TradingView alerts from database"
-    )
-    tv_export_parser.add_argument("--quarter", "-q", help="Quarter (Q1, Q2, Q3, Q4)")
-    tv_export_parser.add_argument("--year", "-y", help="Year (YYYY)")
-
-    tv_export_parser.add_argument(
-        "--output-dir",
-        default="exports/tradingview_alerts",
-        help="Output directory for alert files",
-    )
-
-
-def add_ai_commands(subparsers):
-    """Add AI recommendation commands."""
-    ai_parser = subparsers.add_parser(
-        "ai", help="AI-powered investment recommendations"
-    )
-    ai_subparsers = ai_parser.add_subparsers(dest="ai_command")
-
-    # Generate recommendations
-    recommend_parser = ai_subparsers.add_parser(
-        "recommend", help="Generate AI investment recommendations"
-    )
-    recommend_parser.add_argument(
-        "--risk-tolerance",
-        "-r",
-        choices=["conservative", "moderate", "aggressive"],
-        default="moderate",
-        help="Risk tolerance level",
-    )
-    recommend_parser.add_argument(
-        "--max-assets",
-        "-n",
-        type=int,
-        default=10,
-        help="Maximum number of assets to recommend",
-    )
-    recommend_parser.add_argument(
-        "--min-confidence",
-        "-c",
-        type=float,
-        default=0.7,
-        help="Minimum confidence score (0-1)",
-    )
-    recommend_parser.add_argument(
-        "--quarter", "-q", help="Specific quarter to analyze (e.g., Q3_2025)"
-    )
-    recommend_parser.add_argument("--output", "-o", help="Output file path")
-    recommend_parser.add_argument(
-        "--format",
-        choices=["table", "json", "summary"],
-        default="table",
-        help="Output format",
-    )
-    recommend_parser.add_argument(
-        "--timeframe",
-        "-t",
-        default="1h",
-        help="Trading timeframe (e.g., 5m, 15m, 1h, 4h, 1d). Affects trading parameters: <1h=scalping, >=1h=swing trading",
-    )
-
-    # Compare assets
-    compare_parser = ai_subparsers.add_parser("compare", help="Compare multiple assets")
-    compare_parser.add_argument("symbols", nargs="+", help="Asset symbols to compare")
-    compare_parser.add_argument("--strategy", "-s", help="Filter by specific strategy")
-
-    # Portfolio-specific recommendations
-    portfolio_recommend_parser = ai_subparsers.add_parser(
-        "portfolio_recommend",
-        help="Generate portfolio-specific AI recommendations with HTML report",
-    )
-    portfolio_recommend_parser.add_argument(
-        "--portfolio", "-p", required=True, help="Portfolio configuration file path"
-    )
-    portfolio_recommend_parser.add_argument(
-        "--risk-tolerance",
-        "-r",
-        choices=["conservative", "moderate", "aggressive"],
-        default="moderate",
-        help="Risk tolerance level",
-    )
-    portfolio_recommend_parser.add_argument(
-        "--max-assets",
-        "-n",
-        type=int,
-        default=10,
-        help="Maximum number of assets to recommend",
-    )
-    portfolio_recommend_parser.add_argument(
-        "--min-confidence",
-        "-c",
-        type=float,
-        default=0.6,
-        help="Minimum confidence score (0-1)",
-    )
-    portfolio_recommend_parser.add_argument(
-        "--quarter", "-q", help="Specific quarter to analyze (e.g., Q3_2025)"
-    )
-    portfolio_recommend_parser.add_argument(
-        "--no-html", action="store_true", help="Skip HTML report generation"
-    )
-    portfolio_recommend_parser.add_argument(
-        "--timeframe",
-        "-t",
-        default="1h",
-        help="Trading timeframe (e.g., 5m, 15m, 1h, 4h, 1d). Affects trading parameters: <1h=scalping, >=1h=swing trading",
-    )
-
-    # Explain recommendation
-    explain_parser = ai_subparsers.add_parser(
-        "explain", help="Explain specific asset recommendation"
-    )
-    explain_parser.add_argument("symbol", help="Asset symbol")
-    explain_parser.add_argument("strategy", help="Strategy name")
-
-
-def add_validation_commands(subparsers):
-    """Add metrics validation commands."""
-    validation_parser = subparsers.add_parser(
-        "validate", help="Validate backtesting metrics against backtesting library"
-    )
-    validation_subparsers = validation_parser.add_subparsers(dest="validation_command")
-
-    # Validate single strategy
-    single_parser = validation_subparsers.add_parser(
-        "strategy", help="Validate metrics for a single best strategy"
-    )
-    single_parser.add_argument("symbol", help="Symbol to validate")
-    single_parser.add_argument("strategy", help="Strategy name")
-    single_parser.add_argument(
-        "--timeframe", "-t", default="1d", help="Timeframe (default: 1d)"
-    )
-    single_parser.add_argument(
-        "--tolerance",
-        type=float,
-        default=0.05,
-        help="Tolerance for differences (default: 0.05 = 5%)",
-    )
-
-    # Validate multiple strategies
-    batch_parser = validation_subparsers.add_parser(
-        "batch", help="Validate metrics for multiple best strategies"
-    )
-    batch_parser.add_argument(
-        "--symbols", nargs="*", help="Specific symbols to validate (default: all)"
-    )
-    batch_parser.add_argument(
-        "--limit",
-        "-n",
-        type=int,
-        default=10,
-        help="Number of strategies to validate (default: 10)",
-    )
-    batch_parser.add_argument(
-        "--tolerance",
-        type=float,
-        default=0.05,
-        help="Tolerance for differences (default: 0.05 = 5%)",
-    )
-    batch_parser.add_argument(
-        "--output", "-o", help="Output file path for detailed report"
-    )
-
-
-# Command implementations
-def handle_data_command(args):
-    """Handle data management commands."""
-    data_manager = UnifiedDataManager()
-
-    if args.data_command == "download":
-        handle_data_download(args, data_manager)
-    elif args.data_command == "sources":
-        handle_data_sources(args, data_manager)
-    elif args.data_command == "symbols":
-        handle_data_symbols(args, data_manager)
-    else:
-        print("Available data commands: download, sources, symbols")
-
-
-def handle_data_download(args, data_manager: UnifiedDataManager):
-    """Handle data download command."""
-    logger = logging.getLogger(__name__)
-    logger.info("Downloading data for %s symbols", len(args.symbols))
-
-    successful = 0
-    failed = 0
-
-    for symbol in args.symbols:
+        # Fall back: attempt to run batch backtests using run_batch_backtests if manifest is compatible
         try:
-            if args.futures:
-                data = data_manager.get_crypto_futures_data(
-                    symbol,
-                    args.start_date,
-                    args.end_date,
-                    args.interval,
-                    not args.force,
-                )
-            else:
-                data = data_manager.get_data(
-                    symbol,
-                    args.start_date,
-                    args.end_date,
-                    args.interval,
-                    not args.force,
-                    args.asset_type,
+            plan = manifest.get("plan", {})
+            config_kwargs = {
+                "symbols": plan.get("symbols", []),
+                "strategies": plan.get("strategies", []),
+                "start_date": plan.get("start"),
+                "end_date": plan.get("end"),
+                "initial_capital": plan.get("initial_capital", 10000),
+                "interval": plan.get("intervals", ["1d"])[0]
+                if plan.get("intervals")
+                else "1d",
+                "max_workers": plan.get("max_workers", 4),
+            }
+            # Use BacktestConfig dataclass if available
+            try:
+                from src.core.backtest_engine import (
+                    BacktestConfig,  # type: ignore[import-not-found]
                 )
 
-            if data is not None and not data.empty:
-                successful += 1
-                logger.info("✅ %s: %s data points", symbol, len(data))
-            else:
-                failed += 1
-                logger.warning("❌ %s: No data", symbol)
+                cfg = BacktestConfig(**config_kwargs)
+                results = engine.run_batch_backtests(cfg)
+                log.info(
+                    "Engine run_batch_backtests finished with %d results", len(results)
+                )
+                return 0
+            except Exception:
+                log.debug(
+                    "Could not construct BacktestConfig; skipping engine batch run"
+                )
+        except Exception:
+            log.debug("Engine fallback path failed")
+        # If we reach here, engine couldn't be driven programmatically
+        raise RuntimeError("Engine found but could not be executed with manifest")
+    except Exception as exc:
+        log.exception("Backtest engine not available or failed: %s", exc)
 
-        except Exception as e:
-            failed += 1
-            logger.error("❌ %s: %s", symbol, e)
-
-    logger.info("Download complete: %s successful, %s failed", successful, failed)
-
-
-def handle_data_sources(args, data_manager: UnifiedDataManager):
-    """Handle data sources command."""
-    sources = data_manager.get_source_status()
-
-    print("\nAvailable Data Sources:")
-    print("=" * 50)
-
-    for name, status in sources.items():
-        print(f"\n{name.upper()}:")
-        print(f"  Priority: {status['priority']}")
-        print(f"  Rate Limit: {status['rate_limit']}s")
-        print(f"  Batch Support: {status['supports_batch']}")
-        print(f"  Futures Support: {status['supports_futures']}")
-        print(
-            f"  Asset Types: {', '.join(status['asset_types']) if status['asset_types'] else 'All'}"
-        )
-        print(f"  Max Symbols/Request: {status['max_symbols_per_request']}")
+    # Fallback: write a minimal summaries JSON
+    summary = {
+        "manifest": manifest,
+        "status": "fallback_no_engine",
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+    }
+    fallback_path = outdir / "run_summary_fallback.json"
+    with fallback_path.open("w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2, sort_keys=True, ensure_ascii=False)
+    log.warning("Wrote fallback summary to %s", fallback_path)
+    return 0
 
 
-def handle_data_symbols(args, data_manager: UnifiedDataManager):
-    """Handle data symbols command."""
-    print("\nAvailable Symbols:")
-    print("=" * 30)
+def _run_requested_exports(
+    resolved_plan: Dict[str, Any], collection_path: Path, symbols: List[str]
+) -> None:
+    """Run requested exports (report, csv, ai, tradingview) best-effort.
 
-    if args.asset_type == "crypto" or not args.asset_type:
-        try:
-            crypto_futures = data_manager.get_available_crypto_futures()
-            if crypto_futures:
-                print(f"\nCrypto Futures ({len(crypto_futures)} symbols):")
-                for symbol in crypto_futures[:10]:  # Show first 10
-                    print(f"  {symbol}")
-                if len(crypto_futures) > 10:
-                    print(f"  ... and {len(crypto_futures) - 10} more")
-        except Exception as e:
-            print(f"Error fetching crypto symbols: {e}")
-
-    print("\nNote: Stock and forex symbols depend on Yahoo Finance availability")
-
-
-def handle_backtest_command(args):
-    """Handle backtesting commands."""
-    if args.backtest_command == "single":
-        handle_single_backtest(args)
-    elif args.backtest_command == "batch":
-        handle_batch_backtest(args)
-    else:
-        print("Available backtest commands: single, batch")
-
-
-def handle_single_backtest(args):
-    """Handle single backtest command."""
-    logger = logging.getLogger(__name__)
-
-    # Setup components
-    data_manager = UnifiedDataManager()
-    cache_manager = UnifiedCacheManager()
-    engine = UnifiedBacktestEngine(data_manager, cache_manager)
-
-    # Parse custom parameters
-    custom_params = None
-    if args.parameters:
-        try:
-            custom_params = json.loads(args.parameters)
-        except json.JSONDecodeError as e:
-            logger.error("Invalid parameters JSON: %s", e)
-            return
-
-    # Create config
-    config = BacktestConfig(
-        symbols=[args.symbol],
-        strategies=[args.strategy],
-        start_date=args.start_date,
-        end_date=args.end_date,
-        interval=args.interval,
-        initial_capital=args.capital,
-        commission=args.commission,
-        use_cache=not args.no_cache,
-        futures_mode=args.futures,
-        save_trades=True,  # Enable trade history saving
-    )
-
-    # Run backtest
-    logger.info("Running backtest: %s/%s", args.symbol, args.strategy)
-    start_time = time.time()
-
-    result = engine.run_backtest(args.symbol, args.strategy, config, custom_params)
-
-    duration = time.time() - start_time
-
-    # Display results
-    if result.error:
-        logger.error("Backtest failed: %s", result.error)
+    - Avoids hard DB connectivity failures; individual exporters handle fallbacks.
+    - CSV exporter falls back to unified_models or quarterly reports when needed.
+    - AI recommendations fall back to unified_models when primary DB is unavailable.
+    """
+    exports_val = resolved_plan.get("exports", "") or ""
+    try:
+        exports_list = [
+            e.strip().lower() for e in str(exports_val).split(",") if e.strip()
+        ]
+    except Exception:
+        exports_list = []
+    if not exports_list:
         return
 
-    print(f"\nBacktest Results for {args.symbol}/{args.strategy}")
-    print("=" * 50)
-    print(f"Duration: {duration:.2f}s")
-    print(f"Data Points: {result.data_points}")
+    log = logging.getLogger("unified_cli")
 
-    metrics = result.metrics
-    if metrics:
-        print("\nPerformance Metrics:")
-        print(f"  Total Return: {metrics.get('total_return', 0):.2f}%")
-        print(f"  Sharpe Ratio: {metrics.get('sharpe_ratio', 0):.3f}")
-        print(f"  Max Drawdown: {metrics.get('max_drawdown', 0):.2f}%")
-        print(f"  Win Rate: {metrics.get('win_rate', 0):.1f}%")
-        print(f"  Number of Trades: {metrics.get('trades_count', 0)}")
+    # Prepare portfolio context
+    portfolio_name = collection_path.stem
+    try:
+        import json as _json
 
-        # Save to database for consistency with portfolio tests
+        with collection_path.open() as _fh:
+            _cdata = _json.load(_fh)
+        if isinstance(_cdata, dict):
+            if isinstance(_cdata.get("name"), str):
+                portfolio_name = _cdata.get("name") or portfolio_name
+            else:
+                first = next(iter(_cdata.values())) if _cdata else None
+                if isinstance(first, dict) and isinstance(first.get("name"), str):
+                    portfolio_name = first.get("name") or portfolio_name
+    except Exception:
+        pass
+
+    portfolio_config = {"name": portfolio_name, "symbols": sorted(symbols)}
+
+    do_report = ("report" in exports_list) or ("all" in exports_list)
+    do_csv = ("csv" in exports_list) or ("all" in exports_list)
+    do_tradingview = ("tradingview" in exports_list) or ("all" in exports_list)
+    do_ai = ("ai" in exports_list) or ("all" in exports_list)
+
+    # Determine quarter/year/interval context
+    y_now = datetime.utcnow().year
+    m = datetime.utcnow().month
+    q_now = (m - 1) // 3 + 1
+    quarter = f"Q{q_now}"
+    year = str(y_now)
+    try:
+        _intervals = list(resolved_plan.get("intervals") or [])
+        # Single-file export policy:
+        # - Use '1d' for filenames when present, else first interval
+        # - If multiple intervals were requested, do not filter by interval in exporters (pass None)
+        interval_for_filename = (
+            "1d" if "1d" in _intervals else (_intervals[0] if _intervals else "1d")
+        )
+        multiple_intervals = len(_intervals) > 1
+        interval_filter = None if multiple_intervals else interval_for_filename
+    except Exception:
+        interval_for_filename = "1d"
+        interval_filter = interval_for_filename
+
+    # Report
+    if do_report:
         try:
-            _save_backtest_to_database(
-                result,
-                f"single_{args.symbol}_{args.strategy}",
-                config,
-                "sortino_ratio",
-                args.timeframe,
-            )
-            print("  ✅ Results saved to database")
-        except Exception as e:
-            print(f"  ⚠️ Database save failed: {e}")
+            from src.reporting.collection_report import DetailedPortfolioReporter
 
-
-def handle_batch_backtest(args):
-    """Handle batch backtest command."""
-    logger = logging.getLogger(__name__)
-
-    # Setup components
-    data_manager = UnifiedDataManager()
-    cache_manager = UnifiedCacheManager()
-    engine = UnifiedBacktestEngine(
-        data_manager, cache_manager, args.max_workers, args.memory_limit
-    )
-
-    # Create config
-    config = BacktestConfig(
-        symbols=args.symbols,
-        strategies=args.strategies,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        interval=args.interval,
-        initial_capital=args.capital,
-        commission=args.commission,
-        use_cache=True,
-        save_trades=args.save_trades,
-        save_equity_curve=args.save_equity,
-        memory_limit_gb=args.memory_limit,
-        max_workers=args.max_workers,
-        asset_type=args.asset_type,
-        futures_mode=args.futures,
-    )
-
-    # Run batch backtests
-    logger.info(
-        "Running batch backtests: %s symbols, %s strategies",
-        len(args.symbols),
-        len(args.strategies),
-    )
-
-    results = engine.run_batch_backtests(config)
-
-    # Display summary
-    successful = [r for r in results if not r.error]
-    failed = [r for r in results if r.error]
-
-    print("\nBatch Backtest Summary")
-    print("=" * 30)
-    print(f"Total: {len(results)}")
-    print(f"Successful: {len(successful)}")
-    print(f"Failed: {len(failed)}")
-
-    if successful:
-        returns = [r.metrics.get("total_return", 0) for r in successful]
-        print("\nPerformance Summary:")
-        print(f"  Average Return: {sum(returns) / len(returns):.2f}%")
-        print(f"  Best Return: {max(returns):.2f}%")
-        print(f"  Worst Return: {min(returns):.2f}%")
-
-        # Top performers
-        top_performers = sorted(
-            successful, key=lambda x: x.metrics.get("total_return", 0), reverse=True
-        )[:5]
-        print("\nTop 5 Performers:")
-        for i, result in enumerate(top_performers):
-            print(
-                f"  {i + 1}. {result.symbol}/{result.strategy}: {result.metrics.get('total_return', 0):.2f}%"
-            )
-
-    # Save results if output specified
-    if args.output:
-        output_data = [asdict(result) for result in results]
-        with Path(args.output).open("w") as f:
-            json.dump(output_data, f, indent=2, default=str)
-        logger.info("Results saved to %s", args.output)
-
-
-def handle_portfolio_command(args):
-    """Handle portfolio management commands."""
-    if args.portfolio_command == "backtest":
-        handle_portfolio_backtest(args)
-    elif args.portfolio_command == "test-all":
-        handle_portfolio_test_all(args)
-    elif args.portfolio_command == "compare":
-        handle_portfolio_compare(args)
-    elif args.portfolio_command == "plan":
-        handle_investment_plan(args)
-    else:
-        print("Available portfolio commands: backtest, test-all, compare, plan")
-
-
-def handle_portfolio_test_all(args):
-    """Handle testing portfolio with all strategies."""
-    import webbrowser
-    from datetime import datetime
-
-    from src.cli.direct_backtest_cli import save_direct_backtest_to_database
-    from src.core.direct_backtest import run_direct_backtest
-    from src.reporting.detailed_portfolio_report import DetailedPortfolioReporter
-
-    logger = logging.getLogger(__name__)
-
-    # Load portfolio definition
-    try:
-        with Path(args.portfolio).open() as f:
-            portfolio_data = json.load(f)
-
-        # Get the first (and likely only) portfolio from the file
-        portfolio_name = next(iter(portfolio_data.keys()))
-        portfolio_config = portfolio_data[portfolio_name]
-    except Exception as e:
-        logger.error("Error loading portfolio: %s", e)
-        return
-
-    # Calculate date range based on period
-    end_date = (
-        datetime.strptime(args.end_date, "%Y-%m-%d")
-        if hasattr(args, "end_date") and args.end_date
-        else datetime.now()
-    )
-
-    if args.period == "max":
-        start_date = get_earliest_data_date(args.portfolio)
-    elif args.period == "10y":
-        start_date = end_date - timedelta(days=365 * 10)
-    elif args.period == "5y":
-        start_date = end_date - timedelta(days=365 * 5)
-    elif args.period == "2y":
-        start_date = end_date - timedelta(days=365 * 2)
-    else:  # default to max
-        start_date = get_earliest_data_date(args.portfolio)
-
-    # Use provided dates if available
-    if hasattr(args, "start_date") and args.start_date:
-        start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
-    if hasattr(args, "end_date") and args.end_date:
-        end_date = datetime.strptime(args.end_date, "%Y-%m-%d")
-
-    # Use specified strategies or fallback
-    all_strategies = ["BuyAndHold", "rsi", "macd", "bollinger_bands"]
-    print(f"🔍 Testing with strategies: {all_strategies}")
-
-    # Determine timeframes to test
-    if hasattr(args, "timeframes") and args.timeframes:
-        timeframes_to_test = args.timeframes
-    else:
-        timeframes_to_test = ["1d", "1wk"]
-
-    total_combinations = (
-        len(portfolio_config["symbols"]) * len(all_strategies) * len(timeframes_to_test)
-    )
-
-    print(f"\n🔍 Testing Portfolio: {portfolio_config['name']}")
-    print(
-        f"📅 Period: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}"
-    )
-    symbols_display = ", ".join(portfolio_config["symbols"][:5])
-    if len(portfolio_config["symbols"]) > 5:
-        symbols_display += "..."
-    print(f"📊 Symbols: {symbols_display}")
-    print(f"⚙️  Strategies: {', '.join(all_strategies)}")
-    print(f"⏰ Timeframes: {', '.join(timeframes_to_test)}")
-    print(f"🔢 Total Combinations: {total_combinations:,}")
-    print(f"📈 Primary Metric: {args.metric}")
-    print("=" * 70)
-
-    print("\n📊 Running direct backtests...")
-
-    # Run actual backtests for each symbol-strategy-timeframe combination
-    total_tests = (
-        len(portfolio_config["symbols"]) * len(all_strategies) * len(timeframes_to_test)
-    )
-    current_test = 0
-
-    for symbol in portfolio_config["symbols"]:
-        for strategy in all_strategies:
-            for timeframe in timeframes_to_test:
-                current_test += 1
-                print(
-                    f"  🔄 Testing {symbol} with {strategy} on {timeframe} ({current_test}/{total_tests})"
+            reporter = DetailedPortfolioReporter()
+            start_date = resolved_plan.get("start") or ""
+            end_date = resolved_plan.get("end") or ""
+            try:
+                report_path = reporter.generate_comprehensive_report(
+                    portfolio_config,
+                    start_date or datetime.utcnow().strftime("%Y-%m-%d"),
+                    end_date or datetime.utcnow().strftime("%Y-%m-%d"),
+                    resolved_plan.get("strategies", []),
+                    timeframes=[interval_for_filename]
+                    if interval_for_filename
+                    else None,
+                    filename_interval=(
+                        "multi"
+                        if (len(resolved_plan.get("intervals") or []) > 1)
+                        else interval_for_filename
+                    ),
                 )
-
-                try:
-                    # Use direct backtest library
-                    result_dict = run_direct_backtest(
-                        symbol=symbol,
-                        strategy_name=strategy,
-                        start_date=start_date.strftime("%Y-%m-%d"),
-                        end_date=end_date.strftime("%Y-%m-%d"),
-                        timeframe=timeframe,
-                        initial_capital=portfolio_config.get("initial_capital", 10000),
-                        commission=portfolio_config.get("commission", 0.001),
-                    )
-
-                    # Save to database using new direct approach
-                    if not result_dict.get("error"):
-                        save_direct_backtest_to_database(result_dict, args.metric)
-
-                        metrics = result_dict["metrics"]
-                        print(
-                            f"    ✅ Return: {metrics.get('total_return', 0):.2f}%, Sharpe: {metrics.get('sharpe_ratio', 0):.3f}"
-                        )
-                    else:
-                        print(f"    ❌ Error: {result_dict['error']}")
-
-                except Exception as e:
-                    print(
-                        f"    ❌ Error testing {symbol} with {strategy} on {timeframe}: {e}"
-                    )
-
-    # Generate detailed report with actual results
-    print("\n📊 Generating comprehensive HTML report...")
-    reporter = DetailedPortfolioReporter()
-    report_path = reporter.generate_comprehensive_report(
-        portfolio_config=portfolio_config,
-        start_date=start_date.strftime("%Y-%m-%d"),
-        end_date=end_date.strftime("%Y-%m-%d"),
-        strategies=all_strategies,
-        timeframes=timeframes_to_test,
-    )
-
-    print(f"\n📱 Comprehensive report generated: {report_path}")
-
-    # Quick summary for CLI using database best strategies
-    print(f"\n📊 Quick Summary by {args.metric.replace('_', ' ').title()}:")
-    print("-" * 50)
-
-    # Get best strategy performance from database
-    from src.database import get_db_session
-    from src.database.models import BestStrategy
-
-    session = get_db_session()
-    try:
-        best_strategies = session.query(BestStrategy).all()
-
-        if not best_strategies:
-            print("No strategies found in database")
-        else:
-            # Calculate average metric scores for each strategy
-            strategy_scores = {}
-            for best_strategy in best_strategies:
-                strategy_name = best_strategy.strategy
-                metric_value = getattr(best_strategy, args.metric, 0)
-
-                if strategy_name not in strategy_scores:
-                    strategy_scores[strategy_name] = []
-                strategy_scores[strategy_name].append(
-                    float(metric_value) if metric_value is not None else 0.0
+            except TypeError:
+                # Backward-compat: reporter without filename_interval arg
+                report_path = reporter.generate_comprehensive_report(
+                    portfolio_config,
+                    start_date or datetime.utcnow().strftime("%Y-%m-%d"),
+                    end_date or datetime.utcnow().strftime("%Y-%m-%d"),
+                    resolved_plan.get("strategies", []),
+                    timeframes=[interval_for_filename]
+                    if interval_for_filename
+                    else None,
                 )
+            log.info("Generated HTML report at %s", report_path)
+        except Exception:
+            log.exception("DetailedPortfolioReporter failed (continuing)")
 
-            # Calculate averages
-            strategy_results = {}
-            for strategy_name, scores in strategy_scores.items():
-                strategy_results[strategy_name] = (
-                    sum(scores) / len(scores) if scores else 0.0
-                )
+    # CSV (DB-backed with fallback to unified_models or quarterly reports)
+    if do_csv:
+        try:
+            from src.utils.csv_exporter import RawDataCSVExporter
 
-            # Sort by metric (ascending for drawdown, descending for others)
-            reverse_sort = args.metric != "max_drawdown"
-            sorted_strategies = sorted(
-                strategy_results.items(), key=lambda x: x[1], reverse=reverse_sort
-            )
-
-            for i, (strategy, score) in enumerate(sorted_strategies, 1):
-                if args.metric == "sharpe_ratio":
-                    print(f"  {i}. {strategy:15} | Sharpe: {score:.3f}")
-                elif args.metric == "total_return":
-                    print(f"  {i}. {strategy:15} | Return: {score:.1f}%")
-                elif args.metric == "profit_factor":
-                    print(f"  {i}. {strategy:15} | Profit Factor: {score:.2f}")
-                elif args.metric == "sortino_ratio":
-                    print(f"  {i}. {strategy:15} | Sortino: {score:.3f}")
-                elif args.metric == "max_drawdown":
-                    print(f"  {i}. {strategy:15} | Max Drawdown: {score:.1f}%")
+            csv_exporter = RawDataCSVExporter()
+            # Prefer calendar from plan start/end if present
+            try:
+                if resolved_plan.get("start"):
+                    sd = datetime.fromisoformat(resolved_plan.get("start"))
                 else:
-                    print(
-                        f"  {i}. {strategy:15} | {args.metric.replace('_', ' ').title()}: {score:.3f}"
-                    )
+                    sd = datetime.utcnow()
+            except Exception:
+                sd = datetime.utcnow()
+            quarter = f"Q{((sd.month - 1) // 3) + 1}"
+            year = str(sd.year)
 
-    finally:
-        session.close()
+            csv_files = csv_exporter.export_from_database_primary(
+                quarter,
+                year,
+                output_filename=None,
+                export_format="best-strategies",
+                portfolio_name=portfolio_config.get("name") or "",
+                portfolio_path=str(collection_path),
+                interval=interval_filter,
+            )
+            if not csv_files:
+                csv_files = csv_exporter.export_from_quarterly_reports(
+                    quarter,
+                    year,
+                    export_format="best-strategies",
+                    collection_name=portfolio_config.get("name"),
+                    interval=interval_filter,
+                )
+            log.info("Generated CSV exports: %s", csv_files)
+        except Exception:
+            log.exception("CSV export failed (continuing)")
 
-    # Get the best overall strategy from the database
-    try:
-        best_strategy_name = _get_best_overall_strategy_from_db(args.metric)
-        print(f"\n🏆 Best Overall Strategy: {best_strategy_name}")
-    except Exception as e:
-        logger.warning("Could not determine best strategy: %s", e)
-        print("\n🏆 Best Overall Strategy: Check the detailed report")
-
-    print(
-        "\n📊 Each asset analyzed with detailed KPIs, order history, and equity curves"
-    )
-    print("💾 Report size optimized with compression")
-
-    if hasattr(args, "open_browser") and args.open_browser:
-        import os
-
-        webbrowser.open(f"file://{os.path.abspath(report_path)}")
-        print("📱 Detailed report opened in browser")
-
-
-def handle_portfolio_backtest(args):
-    """Handle portfolio backtest command."""
-    logger = logging.getLogger(__name__)
-
-    # Parse weights
-    weights = None
-    if args.weights:
+    # AI recommendations (DB primary with unified_models fallback inside class)
+    if do_ai:
         try:
-            weights = json.loads(args.weights)
-        except json.JSONDecodeError as e:
-            logger.error("Invalid weights JSON: %s", e)
-            return
+            from src.ai.investment_recommendations import AIInvestmentRecommendations
+            from src.database.db_connection import get_db_session
 
-    # Setup components
-    data_manager = UnifiedDataManager()
-    cache_manager = UnifiedCacheManager()
-    engine = UnifiedBacktestEngine(data_manager, cache_manager)
-
-    # Create config
-    config = BacktestConfig(
-        symbols=args.symbols,
-        strategies=[args.strategy],
-        start_date=args.start_date,
-        end_date=args.end_date,
-        interval=args.interval,
-        initial_capital=args.capital,
-        use_cache=True,
-    )
-
-    # Run portfolio backtest
-    logger.info("Running portfolio backtest: %s symbols", len(args.symbols))
-
-    result = engine.run_portfolio_backtest(config, weights)
-
-    # Display results
-    if result.error:
-        logger.error("Portfolio backtest failed: %s", result.error)
-        return
-
-    # Save to database
-    try:
-        _save_backtest_to_database(result, "PORTFOLIO", config, "sortino_ratio", "1d")
-        logger.info("Backtest results saved to database")
-    except Exception as e:
-        logger.warning("Failed to save to database: %s", e)
-
-    print("\nPortfolio Backtest Results")
-    print("=" * 30)
-
-    metrics = result.metrics
-    if metrics:
-        print(f"Total Return: {metrics.get('total_return', 0):.2f}%")
-        print(f"Sharpe Ratio: {metrics.get('sharpe_ratio', 0):.3f}")
-        print(f"Max Drawdown: {metrics.get('max_drawdown', 0):.2f}%")
-        print(f"Volatility: {metrics.get('volatility', 0):.2f}%")
-
-
-def _save_backtest_to_database(
-    backtest_result,
-    name_prefix: str = "",
-    config=None,
-    metric: str = "sortino_ratio",
-    timeframe: str = "1d",
-):
-    """Save backtest result to PostgreSQL database and update best strategies."""
-    from datetime import datetime
-
-    from src.database import get_db_session
-    from src.database.models import BacktestResult as DBBacktestResult
-
-    session = get_db_session()
-
-    try:
-        # Save to legacy results table (for backward compatibility)
-        db_result = DBBacktestResult(
-            name=f"{name_prefix}_{backtest_result.strategy}_{backtest_result.symbol}",
-            symbols=[backtest_result.symbol]
-            if backtest_result.symbol != "PORTFOLIO"
-            else ["PORTFOLIO"],
-            strategy=backtest_result.strategy,
-            start_date=datetime.strptime(config.start_date, "%Y-%m-%d").date()
-            if config
-            else None,
-            end_date=datetime.strptime(config.end_date, "%Y-%m-%d").date()
-            if config
-            else None,
-            initial_capital=float(backtest_result.config.initial_capital),
-            final_value=float(
-                backtest_result.metrics.get(
-                    "final_capital", backtest_result.config.initial_capital
-                )
-            ),
-            total_return=float(backtest_result.metrics.get("total_return", 0)),
-            sortino_ratio=float(backtest_result.metrics.get("sortino_ratio", 0)),
-            calmar_ratio=float(backtest_result.metrics.get("calmar_ratio", 0)),
-            sharpe_ratio=float(backtest_result.metrics.get("sharpe_ratio", 0)),
-            profit_factor=float(backtest_result.metrics.get("profit_factor", 0)),
-            max_drawdown=float(backtest_result.metrics.get("max_drawdown", 0)),
-            volatility=float(backtest_result.metrics.get("volatility", 0)),
-            win_rate=float(backtest_result.metrics.get("win_rate", 0)),
-            trades_count=int(backtest_result.metrics.get("trades_count", 0)),
-            alpha=float(backtest_result.metrics.get("alpha", 0)),
-            beta=float(backtest_result.metrics.get("beta", 1)),
-            expectancy=float(backtest_result.metrics.get("expectancy", 0)),
-            average_win=float(backtest_result.metrics.get("average_win", 0)),
-            average_loss=float(backtest_result.metrics.get("average_loss", 0)),
-            total_fees=float(backtest_result.metrics.get("total_fees", 0)),
-            portfolio_turnover=float(
-                backtest_result.metrics.get("portfolio_turnover", 0)
-            ),
-            strategy_capacity=float(
-                backtest_result.metrics.get("strategy_capacity", 1000000)
-            ),
-            parameters=backtest_result.parameters or {},
-        )
-
-        session.add(db_result)
-        session.flush()  # Flush to get the ID
-
-        # Save individual trades if available
-        if backtest_result.trades is not None and not backtest_result.trades.empty:
-            from src.database.models import Trade
-
-            # Clean up old trades if override is enabled (default behavior)
-            if getattr(backtest_result.config, "override_old_trades", True):
-                old_backtest_results = (
-                    session.query(DBBacktestResult)
-                    .filter(
-                        DBBacktestResult.symbols.any(backtest_result.symbol),
-                        DBBacktestResult.strategy == backtest_result.strategy,
-                        DBBacktestResult.id
-                        != db_result.id,  # Don't delete the current record
-                    )
-                    .all()
-                )
-
-                for old_result in old_backtest_results:
-                    # Delete associated trades first
-                    old_trades_deleted = (
-                        session.query(Trade)
-                        .filter(
-                            Trade.backtest_result_id == old_result.id,
-                            Trade.symbol == backtest_result.symbol,
-                        )
-                        .delete()
-                    )
-
-                    # Then delete the old backtest result
-                    session.delete(old_result)
-
-                    if old_trades_deleted > 0:
-                        print(
-                            f"🧹 Cleaned up {old_trades_deleted} old trades and 1 old backtest result for {backtest_result.symbol}/{backtest_result.strategy}"
-                        )
-
-            current_equity = float(backtest_result.config.initial_capital)
-            current_holdings = 0.0
-
-            for _, trade_row in backtest_result.trades.iterrows():
-                # Backtesting library returns complete round-trip trades
-                # Each row has EntryTime, ExitTime, EntryPrice, ExitPrice
-
-                entry_value = float(trade_row["Size"]) * float(trade_row["EntryPrice"])
-                exit_value = float(trade_row["Size"]) * float(trade_row["ExitPrice"])
-
-                # Create ENTRY trade record
-                entry_trade = Trade(
-                    backtest_result_id=db_result.id,
-                    symbol=backtest_result.symbol,
-                    strategy=backtest_result.strategy,
-                    timeframe=getattr(backtest_result.config, "timeframe", timeframe),
-                    trade_datetime=trade_row["EntryTime"],
-                    side="BUY",
-                    size=float(trade_row["Size"]),
-                    price=float(trade_row["EntryPrice"]),
-                    equity_before=current_equity,
-                    equity_after=current_equity - entry_value,
-                )
-                session.add(entry_trade)
-
-                current_equity -= entry_value
-                current_holdings += float(trade_row["Size"])
-
-                # Create EXIT trade record
-                exit_trade = Trade(
-                    backtest_result_id=db_result.id,
-                    symbol=backtest_result.symbol,
-                    strategy=backtest_result.strategy,
-                    timeframe=getattr(backtest_result.config, "timeframe", timeframe),
-                    trade_datetime=trade_row["ExitTime"],
-                    side="SELL",
-                    size=float(trade_row["Size"]),
-                    price=float(trade_row["ExitPrice"]),
-                    equity_before=current_equity,
-                    equity_after=current_equity + exit_value,
-                )
-                session.add(exit_trade)
-
-                current_equity += exit_value
-                current_holdings -= float(trade_row["Size"])
-
-        # Recalculate correct final_value and total_return from actual trade data
-        logger = logging.getLogger(__name__)
-        logger.debug(
-            "Checking trade correction for %s/%s",
-            backtest_result.symbol,
-            backtest_result.strategy,
-        )
-        logger.debug(
-            "Has trades attr: %s, Trade count: %s",
-            hasattr(backtest_result, "trades"),
-            len(backtest_result.trades)
-            if hasattr(backtest_result, "trades")
-            else "N/A",
-        )
-        if hasattr(backtest_result, "trades") and len(backtest_result.trades) > 0:
-            # Get the final equity from the last trade calculation
-            final_trade_equity = current_equity + (
-                current_holdings * float(backtest_result.trades.iloc[-1]["price"])
+            db_sess = None
+            try:
+                db_sess = get_db_session()
+            except Exception:
+                db_sess = None
+            ai = AIInvestmentRecommendations(db_session=db_sess)
+            _rec, ai_html_path = ai.generate_portfolio_recommendations(
+                portfolio_config_path=str(collection_path),
+                risk_tolerance="moderate",
+                min_confidence=0.6,
+                max_assets=10,
+                quarter=f"{quarter}_{year}",
+                timeframe=interval_for_filename,  # concrete for trading params
+                filename_interval=(
+                    "multi"
+                    if (len(resolved_plan.get("intervals") or []) > 1)
+                    else interval_for_filename
+                ),
+                generate_html=True,
             )
-            actual_total_return = (
-                (final_trade_equity - float(backtest_result.config.initial_capital))
-                / float(backtest_result.config.initial_capital)
-            ) * 100
-
-            # Recalculate advanced metrics from actual trade PnL data using pure Python
-            trade_pnls = []
-            for _, trade_row in backtest_result.trades.iterrows():
-                if "pnl" in trade_row and trade_row["pnl"] != 0:
-                    trade_pnls.append(float(trade_row["pnl"]))
-
-            if trade_pnls:
-                winning_trades = [pnl for pnl in trade_pnls if pnl > 0]
-                losing_trades = [pnl for pnl in trade_pnls if pnl < 0]
-                initial_capital = float(backtest_result.config.initial_capital)
-
-                # Calculate percentages of initial capital using pure Python
-                actual_avg_win = (
-                    (sum(winning_trades) / len(winning_trades) / initial_capital * 100)
-                    if winning_trades
-                    else 0
-                )
-                actual_avg_loss = (
-                    (
-                        sum(abs(loss) for loss in losing_trades)
-                        / len(losing_trades)
-                        / initial_capital
-                        * 100
-                    )
-                    if losing_trades
-                    else 0
-                )
-                actual_win_rate = (
-                    (len(winning_trades) / len(trade_pnls) * 100) if trade_pnls else 0
-                )
-                actual_expectancy = (
-                    (sum(trade_pnls) / len(trade_pnls) / initial_capital * 100)
-                    if trade_pnls
-                    else 0
-                )
-            else:
-                actual_avg_win = actual_avg_loss = actual_win_rate = (
-                    actual_expectancy
-                ) = 0
-
-            # Update the database record with correct values (ensure all are Python native types)
-            db_result.final_value = float(final_trade_equity)
-            db_result.total_return = float(actual_total_return)
-            db_result.trades_count = len(backtest_result.trades)
-
-            # For advanced metrics, ensure complete type conversion
-            import builtins
-
-            db_result.average_win = builtins.float(actual_avg_win)
-            db_result.average_loss = builtins.float(actual_avg_loss)
-            db_result.win_rate = builtins.float(actual_win_rate)
-            db_result.expectancy = builtins.float(actual_expectancy)
-
-            # Also update the backtest_result metrics so best strategy update uses correct values
-            backtest_result.metrics["final_capital"] = final_trade_equity
-            backtest_result.metrics["total_return"] = actual_total_return
-            backtest_result.metrics["trades_count"] = len(backtest_result.trades)
-            backtest_result.metrics["average_win"] = actual_avg_win
-            backtest_result.metrics["average_loss"] = actual_avg_loss
-            backtest_result.metrics["win_rate"] = actual_win_rate
-            backtest_result.metrics["expectancy"] = actual_expectancy
-
-            logger.debug(
-                "Corrected %s/%s - Final: $%.2f, Return: %.2f%%, Trades: %d",
-                backtest_result.symbol,
-                backtest_result.strategy,
-                final_trade_equity,
-                actual_total_return,
-                len(backtest_result.trades),
-            )
-            logger.debug(
-                "Advanced metrics - avg_win: %.2f%%, avg_loss: %.2f%%, win_rate: %.1f%%",
-                actual_avg_win,
-                actual_avg_loss,
-                actual_win_rate,
-            )
-
-        # Update best_strategies table if this is a better result (after correction)
-        if backtest_result.symbol != "PORTFOLIO":
-            run_id = f"{name_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            _update_best_strategy(
-                session,
-                backtest_result,
-                run_id,
-                getattr(backtest_result.config, "timeframe", timeframe),
-                db_result,
-                metric,
-            )
-
-        session.commit()
-
-    except Exception as e:
-        session.rollback()
-        raise e
-    finally:
-        session.close()
-
-
-def _get_best_overall_strategy_from_db(metric: str = "sortino_ratio") -> str:
-    """Get the best overall strategy from the database based on the specified metric."""
-    from src.database.db_connection import get_db_session
-    from src.database.models import BestStrategy
-
-    session = get_db_session()
-
-    try:
-        # Get the strategy with the highest average score for the metric
-        best_strategies = session.query(BestStrategy).all()
-
-        if not best_strategies:
-            return "No strategies found"
-
-        # Calculate average metric scores for each strategy
-        strategy_scores = {}
-        for best_strategy in best_strategies:
-            strategy_name = best_strategy.strategy
-            metric_value = getattr(best_strategy, metric, 0)
-
-            if strategy_name not in strategy_scores:
-                strategy_scores[strategy_name] = []
-            strategy_scores[strategy_name].append(
-                float(metric_value) if metric_value is not None else 0.0
-            )
-
-        # Calculate averages and find the best
-        strategy_averages = {}
-        for strategy_name, scores in strategy_scores.items():
-            strategy_averages[strategy_name] = (
-                sum(scores) / len(scores) if scores else 0.0
-            )
-
-        if not strategy_averages:
-            return "No valid strategies found"
-
-        # Sort by metric (ascending for drawdown, descending for others)
-        reverse_sort = metric != "max_drawdown"
-        best_strategy = (
-            max(strategy_averages.items(), key=lambda x: x[1])
-            if reverse_sort
-            else min(strategy_averages.items(), key=lambda x: x[1])
-        )
-
-        return best_strategy[0]
-
-    except Exception as e:
-        import logging
-
-        logger = logging.getLogger(__name__)
-        logger.error("Error getting best strategy from database: %s", e)
-        return "Error retrieving best strategy"
-    finally:
-        session.close()
-
-
-def _update_best_strategy(
-    session,
-    backtest_result,
-    run_id: str,
-    timeframe: str,
-    db_result,
-    metric: str = "sortino_ratio",
-):
-    """Update best_strategies table if this result is better than existing."""
-    from src.database.models import BestStrategy
-
-    # Check if there's an existing best strategy for this symbol/timeframe
-    existing = (
-        session.query(BestStrategy)
-        .filter_by(symbol=backtest_result.symbol, timeframe=timeframe)
-        .first()
-    )
-
-    current_metric_value = float(backtest_result.metrics.get(metric, 0))
-    current_sortino = float(backtest_result.metrics.get("sortino_ratio", 0))
-
-    # Save the best strategy per asset based on CLI-specified metric
-    # For max_drawdown, lower is better; for all others, higher is better
-    # Prefer strategies with actual trades over strategies with no trades
-    is_better = False
-    current_trades_count = int(backtest_result.metrics.get("trades_count", 0))
-
-    if not existing:
-        is_better = True
-    else:
-        existing_metric_value = getattr(existing, metric, 0) or 0
-        existing_trades_count = existing.trades_count or 0
-
-        # Prefer strategies with actual trades
-        if current_trades_count > 0 and existing_trades_count == 0:
-            is_better = True
-        elif current_trades_count == 0 and existing_trades_count > 0:
-            is_better = False
-        elif current_trades_count == 0 and existing_trades_count == 0:
-            # Both have no trades - skip this strategy entirely
-            is_better = False
-        else:
-            # Both have trades - compare by metric
-            # Special handling: Real metrics (non-zero) should always replace fake zero metrics
-            if existing_metric_value == 0.0 and current_metric_value != 0.0:
-                # Real metric replacing fake zero metric - always better
-                is_better = True
-            elif metric == "max_drawdown":
-                is_better = current_metric_value < existing_metric_value
-            else:
-                is_better = current_metric_value > existing_metric_value
-
-    if is_better:
-        # Calculate risk score (normalized combination of drawdown and volatility)
-        max_dd = float(backtest_result.metrics.get("max_drawdown", 0))
-        volatility = float(backtest_result.metrics.get("volatility", 0))
-        risk_score = (max_dd + volatility) / 2  # Simple risk score
-
-        # Calculate trading parameters based on timeframe
-        risk_per_trade, stop_loss, take_profit = _calculate_trading_parameters_for_db(
-            timeframe
-        )
-
-        if existing:
-            # Update existing record
-            existing.best_strategy = backtest_result.strategy
-            existing.sortino_ratio = current_sortino
-            existing.sharpe_ratio = float(
-                backtest_result.metrics.get("sharpe_ratio", 0)
-            )
-            existing.calmar_ratio = float(
-                backtest_result.metrics.get("calmar_ratio", 0)
-            )
-            existing.profit_factor = float(
-                backtest_result.metrics.get("profit_factor", 0)
-            )
-            existing.total_return = float(
-                backtest_result.metrics.get("total_return", 0)
-            )
-            existing.max_drawdown = max_dd
-            existing.volatility = volatility
-            existing.win_rate = float(backtest_result.metrics.get("win_rate", 0))
-            existing.trades_count = int(backtest_result.metrics.get("trades_count", 0))
-            existing.alpha = float(backtest_result.metrics.get("alpha", 0))
-            existing.beta = float(backtest_result.metrics.get("beta", 1))
-            existing.expectancy = float(backtest_result.metrics.get("expectancy", 0))
-            existing.average_win = float(backtest_result.metrics.get("average_win", 0))
-            existing.average_loss = float(
-                backtest_result.metrics.get("average_loss", 0)
-            )
-            existing.total_fees = float(backtest_result.metrics.get("total_fees", 0))
-            existing.portfolio_turnover = float(
-                backtest_result.metrics.get("portfolio_turnover", 0)
-            )
-            existing.strategy_capacity = float(
-                backtest_result.metrics.get("strategy_capacity", 1000000)
-            )
-            existing.risk_score = risk_score
-            existing.risk_per_trade = risk_per_trade
-            existing.stop_loss_pct = stop_loss
-            existing.take_profit_pct = take_profit
-            existing.best_parameters = backtest_result.parameters or {}
-            existing.backtest_run_id = run_id
-        else:
-            # Create new record
-            best_strategy = BestStrategy(
-                symbol=backtest_result.symbol,
-                timeframe=timeframe,
-                strategy=backtest_result.strategy,
-                sortino_ratio=current_sortino,
-                calmar_ratio=float(backtest_result.metrics.get("calmar_ratio", 0)),
-                sharpe_ratio=float(backtest_result.metrics.get("sharpe_ratio", 0)),
-                total_return=float(backtest_result.metrics.get("total_return", 0)),
-                max_drawdown=max_dd,
-                backtest_result_id=db_result.id,
-            )
-            session.add(best_strategy)
-
-
-def _calculate_trading_parameters_for_db(timeframe: str) -> tuple[float, float, float]:
-    """Calculate trading parameters for database storage."""
-    if timeframe in ["1m", "5m", "15m", "30m", "1h"]:  # Scalping
-        return 0.01, 0.005, 0.01  # 1% risk, 0.5% SL, 1% TP
-    # Swing trading
-    return 0.02, 0.02, 0.04  # 2% risk, 2% SL, 4% TP
-
-
-def save_optimization_to_database(
-    symbol: str,
-    strategy: str,
-    optimization_result,
-    timeframe: str = "1d",
-    portfolio_name: str | None = None,
-):
-    """Save optimization results to PostgreSQL database with new normalized structure."""
-    from datetime import datetime
-
-    from src.database import get_db_session
-    from src.database.models import AllOptimizationResult
-
-    session = get_db_session()
-
-    try:
-        # Generate unique run_id for this optimization session
-        run_id = f"OPT_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{symbol}_{strategy}"
-
-        # Save all optimization iterations to all_optimization_results
-        for i, iteration_data in enumerate(optimization_result.optimization_history):
-            # Extract metrics from iteration data
-            metrics = iteration_data.get("metrics", {})
-            parameters = iteration_data.get("parameters", {})
-
-            opt_record = AllOptimizationResult(
-                run_id=run_id,
-                symbol=symbol,
-                strategy=strategy,
-                timeframe=timeframe,
-                parameters=parameters,
-                sortino_ratio=float(metrics.get("sortino_ratio", 0)),
-                sharpe_ratio=float(metrics.get("sharpe_ratio", 0)),
-                calmar_ratio=float(metrics.get("calmar_ratio", 0)),
-                profit_factor=float(metrics.get("profit_factor", 0)),
-                total_return=float(metrics.get("total_return", 0)),
-                max_drawdown=float(metrics.get("max_drawdown", 0)),
-                volatility=float(metrics.get("volatility", 0)),
-                win_rate=float(metrics.get("win_rate", 0)),
-                trades_count=int(metrics.get("trades_count", 0)),
-                iteration_number=i + 1,
-                optimization_metric="sortino_ratio",
-                portfolio_name=portfolio_name,
-            )
-            session.add(opt_record)
-
-        # Update best_optimization_results table
-        _update_best_optimization_result(
-            session,
-            symbol,
-            strategy,
-            optimization_result,
-            run_id,
-            timeframe,
-            portfolio_name,
-        )
-
-        session.commit()
-
-    except Exception as e:
-        session.rollback()
-        raise e
-    finally:
-        session.close()
-
-
-def _update_best_optimization_result(
-    session,
-    symbol: str,
-    strategy: str,
-    optimization_result,
-    run_id: str,
-    timeframe: str,
-    portfolio_name: str | None = None,
-):
-    """Update best_optimization_results table if this result is better than existing."""
-    from src.database.models import BestOptimizationResult
-
-    # Check if there's an existing best result for this symbol/strategy/timeframe
-    existing = (
-        session.query(BestOptimizationResult)
-        .filter_by(symbol=symbol, strategy=strategy, timeframe=timeframe)
-        .first()
-    )
-
-    current_sortino = float(optimization_result.best_score)
-
-    # Only update if this is better (higher score) or no existing record
-    if not existing or (
-        existing.best_sortino_ratio
-        and current_sortino > float(existing.best_sortino_ratio)
-    ):
-        # Extract best metrics from optimization result
-        best_metrics = {}
-        if optimization_result.optimization_history:
-            # Find the iteration with the best score
-            best_iteration = max(
-                optimization_result.optimization_history,
-                key=lambda x: x.get("metrics", {}).get("sortino_ratio", 0),
-            )
-            best_metrics = best_iteration.get("metrics", {})
-
-        if existing:
-            # Update existing record
-            existing.best_sortino_ratio = current_sortino
-            existing.best_sharpe_ratio = float(best_metrics.get("sharpe_ratio", 0))
-            existing.best_calmar_ratio = float(best_metrics.get("calmar_ratio", 0))
-            existing.best_profit_factor = float(best_metrics.get("profit_factor", 0))
-            existing.best_total_return = float(best_metrics.get("total_return", 0))
-            existing.best_max_drawdown = float(best_metrics.get("max_drawdown", 0))
-            existing.best_volatility = float(best_metrics.get("volatility", 0))
-            existing.best_win_rate = float(best_metrics.get("win_rate", 0))
-            existing.best_trades_count = int(best_metrics.get("trades_count", 0))
-            existing.best_parameters = optimization_result.best_parameters
-            existing.total_iterations = optimization_result.total_evaluations
-            existing.optimization_time_seconds = optimization_result.optimization_time
-            existing.optimization_run_id = run_id
-            existing.portfolio_name = portfolio_name
-        else:
-            # Create new record
-            best_opt_result = BestOptimizationResult(
-                symbol=symbol,
-                strategy=strategy,
-                timeframe=timeframe,
-                best_sortino_ratio=current_sortino,
-                best_sharpe_ratio=float(best_metrics.get("sharpe_ratio", 0)),
-                best_calmar_ratio=float(best_metrics.get("calmar_ratio", 0)),
-                best_profit_factor=float(best_metrics.get("profit_factor", 0)),
-                best_total_return=float(best_metrics.get("total_return", 0)),
-                best_max_drawdown=float(best_metrics.get("max_drawdown", 0)),
-                best_volatility=float(best_metrics.get("volatility", 0)),
-                best_win_rate=float(best_metrics.get("win_rate", 0)),
-                best_trades_count=int(best_metrics.get("trades_count", 0)),
-                best_parameters=optimization_result.best_parameters,
-                total_iterations=optimization_result.total_evaluations,
-                optimization_time_seconds=optimization_result.optimization_time,
-                optimization_run_id=run_id,
-                portfolio_name=portfolio_name,
-            )
-            session.add(best_opt_result)
-
-
-def handle_tradingview_export_command(args):
-    """Handle TradingView alerts export command."""
-    from src.database import get_db_session
-    from src.utils.tradingview_alert_exporter import TradingViewAlertExporter
-
-    try:
-        # Initialize with database session
-        db_session = get_db_session()
-        exporter = TradingViewAlertExporter(db_session=db_session)
-
-        print("📺 Exporting TradingView alerts from database...")
-
-        generated_files = exporter.export_from_database(
-            quarter=args.quarter, year=args.year, output_dir=args.output_dir
-        )
-
-        if generated_files:
-            print(f"✅ TradingView alerts exported - {len(generated_files)} files:")
-            for file_path in generated_files:
-                print(f"   📄 {file_path}")
-        else:
-            print("❌ No high-performing strategies found for alerts")
-
-        db_session.close()
-
-    except Exception as e:
-        print(f"❌ TradingView export failed: {e}")
-        print("📺 Falling back to HTML report parsing...")
-
-        # Fallback to HTML parsing
-        exporter = TradingViewAlertExporter()
-        generated_files = exporter.export_alerts_from_reports()
-
-        if generated_files:
-            print(f"✅ Fallback export completed: {generated_files[0]}")
-
-
-def handle_portfolio_compare(args):
-    """Handle portfolio comparison command."""
-    logger = logging.getLogger(__name__)
-
-    # Load portfolio definitions
-    try:
-        with Path(args.portfolios).open() as f:
-            portfolio_definitions = json.load(f)
-    except Exception as e:
-        logger.error("Error loading portfolios: %s", e)
-        return
-
-    # Setup components
-    data_manager = UnifiedDataManager()
-    cache_manager = UnifiedCacheManager()
-    engine = UnifiedBacktestEngine(data_manager, cache_manager)
-    portfolio_manager = PortfolioManager()
-
-    # Define all available strategies
-    all_strategies = ["rsi", "macd", "bollinger_bands", "sma_crossover"]
-
-    # Run backtests for each portfolio
-    portfolio_results = {}
-
-    for portfolio_name, portfolio_config in portfolio_definitions.items():
-        logger.info("Backtesting portfolio: %s", portfolio_name)
-
-        # Use strategies from config if provided, otherwise use all strategies
-        strategies_to_test = portfolio_config.get("strategies", all_strategies)
-
-        config = BacktestConfig(
-            symbols=portfolio_config["symbols"],
-            strategies=strategies_to_test,
-            start_date=args.start_date,
-            end_date=args.end_date,
-            use_cache=True,
-        )
-
-        results = engine.run_batch_backtests(config)
-        portfolio_results[portfolio_name] = results
-
-    # Analyze portfolios
-    analysis = portfolio_manager.analyze_portfolios(portfolio_results)
-
-    # Display comparison
-    print("\nPortfolio Comparison Analysis")
-    print("=" * 40)
-
-    for portfolio_name, summary in analysis["portfolio_summaries"].items():
-        print(f"\n{portfolio_name.upper()}:")
-        print(f"  Priority Rank: {summary['investment_priority']}")
-        print(f"  Average Return: {summary['avg_return']:.2f}%")
-        print(f"  Sharpe Ratio: {summary['avg_sharpe']:.3f}")
-        print(f"  Risk Category: {summary['risk_category']}")
-        print(f"  Overall Score: {summary['overall_score']:.1f}")
-
-    # Show investment recommendations
-    print("\nInvestment Recommendations:")
-    for rec in analysis["investment_recommendations"]:
-        print(f"\n{rec['priority_rank']}. {rec['portfolio_name']}")
-        print(f"   Allocation: {rec['recommended_allocation_pct']:.1f}%")
-        print(f"   Expected Return: {rec['expected_annual_return']:.2f}%")
-        print(f"   Risk: {rec['risk_category']}")
-
-    # Save results if output specified
-    if args.output:
-        with Path(args.output).open("w") as f:
-            json.dump(analysis, f, indent=2, default=str)
-        logger.info("Analysis saved to %s", args.output)
-
-
-def handle_investment_plan(args):
-    """Handle investment plan generation."""
-    logger = logging.getLogger(__name__)
-
-    # Load portfolio results
-    try:
-        with Path(args.portfolios).open() as f:
-            portfolio_results_data = json.load(f)
-    except Exception as e:
-        logger.error("Error loading portfolio results: %s", e)
-        return
-
-    # Convert to BacktestResult objects (simplified)
-    portfolio_results = {}
-    for portfolio_name, results_list in portfolio_results_data.items():
-        results = []
-        for result_data in results_list:
-            result = BacktestResult(
-                symbol=result_data["symbol"],
-                strategy=result_data["strategy"],
-                parameters=result_data.get("parameters", {}),
-                metrics=result_data.get("metrics", {}),
-                config=None,  # Simplified
-                error=result_data.get("error"),
-            )
-            results.append(result)
-        portfolio_results[portfolio_name] = results
-
-    # Generate investment plan
-    portfolio_manager = PortfolioManager()
-    investment_plan = portfolio_manager.generate_investment_plan(
-        args.capital, portfolio_results, args.risk_tolerance
-    )
-
-    # Display investment plan
-    print("\nInvestment Plan")
-    print("=" * 20)
-    print(f"Total Capital: ${args.capital:,.2f}")
-    print(f"Risk Tolerance: {args.risk_tolerance.title()}")
-
-    print("\nCapital Allocations:")
-    for allocation in investment_plan["allocations"]:
-        print(
-            f"  {allocation['portfolio_name']}: ${allocation['allocation_amount']:,.2f} "
-            f"({allocation['allocation_percentage']:.1f}%)"
-        )
-
-    print("\nExpected Portfolio Metrics:")
-    expected = investment_plan["expected_portfolio_metrics"]
-    print(f"  Expected Return: {expected.get('expected_annual_return', 0):.2f}%")
-    print(f"  Expected Volatility: {expected.get('expected_volatility', 0):.2f}%")
-    print(f"  Expected Sharpe: {expected.get('expected_sharpe_ratio', 0):.3f}")
-
-    # Save plan if output specified
-    if args.output:
-        with Path(args.output).open("w") as f:
-            json.dump(investment_plan, f, indent=2, default=str)
-        logger.info("Investment plan saved to %s", args.output)
-
-
-def handle_cache_command(args):
-    """Handle cache management commands."""
-    cache_manager = UnifiedCacheManager()
-
-    if args.cache_command == "stats":
-        handle_cache_stats(args, cache_manager)
-    elif args.cache_command == "clear":
-        handle_cache_clear(args, cache_manager)
-    else:
-        print("Available cache commands: stats, clear")
-
-
-def handle_cache_stats(args, cache_manager: UnifiedCacheManager):
-    """Handle cache stats command."""
-    stats = cache_manager.get_cache_stats()
-
-    print("\nCache Statistics")
-    print("=" * 20)
-    print(
-        f"Total Size: {stats['total_size_gb']:.2f} GB / {stats['max_size_gb']:.2f} GB"
-    )
-    print(f"Utilization: {stats['utilization_percent']:.1f}%")
-
-    print("\nBy Type:")
-    for cache_type, type_stats in stats["by_type"].items():
-        print(f"  {cache_type.title()}:")
-        print(f"    Count: {type_stats['count']}")
-        print(f"    Size: {type_stats['total_size_mb']:.1f} MB")
-
-    print("\nBy Source:")
-    for source, source_stats in stats["by_source"].items():
-        print(f"  {source.title()}:")
-        print(f"    Count: {source_stats['count']}")
-        print(f"    Size: {source_stats['size_bytes'] / 1024**2:.1f} MB")
-
-
-def handle_cache_clear(args, cache_manager: UnifiedCacheManager):
-    """Handle cache clear command."""
-    logger = logging.getLogger(__name__)
-
-    if args.all:
-        logger.info("Clearing all cache...")
-        cache_manager.clear_cache()
-    else:
-        logger.info("Clearing cache with filters...")
-        cache_manager.clear_cache(
-            cache_type=args.type,
-            symbol=args.symbol,
-            source=args.source,
-            older_than_days=args.older_than,
-        )
-
-    logger.info("Cache cleared successfully")
-
-
-def handle_strategy_command(args):
-    """Handle strategy management commands."""
-    logger = logging.getLogger(__name__)
-
-    if args.strategy_command == "list":
-        strategies = list_available_strategies()
-        strategy_type = args.type
-
-        if strategy_type == "all":
-            print("Available Strategies:")
-            if strategies["builtin"]:
-                print(f"\nBuilt-in Strategies ({len(strategies['builtin'])}):")
-                for strategy in strategies["builtin"]:
-                    print(f"  - {strategy}")
-
-            if strategies["external"]:
-                print(f"\nExternal Strategies ({len(strategies['external'])}):")
-                for strategy in strategies["external"]:
-                    print(f"  - {strategy}")
-        else:
-            strategy_list = strategies.get(strategy_type, [])
-            print(f"{strategy_type.title()} Strategies ({len(strategy_list)}):")
-            for strategy in strategy_list:
-                print(f"  - {strategy}")
-
-    elif args.strategy_command == "info":
+            log.info("Generated AI recommendations at %s", ai_html_path)
+        except Exception:
+            log.exception("AI recommendations export failed (continuing)")
+
+    # TradingView alerts
+    if do_tradingview:
         try:
-            info = StrategyFactory.get_strategy_info(args.name)
-            print(f"Strategy: {info['name']}")
-            print(f"Type: {info['type']}")
-            print(f"Description: {info['description']}")
+            from src.utils.tv_alert_exporter import TradingViewAlertExporter
 
-            if info.get("parameters"):
-                print("\nParameters:")
-                for param, value in info["parameters"].items():
-                    print(f"  {param}: {value}")
-        except ValueError as e:
-            logger.error("Strategy not found: %s", e)
-
-    elif args.strategy_command == "test":
-        try:
-            # Parse parameters if provided
-            parameters = {}
-            if args.parameters:
-                parameters = json.loads(args.parameters)
-
-            # Create strategy instance
-            strategy = StrategyFactory.create_strategy(args.name, parameters)
-
-            # Get test data
-            data_manager = UnifiedDataManager()
-            logger.info("Fetching test data for %s...", args.symbol)
-
-            data = data_manager.fetch_data(
-                symbol=args.symbol,
-                start_date=args.start_date,
-                end_date=args.end_date,
-                interval="1d",
+            tv_exporter = TradingViewAlertExporter(reports_dir="exports/reports")
+            alerts = tv_exporter.export_alerts(
+                output_file=None,
+                collection_filter=portfolio_config.get("name"),
+                interval=interval_filter,
+                symbols=portfolio_config.get("symbols") or [],
             )
-
-            if data.empty:
-                logger.error("No data found for %s", args.symbol)
-                return
-
-            # Generate signals
-            logger.info("Generating signals...")
-            signals = strategy.generate_signals(data)
-
-            # Print summary
-            signal_counts = {
-                "Buy": (signals == 1).sum(),
-                "Sell": (signals == -1).sum(),
-                "Hold": (signals == 0).sum(),
-            }
-
-            print(f"\nStrategy Test Results for {args.name}:")
-            print(f"Symbol: {args.symbol}")
-            print(f"Period: {args.start_date} to {args.end_date}")
-            print(f"Data points: {len(data)}")
-            print("Signal distribution:")
-            for signal_type, count in signal_counts.items():
-                percentage = (count / len(signals)) * 100
-                print(f"  {signal_type}: {count} ({percentage:.1f}%)")
-
-            # Show recent signals
-            recent_signals = signals.tail(10)
-            print("\nRecent signals:")
-            for date, signal in recent_signals.items():
-                signal_name = {1: "BUY", -1: "SELL", 0: "HOLD"}[signal]
-                print(f"  {date.strftime('%Y-%m-%d')}: {signal_name}")
-
-        except Exception as e:
-            logger.error("Strategy test failed: %s", e)
+            log.info("Generated TradingView alerts for %d assets", len(alerts))
+        except Exception:
+            log.exception("TradingView alerts export failed (continuing)")
 
 
-def handle_csv_export_command(args):
-    """Handle CSV export command."""
-    from src.database import get_db_session
-    from src.utils.raw_data_csv_exporter import RawDataCSVExporter
-
-    # Only do collection-based exports (no portfolio_raw_data.csv)
-    exporter = RawDataCSVExporter()
-
-    # Show available columns if requested
-    if hasattr(args, "columns") and args.columns and "available" in args.columns:
-        print("Available columns for CSV export:")
-        for col in [
-            "Symbol",
-            "Strategy",
-            "Sortino Ratio",
-            "Calmar Ratio",
-            "Total Return",
-            "Max Drawdown",
-            "Win Rate",
-        ]:
-            print(f"  - {col}")
-        return
-
-    # Handle quarterly exports from existing reports
-    if args.format == "quarterly":
-        if not args.quarter or not args.year:
-            print("❌ Quarter and year required for quarterly export")
-            return
-
-        print(f"📊 Extracting data from quarterly reports: {args.year} {args.quarter}")
-
-        output_paths = exporter.export_from_quarterly_reports(
-            args.quarter, args.year, args.output, "full"
-        )
-
-        if output_paths:
-            print(f"✅ CSV export completed - {len(output_paths)} files:")
-            for path in output_paths:
-                print(f"   📄 {path}")
-        else:
-            print("❌ No quarterly reports found or CSV export failed")
-        return
-
-    # Handle best-strategies format - requires quarter and year
-    if args.format == "best-strategies":
-        if not args.quarter or not args.year:
-            print("❌ Best strategies export requires --quarter and --year")
-            print("💡 Use: --format best-strategies --quarter Q3 --year 2025")
-            return
-
-        try:
-            db_session = get_db_session()
-            exporter_with_db = RawDataCSVExporter(db_session=db_session)
-
-            print(
-                f"📊 Exporting best strategies from database: {args.year} {args.quarter}"
-            )
-
-            output_paths = exporter_with_db.export_from_database(
-                quarter=args.quarter,
-                year=args.year,
-                output_filename=args.output,
-                export_format=args.format,
-                columns=args.columns,
-            )
-
-            if output_paths:
-                print(
-                    f"✅ Best strategies CSV export completed - {len(output_paths)} files:"
-                )
-                for path in output_paths:
-                    print(f"   📄 {path}")
-            else:
-                print("❌ No data found for export criteria")
-
-            db_session.close()
-            return
-
-        except Exception as e:
-            print(f"❌ Database export failed: {e}")
-            return
-
-    # Handle full format - requires running backtests (fallback to old method)
-    print("❌ Full format export from portfolio config not implemented yet")
-    print(
-        "💡 Use quarterly format with --quarter and --year to extract from existing reports"
+def handle_collection_run(argv: Sequence[str]) -> int:
+    parser = argparse.ArgumentParser(
+        prog="unified_cli collection",
+        description="Run unified backtests for a collection",
     )
-    print("💡 Example: --format quarterly --quarter Q4 --year 2023")
-    return
-
-
-def handle_ai_command(args):
-    """Handle AI recommendation commands."""
-    from src.ai.investment_recommendations import AIInvestmentRecommendations
-    from src.database import get_db_session
-
-    if not args.ai_command:
-        print("AI command required. Use --help for options.")
-        return
-
-    try:
-        session = get_db_session()
-        recommender = AIInvestmentRecommendations(session)
-
-        if args.ai_command == "recommend":
-            portfolio_rec = recommender.generate_recommendations(
-                risk_tolerance=args.risk_tolerance,
-                min_confidence=args.min_confidence,
-                max_assets=args.max_assets,
-                quarter=args.quarter,
-                timeframe=args.timeframe,
-            )
-
-            # Display based on format
-            if args.format == "json":
-                print(json.dumps(_portfolio_to_dict(portfolio_rec), indent=2))
-            else:
-                _display_recommendations(portfolio_rec, args.format)
-
-            if args.output:
-                _save_recommendations(portfolio_rec, args.output, args.format)
-                print(f"Saved to {args.output}")
-
-        elif args.ai_command == "compare":
-            comparison_df = recommender.get_asset_comparison(
-                args.symbols, args.strategy
-            )
-            if not comparison_df.empty:
-                print(comparison_df.to_string(index=False))
-            else:
-                print("No data found for specified assets")
-
-        elif args.ai_command == "portfolio_recommend":
-            portfolio_rec, html_path = recommender.generate_portfolio_recommendations(
-                portfolio_config_path=args.portfolio,
-                risk_tolerance=args.risk_tolerance,
-                min_confidence=args.min_confidence,
-                max_assets=args.max_assets,
-                quarter=args.quarter,
-                timeframe=args.timeframe,
-                generate_html=not args.no_html,
-            )
-
-            # Display results
-            _display_recommendations(portfolio_rec, "table")
-
-            if html_path:
-                print(f"\n📄 HTML report generated: {html_path}")
-
-        elif args.ai_command == "explain":
-            explanation = recommender.explain_recommendation(args.symbol, args.strategy)
-            if "error" in explanation:
-                print(f"Error: {explanation['error']}")
-            else:
-                print(f"Asset: {args.symbol} ({args.strategy})")
-                print(f"Summary: {explanation['summary']}")
-                if explanation.get("strengths"):
-                    print("Strengths:", ", ".join(explanation["strengths"]))
-                if explanation.get("concerns"):
-                    print("Concerns:", ", ".join(explanation["concerns"]))
-                print(f"Recommendation: {explanation['recommendation']}")
-
-        session.close()
-
-    except Exception as e:
-        print(f"AI command failed: {e}")
-        raise
-
-
-def _display_recommendations(portfolio_rec, format_type):
-    """Display portfolio recommendations."""
-    if format_type == "summary":
-        print(f"AI Recommendations ({portfolio_rec.risk_profile})")
-        print(f"Assets: {len(portfolio_rec.recommendations)}")
-        print(f"Score: {portfolio_rec.total_score:.2f}")
-        print(f"Confidence: {portfolio_rec.confidence:.1%}")
-        if portfolio_rec.recommendations:
-            top = portfolio_rec.recommendations[0]
-            print(f"Top: {top.symbol} ({top.allocation_percentage:.1f}%)")
-    else:
-        print(f"Portfolio Recommendations - {portfolio_rec.risk_profile.title()}")
-        print("=" * 120)
-        print(
-            f"{'Symbol':<12} {'Strategy':<12} {'Style':<6} {'TF':<4} {'Score':<6} {'Alloc%':<6} {'Risk%':<6} {'SL':<6} {'TP':<6} {'Conf%':<6}"
-        )
-        print("=" * 120)
-        for rec in portfolio_rec.recommendations:
-            print(
-                f"{rec.symbol:<12} {rec.strategy:<12} {rec.trading_style:<6} {rec.timeframe:<4} "
-                f"{rec.score:<6.2f} {rec.allocation_percentage:<6.1f} {rec.risk_per_trade:<6.1f} "
-                f"{rec.stop_loss_points:<6.0f} {rec.take_profit_points:<6.0f} {rec.confidence:<6.1%}"
-            )
-        print(f"\nAnalysis: {portfolio_rec.overall_reasoning}")
-
-        if portfolio_rec.recommendations:
-            print("\nTrading Parameters Legend:")
-            print("  Style: Trading style (swing=≥1h timeframes, scalp=<1h timeframes)")
-            print("  TF: Timeframe")
-            print("  Risk%: Risk per trade (% of capital)")
-            print("  SL: Stop loss (points)")
-            print("  TP: Take profit (points)")
-
-
-def _portfolio_to_dict(portfolio_rec):
-    """Convert portfolio recommendation to dict."""
-    return {
-        "risk_profile": portfolio_rec.risk_profile,
-        "total_score": portfolio_rec.total_score,
-        "confidence": portfolio_rec.confidence,
-        "recommendations": [
-            {
-                "symbol": rec.symbol,
-                "strategy": rec.strategy,
-                "score": rec.score,
-                "allocation_percentage": rec.allocation_percentage,
-                "sortino_ratio": rec.sortino_ratio,
-                "calmar_ratio": rec.calmar_ratio,
-                "max_drawdown": rec.max_drawdown,
-            }
-            for rec in portfolio_rec.recommendations
+    parser.add_argument(
+        "collection",
+        help="Path to collection JSON file or collection key under config/collections",
+    )
+    parser.add_argument(
+        "--action",
+        default="direct",
+        choices=[
+            "backtest",
+            "direct",
+            "optimization",
+            "export",
+            "report",
+            "tradingview",
         ],
-        "overall_reasoning": portfolio_rec.overall_reasoning,
-        "warnings": portfolio_rec.warnings,
+        help="Action to perform",
+    )
+    parser.add_argument(
+        "--metric",
+        default=DEFAULT_METRIC,
+        help=f"Primary metric used for ranking (default: {DEFAULT_METRIC})",
+    )
+    parser.add_argument(
+        "--strategies",
+        default="all",
+        help="Comma-separated strategies or 'all' (default: all)",
+    )
+    period_group = parser.add_mutually_exclusive_group()
+    period_group.add_argument(
+        "--period",
+        default="max",
+        help="Named period token e.g. 1d, 1mo, 1y, ytd, max (default: max)",
+    )
+    period_group.add_argument("--start", help="ISO start date YYYY-MM-DD")
+    parser.add_argument(
+        "--end", help="ISO end date YYYY-MM-DD (required when --start is given)"
+    )
+    parser.add_argument(
+        "--interval",
+        default="all",
+        help="Comma-separated intervals or 'all' (default: all)",
+    )
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Bypass cache reads for data (fetch fresh)",
+    )
+    parser.add_argument(
+        "--fresh", action="store_true", help="Alias for --no-cache (fetch fresh data)"
+    )
+    parser.add_argument(
+        "--reset-db",
+        action="store_true",
+        help="Danger: drop and recreate DB tables before running",
+    )
+    parser.add_argument(
+        "--exports",
+        default="",
+        help="Comma-separated export types to run (csv,report,tradingview,ai,all)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Do not perform side effects; print manifest and exit",
+    )
+    parser.add_argument(
+        "--outdir",
+        default=None,
+        help="Output directory for artifacts (default: artifacts/run_<timestamp>)",
+    )
+    parser.add_argument("--log-level", default="INFO", help="Logging level")
+    parser.add_argument("--config", default=None, help="Path to config file (optional)")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Force run even if plan_hash already succeeded",
+    )
+    parser.add_argument(
+        "--max-workers", type=int, default=4, help="Concurrency for backtests"
+    )
+    args = parser.parse_args(argv)
+
+    _setup_logging(args.log_level)
+
+    try:
+        collection_path = resolve_collection_path(args.collection)
+    except Exception as exc:
+        log.exception("Failed to resolve collection: %s", exc)
+        return 2
+
+    try:
+        symbols = load_collection_symbols(collection_path)
+    except Exception as exc:
+        log.exception("Failed to load symbols from collection: %s", exc)
+        return 3
+
+    try:
+        strategies = expand_strategies(args.strategies)
+        # Filter out filesystem artifacts or invalid candidates (e.g., __pycache__)
+        try:
+            strategies = [
+                s
+                for s in strategies
+                if not (isinstance(s, str) and s.strip().startswith("__"))
+            ]
+        except Exception:
+            # Defensive: if filtering fails, keep original list
+            pass
+    except Exception as exc:
+        log.exception("Failed to resolve strategies: %s", exc)
+        return 4
+
+    try:
+        intervals = expand_intervals(args.interval)
+    except Exception as exc:
+        log.exception("Failed to resolve intervals: %s", exc)
+        return 5
+
+    # Basic validation for start/end
+    if args.start and not args.end:
+        log.error("--end is required when --start is provided")
+        return 6
+
+    # compute outdir
+    ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    outdir = Path(args.outdir) if args.outdir else Path("artifacts") / f"run_{ts}"
+    outdir = outdir.resolve()
+
+    # Collect git SHAs (best-effort)
+    app_sha = try_get_git_sha(Path())
+    strat_sha = try_get_git_sha(Path("quant-strategies"))
+
+    # Build plan manifest
+    resolved_plan = {
+        "actor": "cli",
+        "action": args.action,
+        "collection": str(collection_path),
+        "symbols": sorted(symbols),
+        "strategies": sorted(strategies),
+        "intervals": sorted(intervals),
+        "metric": args.metric,
+        "period_mode": args.period if args.start is None else "start_end",
+        "start": args.start,
+        "end": args.end,
+        "exports": args.exports,
+        "dry_run": bool(args.dry_run),
+        "use_cache": not (args.no_cache or args.fresh),
+        "max_workers": int(args.max_workers),
+        "timestamp_utc": datetime.utcnow().isoformat() + "Z",
+        "git_sha_app": app_sha,
+        "git_sha_strat": strat_sha,
     }
 
-
-def _save_recommendations(portfolio_rec, output_path, format_type):
-    """Save recommendations to file."""
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-
-    if format_type == "json":
-        with Path(output_path).open("w") as f:
-            json.dump(_portfolio_to_dict(portfolio_rec), f, indent=2)
-    else:
-        with Path(output_path).open("w") as f:
-            f.write("AI Investment Recommendations\n")
-            f.write("=" * 50 + "\n\n")
-            for rec in portfolio_rec.recommendations:
-                f.write(
-                    f"{rec.symbol} ({rec.strategy}): {rec.allocation_percentage:.1f}%\n"
-                )
-
-
-def handle_validation_command(args):
-    """Handle metrics validation commands."""
-    from src.utils.metrics_validator import MetricsValidator
-
-    validator = MetricsValidator()
-
-    if not args.validation_command:
-        print("Available validation commands: strategy, batch")
-        return
-
-    if args.validation_command == "strategy":
-        # Validate single strategy
-        print(f"Validating metrics for {args.symbol}/{args.strategy}...")
-
-        result = validator.validate_best_strategy_metrics(
-            args.symbol, args.strategy, args.timeframe, args.tolerance
-        )
-
-        # Generate and display report
-        report = validator.generate_validation_report(result)
-        print(report)
-
-    elif args.validation_command == "batch":
-        # Validate multiple strategies
-        symbols = args.symbols if args.symbols else None
-        print(f"Validating {args.limit} best strategies...")
-        if symbols:
-            print(f"Filtering by symbols: {symbols}")
-
-        results = validator.validate_multiple_strategies(symbols, args.limit)
-
-        # Generate and display report
-        report = validator.generate_validation_report(results)
-        print(report)
-
-        # Save detailed report if requested
-        if args.output:
-            with Path(args.output).open("w") as f:
-                f.write(report)
-                f.write("\n\n=== Detailed Results ===\n\n")
-                import json
-
-                f.write(json.dumps(results, indent=2, default=str))
-            print(f"\nDetailed report saved to {args.output}")
-
-    else:
-        print(f"Unknown validation command: {args.validation_command}")
-
-
-def handle_reports_command(args):
-    """Handle report management commands."""
-    import os
-    import sys
-
-    from src.utils.report_organizer import ReportOrganizer
-
-    sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-    from utils.report_organizer import ReportOrganizer
-
-    organizer = ReportOrganizer()
-
-    if args.reports_command == "organize":
-        print("Organizing existing reports into quarterly structure...")
-        organizer.organize_existing_reports()
-        print("Reports organized successfully!")
-
-    elif args.reports_command == "list":
-        reports = organizer.list_quarterly_reports(
-            args.year if hasattr(args, "year") else None
-        )
-
-        if not reports:
-            print("No quarterly reports found.")
-            return
-
-        for year, quarters in reports.items():
-            print(f"\n{year}:")
-            for quarter, report_files in quarters.items():
-                print(f"  {quarter}:")
-                for report_file in report_files:
-                    print(f"    - {report_file}")
-
-    elif args.reports_command == "cleanup":
-        keep_quarters = args.keep_quarters if hasattr(args, "keep_quarters") else 8
-        print(f"Cleaning up old reports (keeping last {keep_quarters} quarters)...")
-        organizer.cleanup_old_reports(keep_quarters)
-        print("Cleanup completed!")
-
-    elif args.reports_command == "latest":
-        portfolio_name = args.portfolio
-        latest_report = organizer.get_latest_report(portfolio_name)
-
-        if latest_report:
-            print(f"Latest report for '{portfolio_name}': {latest_report}")
-        else:
-            print(f"No reports found for portfolio '{portfolio_name}'")
-
-    elif args.reports_command == "export-csv":
-        handle_csv_export_command(args)
-
-    elif args.reports_command == "export-tradingview":
-        handle_tradingview_export_command(args)
-
-    else:
-        print(
-            "Available reports commands: organize, list, cleanup, latest, export-csv, export-tradingview"
-        )
-
-
-def main():
-    """Main entry point."""
-    parser = create_parser()
-    args = parser.parse_args()
-
-    if not args.command:
-        parser.print_help()
-        return
-
-    # Setup logging
-    setup_logging(args.log_level)
-
-    # Route to appropriate handler
+    # Try to read initial_capital and commission from the collection file
     try:
-        if args.command == "data":
-            handle_data_command(args)
-        elif args.command == "strategy":
-            handle_strategy_command(args)
-        elif args.command == "backtest":
-            handle_backtest_command(args)
-        elif args.command == "portfolio":
-            handle_portfolio_command(args)
-        elif args.command == "cache":
-            handle_cache_command(args)
-        elif args.command == "reports":
-            handle_reports_command(args)
-        elif args.command == "ai":
-            handle_ai_command(args)
-        elif args.command == "validate":
-            handle_validation_command(args)
-        else:
-            print(f"Unknown command: {args.command}")
-            parser.print_help()
+        import json as _json
 
-    except KeyboardInterrupt:
-        print("\nOperation interrupted by user")
-    except Exception as e:
-        logging.error("Command failed: %s", e)
-        raise
+        with collection_path.open() as _fh:
+            _data = _json.load(_fh)
+        # Direct keys
+        ic = None
+        comm = None
+        if isinstance(_data, dict):
+            if "initial_capital" in _data:
+                ic = _data.get("initial_capital")
+            if "commission" in _data:
+                comm = _data.get("commission")
+            # Named collection wrapper
+            if (ic is None or comm is None) and _data:
+                try:
+                    first = next(iter(_data.values()))
+                    if isinstance(first, dict):
+                        ic = first.get("initial_capital", ic)
+                        comm = first.get("commission", comm)
+                except Exception:
+                    pass
+        if ic is not None:
+            resolved_plan["initial_capital"] = float(ic)
+        if comm is not None:
+            resolved_plan["commission"] = float(comm)
+    except Exception:
+        # Ignore; defaults will be applied downstream
+        pass
+
+    # Apply interval constraints (best-effort warning only)
+    for interval in resolved_plan["intervals"]:
+        _ = clamp_interval_period(
+            interval,
+            resolved_plan.get("start"),
+            resolved_plan.get("end"),
+            resolved_plan["period_mode"],
+        )
+
+    # Add strategies_path so worker processes can initialize the external strategy loader.
+    # Prefer an explicit environment variable (STRATEGIES_PATH) when set, then check
+    # the common container-mounted path (/app/external_strategies), then fall back to
+    # a local `quant-strategies` checkout or `external_strategies` directory.
+    # This ensures the CLI works both on the host and inside docker-compose containers.
+    try:
+        import os
+
+        env_strat = os.getenv("STRATEGIES_PATH")
+        if env_strat:
+            resolved_plan["strategies_path"] = env_strat
+        else:
+            # Common mount inside the container used by docker-compose
+            container_path = Path("/app/external_strategies")
+            if container_path.exists():
+                resolved_plan["strategies_path"] = str(container_path)
+            else:
+                # Host fallback: prefer local checkout 'quant-strategies'
+                strat_path = Path("quant-strategies").resolve()
+                if strat_path.exists():
+                    resolved_plan["strategies_path"] = str(strat_path)
+                else:
+                    ext = Path("external_strategies")
+                    resolved_plan["strategies_path"] = (
+                        str(ext.resolve()) if ext.exists() else None
+                    )
+    except Exception:
+        resolved_plan["strategies_path"] = None
+
+    plan_hash = compute_plan_hash(resolved_plan)
+    resolved_plan["plan_hash"] = plan_hash
+
+    manifest = {
+        "plan": resolved_plan,
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+    }
+
+    manifest_path = write_manifest(outdir, manifest)
+    log.info("Wrote run manifest to %s", manifest_path)
+
+    # Optional: reset DB (dangerous)
+    if args.reset_db and not args.dry_run:
+        try:
+            from src.database import unified_models  # type: ignore[import-not-found]
+
+            unified_models.drop_tables()
+            unified_models.create_tables()
+            log.warning(
+                "Database tables dropped and recreated as requested (--reset-db)"
+            )
+        except Exception:
+            log.exception("Failed to reset database tables")
+            return 9
+
+    # Dry-run behavior: print manifest and optionally generate exports, then exit
+    if args.dry_run:
+        print(json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False))
+        _run_requested_exports(resolved_plan, collection_path, symbols)
+        return 0
+
+    # Idempotency: check DB for existing plan_hash if DB available
+    if not args.force:
+        try:
+            from src.database import unified_models
+
+            if hasattr(unified_models, "find_run_by_plan_hash"):
+                existing = unified_models.find_run_by_plan_hash(plan_hash)
+                if existing and getattr(existing, "status", None) == "succeeded":
+                    log.info(
+                        "A succeeded run with the same plan_hash already exists. Use --force to re-run."
+                    )
+                    return 0
+        except Exception:
+            log.debug("Could not query DB for existing plan_hash; continuing")
+
+    # Execute the plan
+    rc = run_plan(manifest, outdir, dry_run=args.dry_run)
+
+    # Best-effort: persist artifact pointers (manifest, engine summary, fallback summary) into unified_models.RunArtifact
+    try:
+        from src.database import unified_models  # type: ignore[import-not-found]
+
+        run = None
+        try:
+            if hasattr(unified_models, "find_run_by_plan_hash"):
+                run = unified_models.find_run_by_plan_hash(plan_hash)
+            else:
+                # fallback: query by plan_hash manually
+                sess_tmp = unified_models.Session()
+                try:
+                    run = (
+                        sess_tmp.query(unified_models.Run)
+                        .filter(unified_models.Run.plan_hash == plan_hash)
+                        .one_or_none()
+                    )
+                finally:
+                    try:
+                        sess_tmp.close()
+                    except Exception:
+                        pass
+        except Exception:
+            log.exception("Failed to locate run for plan_hash %s", plan_hash)
+            run = None
+
+        if run:
+            sess = unified_models.Session()
+            try:
+                artifact_candidates = [
+                    ("manifest", manifest_path),
+                    ("engine_summary", outdir / "engine_run_summary.json"),
+                    ("run_summary_fallback", outdir / "run_summary_fallback.json"),
+                ]
+                added = 0
+                for atype, p in artifact_candidates:
+                    try:
+                        # Only persist existing artifact files (handle Path objects)
+                        p_path = Path(p)
+                        if p_path.exists():
+                            ra = unified_models.RunArtifact(
+                                run_id=getattr(run, "run_id", None),
+                                artifact_type=atype,
+                                path_or_uri=str(p_path),
+                                meta=None,
+                            )
+                            sess.add(ra)
+                            added += 1
+                        else:
+                            log.debug("Artifact file not present, skipping: %s", p_path)
+                    except Exception:
+                        log.exception("Failed to add RunArtifact entry for %s", p)
+                if added:
+                    sess.commit()
+                    # Log number of artifacts added for visibility
+                    try:
+                        cnt = (
+                            sess.query(unified_models.RunArtifact)
+                            .filter(
+                                unified_models.RunArtifact.run_id
+                                == getattr(run, "run_id", None)
+                            )
+                            .count()
+                        )
+                        log.info(
+                            "Persisted %d run artifact pointers to DB for run %s",
+                            cnt,
+                            getattr(run, "run_id", None),
+                        )
+                    except Exception:
+                        log.info(
+                            "Persisted run artifact pointers to DB for run %s",
+                            getattr(run, "run_id", None),
+                        )
+                else:
+                    sess.rollback()
+                    log.debug(
+                        "No artifact files found to persist for run %s",
+                        getattr(run, "run_id", None),
+                    )
+            except Exception:
+                try:
+                    sess.rollback()
+                except Exception:
+                    pass
+                log.exception(
+                    "Failed to persist run artifacts to DB for run %s",
+                    getattr(run, "run_id", None),
+                )
+            finally:
+                try:
+                    sess.close()
+                except Exception:
+                    pass
+    except Exception:
+        log.debug(
+            "Unified models not available for run_artifact persistence (continuing)"
+        )
+
+    # Post-run: also run exports when requested (best-effort)
+    try:
+        if rc == 0 and (resolved_plan.get("exports") or ""):
+            _run_requested_exports(resolved_plan, collection_path, symbols)
+    except Exception:
+        log.exception("Exports failed after run (continuing)")
+
+    return rc
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Main entrypoint compatible with direct module and top-level dispatch.
+
+    Behavior:
+      - If called with 'collection' as a subcommand (e.g. 'collection ...'),
+        delegate to handle_collection_run with the args after 'collection'.
+      - If called as part of a larger CLI where other args appear before 'collection',
+        locate 'collection' in argv and delegate the remainder to handle_collection_run.
+      - If no args are supplied, print a minimal help summary.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+
+    # If no arguments, show basic help
+    if not argv:
+        parser = argparse.ArgumentParser(
+            prog="unified_cli", description="Unified Quant CLI"
+        )
+        parser.add_argument(
+            "collection",
+            nargs="?",
+            help="Run against a collection (see subcommand 'collection')",
+        )
+        parser.print_help()
+        return 1
+
+    # Locate 'collection' subcommand anywhere in argv
+    try:
+        idx = int(argv.index("collection"))
+    except ValueError:
+        idx = -1
+
+    if idx >= 0:
+        # Pass everything after the 'collection' token to the dedicated handler
+        return handle_collection_run(argv[idx + 1 :])
+
+    # No recognized subcommand found
+    print("Unknown command. Supported: collection")
+    return 2
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

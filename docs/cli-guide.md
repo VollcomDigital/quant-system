@@ -1,8 +1,39 @@
 # CLI Reference
 
-Complete command-line interface reference for the Quant Trading System.
+This guide documents the CLI. It includes a short section for the current unified CLI and a preserved legacy section for older multi-subcommand commands.
 
-## Quick Start
+Note: The current entrypoint focuses on the `collection` subcommand. Use the README for up-to-date commands. Legacy examples are kept below for context.
+
+## Current (Unified) CLI
+
+```bash
+# Show help (inside Docker)
+docker compose run --rm quant python -m src.cli.unified_cli --help
+
+# Run bonds collection (1d/max, all strategies)
+docker compose run --rm -e STRATEGIES_PATH=/app/external_strategies \
+  quant python -m src.cli.unified_cli collection bonds \
+  --action direct --interval 1d --period max --strategies all --exports all
+
+# Dry run (plan only) + exports (csv, report, tradingview, ai or all)
+docker compose run --rm -e STRATEGIES_PATH=/app/external_strategies \
+  quant python -m src.cli.unified_cli collection bonds \
+  --interval 1d --period max --strategies all --dry-run --exports all
+
+Exports and naming:
+- CSV → `exports/csv/<Year>/<Quarter>/<Collection>_Collection_<Year>_<Quarter>_<Interval>.csv`
+- Reports → `exports/reports/<Year>/<Quarter>/<Collection>_Collection_<Year>_<Quarter>_<Interval>.html`
+- TV alerts → `exports/tv_alerts/<Year>/<Quarter>/<Collection>_Collection_<Year>_<Quarter>_<Interval>.md`
+- AI recos (md/html) → `exports/ai_reco/<Year>/<Quarter>/<Collection>_Collection_<Year>_<Quarter>_<Interval>.*`
+
+When multiple intervals are used, filenames prefer `1d`. Use `--interval 1d` to constrain content and filenames.
+```
+
+## Legacy CLI (Preserved)
+
+These examples refer to a previous iteration of the CLI that exposed categories like `portfolio`, `data`, `cache`, and `reports`. Prefer the section above for current usage.
+
+### Quick Start (legacy)
 
 ```bash
 # Activate environment
@@ -15,20 +46,20 @@ python -m src.cli.unified_cli portfolio list
 python -m src.cli.unified_cli portfolio test crypto --open-browser
 ```
 
-## Command Structure
+### Command Structure (legacy)
 
 ```
 python -m src.cli.unified_cli <category> <command> [options]
 ```
 
-## Portfolio Commands
+### Portfolio Commands (legacy)
 
-### List Portfolios
+#### List Portfolios
 ```bash
 python -m src.cli.unified_cli portfolio list
 ```
 
-### Test Portfolio
+#### Test Portfolio
 ```bash
 python -m src.cli.unified_cli portfolio test <name> [options]
 
@@ -39,7 +70,7 @@ Options:
   --open-browser         Auto-open results in browser
 ```
 
-### Test All Strategies and Timeframes
+#### Test All Strategies and Timeframes
 ```bash
 python -m src.cli.unified_cli portfolio test-all --symbols SYMBOL1,SYMBOL2 [options]
 
@@ -50,9 +81,9 @@ Options:
   --strategies LIST      Comma-separated strategies to test
 ```
 
-## Data Commands
+### Data Commands (legacy)
 
-### Download Data
+#### Download Data
 ```bash
 python -m src.cli.unified_cli data download --symbols AAPL,GOOGL [options]
 
@@ -63,21 +94,21 @@ Options:
   --source SOURCE        Data source (yahoo, alpha_vantage, etc.)
 ```
 
-## Cache Commands
+### Cache Commands (legacy)
 
-### Cache Statistics
+#### Cache Statistics
 ```bash
 python -m src.cli.unified_cli cache stats
 ```
 
-### Clear Cache
+#### Clear Cache
 ```bash
 python -m src.cli.unified_cli cache clear [--all] [--symbol SYMBOL]
 ```
 
-## Report Commands
+### Report Commands (legacy)
 
-### Generate Reports
+#### Generate Reports
 ```bash
 python -m src.cli.unified_cli reports generate <portfolio> [options]
 
@@ -87,14 +118,14 @@ Options:
   --output-dir DIR       Output directory
 ```
 
-### Organize Reports
+#### Organize Reports
 ```bash
 python -m src.cli.unified_cli reports organize
 ```
 
-## Examples
+### Examples (legacy)
 
-### Test Crypto Portfolio
+#### Test Crypto Portfolio
 ```bash
 # Using Sortino ratio (default - superior to Sharpe)
 python -m src.cli.unified_cli portfolio test crypto \
@@ -109,7 +140,7 @@ python -m src.cli.unified_cli portfolio test crypto \
   --period 1y
 ```
 
-### Download Forex Data
+#### Download Forex Data
 ```bash
 python -m src.cli.unified_cli data download \
   --symbols EURUSD=X,GBPUSD=X \
@@ -117,7 +148,7 @@ python -m src.cli.unified_cli data download \
   --source twelve_data
 ```
 
-### Daily Workflow
+#### Daily Workflow
 ```bash
 # Check cache status
 python -m src.cli.unified_cli cache stats
@@ -129,7 +160,7 @@ python -m src.cli.unified_cli portfolio test-all --metric sortino_ratio --period
 python -m src.cli.unified_cli reports organize
 ```
 
-## Configuration
+## Configuration (legacy)
 
 Set environment variables in `.env`:
 ```bash
@@ -139,7 +170,7 @@ DEFAULT_PERIOD=1y
 BROWSER_AUTO_OPEN=true
 ```
 
-## Help
+## Help (legacy)
 
 Get help for any command:
 ```bash

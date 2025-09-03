@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import mock_open, patch
 
-from src.utils.tradingview_alert_exporter import TradingViewAlertExporter
+from src.utils.tv_alert_exporter import TradingViewAlertExporter
 
 
 class TestTradingViewAlertExporter:
@@ -39,12 +39,12 @@ class TestTradingViewAlertExporter:
         assert year == 2023
         assert quarter == 2
 
-    @patch("src.utils.tradingview_alert_exporter.Path.mkdir")
+    @patch("src.utils.tv_alert_exporter.Path.mkdir")
     def test_organize_output_path(self, mock_mkdir):
         """Test organized output path creation."""
         exporter = TradingViewAlertExporter()
 
-        with patch("src.utils.tradingview_alert_exporter.datetime") as mock_datetime:
+        with patch("src.utils.tv_alert_exporter.datetime") as mock_datetime:
             mock_datetime.now.return_value = datetime(2023, 6, 15)
             mock_datetime.timezone.utc = datetime.now().tzinfo
 
@@ -91,7 +91,7 @@ class TestTradingViewAlertExporter:
         assert "1D" in alert
 
     @patch("builtins.open", new_callable=mock_open, read_data="<html></html>")
-    @patch("src.utils.tradingview_alert_exporter.Path.exists")
+    @patch("src.utils.tv_alert_exporter.Path.exists")
     def test_process_html_file(self, mock_exists, mock_file):
         """Test HTML file processing."""
         mock_exists.return_value = True

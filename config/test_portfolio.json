@@ -1,6 +1,0 @@
-{
-  "name": "Test Portfolio",
-  "symbols": ["TLT", "AGG"],
-  "weights": [0.5, 0.5],
-  "description": "Small test portfolio to verify the system works"
-}

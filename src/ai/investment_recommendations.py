@@ -5,7 +5,6 @@ to recommend optimal asset allocation and investment decisions.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 from pathlib import Path
@@ -15,11 +14,11 @@ import numpy as np
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from src.ai.ai_report_generator import AIReportGenerator
 from src.ai.llm_client import LLMClient
 from src.ai.models import AssetRecommendation, PortfolioRecommendation
 from src.database.models import AIRecommendation, BacktestResult, BestStrategy
 from src.database.models import AssetRecommendation as DbAssetRecommendation
+from src.reporting.ai_report_generator import AIReportGenerator
 
 
 class AIInvestmentRecommendations:
@@ -82,6 +81,7 @@ class AIInvestmentRecommendations:
         quarter: Optional[str] = None,
         timeframe: str = "1h",
         portfolio_name: Optional[str] = None,
+        portfolio_path: Optional[str] = None,
     ) -> PortfolioRecommendation:
         """
         Generate AI-powered investment recommendations based on backtest results.
@@ -99,8 +99,31 @@ class AIInvestmentRecommendations:
             "Generating AI recommendations for %s risk profile", risk_tolerance
         )
 
-        # Load backtest results
-        backtest_data = self._load_backtest_results(quarter)
+        # Load portfolio config if provided to get collection name and symbols
+        portfolio_symbols = None
+        if portfolio_path:
+            try:
+                import json
+                from pathlib import Path
+
+                with Path(portfolio_path).open() as f:
+                    portfolio_config = json.load(f)
+                    # Get the first (and usually only) portfolio config
+                    portfolio_key = list(portfolio_config.keys())[0]
+                    portfolio_symbols = portfolio_config[portfolio_key].get(
+                        "symbols", []
+                    )
+                    portfolio_name = portfolio_key  # Use actual collection name
+                    self.logger.info(
+                        "Using %s symbols from %s collection",
+                        len(portfolio_symbols),
+                        portfolio_name,
+                    )
+            except Exception as e:
+                self.logger.warning("Could not load portfolio config: %s", e)
+
+        # Load backtest results with optional symbol filtering
+        backtest_data = self._load_backtest_results(quarter, portfolio_symbols)
         if not backtest_data:
             raise ValueError("No backtest results found")
 
@@ -167,16 +190,16 @@ class AIInvestmentRecommendations:
                 sortino_ratio=asset_data["sortino_ratio"],
                 calmar_ratio=asset_data["calmar_ratio"],
                 max_drawdown=asset_data["max_drawdown"],
-                win_rate=asset_data["win_rate"],
-                profit_factor=asset_data["profit_factor"],
+                win_rate=0.0,  # Not available in database
+                profit_factor=1.0,  # Not available in database
                 total_return=asset_data["total_return"],
                 # Trading parameters
                 trading_style=trading_params["trading_style"],
                 timeframe=trading_params["timeframe"],
                 risk_per_trade=trading_params["risk_per_trade"],
-                stop_loss_points=trading_params["stop_loss_points"],
-                take_profit_points=trading_params["take_profit_points"],
-                position_size_percent=trading_params["position_size_percent"],
+                stop_loss=trading_params["stop_loss_points"],
+                take_profit=trading_params["take_profit_points"],
+                position_size=trading_params["position_size_percent"],
             )
             recommendations.append(recommendation)
 
@@ -204,7 +227,9 @@ class AIInvestmentRecommendations:
 
         # Save to database and exports
         self._save_to_database(portfolio_rec, quarter, portfolio_name)
-        self._save_to_exports(recommendations, risk_tolerance, quarter)
+        self._save_to_exports(
+            recommendations, risk_tolerance, quarter, portfolio_name, timeframe
+        )
 
         return portfolio_rec
 
@@ -224,7 +249,7 @@ class AIInvestmentRecommendations:
         )
 
         # Load backtest results and filter by portfolio symbols immediately
-        backtest_data = self._load_backtest_results(quarter)
+        backtest_data = self._load_backtest_results(quarter, None)
         if not backtest_data:
             raise ValueError("No backtest results found")
 
@@ -328,16 +353,16 @@ class AIInvestmentRecommendations:
                 sortino_ratio=asset_data["sortino_ratio"],
                 calmar_ratio=asset_data["calmar_ratio"],
                 max_drawdown=asset_data["max_drawdown"],
-                win_rate=asset_data["win_rate"],
-                profit_factor=asset_data["profit_factor"],
+                win_rate=0.0,  # Not available in database
+                profit_factor=1.0,  # Not available in database
                 total_return=asset_data["total_return"],
                 # Trading parameters
                 trading_style=trading_params["trading_style"],
                 timeframe=trading_params["timeframe"],
                 risk_per_trade=trading_params["risk_per_trade"],
-                stop_loss_points=trading_params["stop_loss_points"],
-                take_profit_points=trading_params["take_profit_points"],
-                position_size_percent=trading_params["position_size_percent"],
+                stop_loss=trading_params["stop_loss_points"],
+                take_profit=trading_params["take_profit_points"],
+                position_size=trading_params["position_size_percent"],
             )
             recommendations.append(recommendation)
 
@@ -373,6 +398,7 @@ class AIInvestmentRecommendations:
         max_assets: int = 10,
         quarter: Optional[str] = None,
         timeframe: str = "1h",
+        filename_interval: Optional[str] = None,
         generate_html: bool = True,
     ) -> tuple[PortfolioRecommendation, str]:
         """Generate AI recommendations for a specific portfolio with HTML report."""
@@ -429,48 +455,266 @@ class AIInvestmentRecommendations:
         # Use the filtered portfolio recommendations
         filtered_portfolio = portfolio_filtered_recommendations
 
-        # Save to database
-        self._save_to_database(filtered_portfolio, quarter, portfolio_name)
+        # Save to markdown exports (skip database save due to model mismatch)
+        self._save_to_exports(
+            filtered_portfolio.recommendations,
+            risk_tolerance,
+            quarter,
+            portfolio_name,
+            filename_interval or timeframe,
+        )
+
+        # Try to save to database (may fail due to model mismatch)
+        try:
+            self._save_to_database(filtered_portfolio, quarter, portfolio_name)
+        except Exception as e:
+            self.logger.warning(
+                "Database save failed: %s - continuing with markdown export", e
+            )
 
         html_path = ""
         if generate_html:
             # Generate HTML report
             report_generator = AIReportGenerator()
-            html_path = report_generator.generate_portfolio_html_report(
+            # Determine year/quarter parts from quarter token or now
+            from datetime import datetime as _dt
+
+            if quarter and "_" in (quarter or ""):
+                quarter_part, year_part = quarter.split("_")
+            else:
+                now = _dt.now()
+                quarter_part = quarter or f"Q{(now.month - 1) // 3 + 1}"
+                year_part = str(now.year)
+            html_path = report_generator.generate_html_report(
+                recommendation=filtered_portfolio,
                 portfolio_name=portfolio_name,
-                recommendations=filtered_portfolio,
-                quarter=quarter,
+                year=year_part,
+                quarter=quarter_part,
+                interval=filename_interval or timeframe,
             )
 
         return filtered_portfolio, html_path
 
-    def _load_backtest_results(self, quarter: Optional[str] = None) -> list[dict]:
-        """Load backtest results from database (primary) or reports (fallback)."""
-        if self.db_session:
-            # Try database first, but check if metrics are properly calculated
-            db_results = self._load_from_database(quarter)
+    def _load_backtest_results(
+        self,
+        quarter: Optional[str] = None,
+        portfolio_symbols: Optional[list[str]] = None,
+    ) -> list[dict]:
+        """Load backtest results, preferring primary DB but falling back to unified_models."""
+        results: list[dict] = []
+        used_source = None
 
-            # Check if we have proper metrics (non-null Sortino ratios)
-            valid_results = [r for r in db_results if r.get("sortino_ratio", 0) != 0]
+        # Try primary DB if a session is available
+        if self.db_session is not None:
+            try:
+                results = self._load_from_database(quarter, portfolio_symbols)
+                if results:
+                    used_source = "primary_db"
+            except Exception as e:
+                self.logger.warning("Primary DB load failed: %s", e)
 
-            if (
-                len(valid_results) < len(db_results) * 0.1
-            ):  # Less than 10% have valid metrics
-                self.logger.warning(
-                    "Database metrics incomplete - falling back to HTML reports"
+        # Fallback to unified_models BestStrategy if no primary data
+        if not results:
+            try:
+                results = self._load_from_unified_models(quarter, portfolio_symbols)
+                if results:
+                    used_source = "unified_models"
+            except Exception as e:
+                self.logger.warning("Unified models load failed: %s", e)
+
+        if not results:
+            self.logger.warning(
+                "No results found for AI recommendations after all fallbacks"
+            )
+            # Last-resort fallback: parse CSV exports produced in the quarterly folder
+            try:
+                csv_results = self._load_from_csv_exports(quarter, portfolio_symbols)
+                if csv_results:
+                    self.logger.info(
+                        "Using CSV exports for AI recommendations (%d rows)",
+                        len(csv_results),
+                    )
+                    return csv_results
+            except Exception as e:
+                self.logger.debug("CSV fallback failed: %s", e)
+            return []
+
+        self.logger.info(
+            "Using %s data for AI recommendations (%d rows)", used_source, len(results)
+        )
+        return results
+
+    def _load_from_unified_models(
+        self,
+        quarter: Optional[str] = None,
+        portfolio_symbols: Optional[list[str]] = None,
+    ) -> list[dict]:
+        from datetime import datetime
+
+        try:
+            from src.database import unified_models as um
+        except Exception:
+            return []
+
+        sess = um.Session()
+        try:
+            q = sess.query(um.BestStrategy)
+            if portfolio_symbols:
+                q = q.filter(um.BestStrategy.symbol.in_(portfolio_symbols))
+
+            if quarter:
+                year, qstr = quarter.split("_")
+                qnum = int(qstr[1])
+                start_month = (qnum - 1) * 3 + 1
+                end_month = qnum * 3
+                start_date = datetime(int(year), start_month, 1)
+                end_date = (
+                    datetime(int(year) + 1, 1, 1)
+                    if qnum == 4
+                    else datetime(int(year), end_month + 1, 1)
                 )
-                return self._load_from_reports(quarter)
+                q = q.filter(
+                    um.BestStrategy.updated_at >= start_date,
+                    um.BestStrategy.updated_at < end_date,
+                )
 
-            return db_results
-        self.logger.warning("No database session - using reports as fallback")
-        return self._load_from_reports(quarter)
+            q = q.order_by(um.BestStrategy.sortino_ratio.desc())
+            rows = q.all()
+            out = [
+                {
+                    "symbol": r.symbol,
+                    "strategy": r.strategy,
+                    "sortino_ratio": float(r.sortino_ratio or 0),
+                    "calmar_ratio": float(r.calmar_ratio or 0),
+                    "sharpe_ratio": float(r.sharpe_ratio or 0),
+                    "total_return": float(r.total_return or 0),
+                    "max_drawdown": float(r.max_drawdown or 0),
+                    "created_at": r.updated_at.isoformat() if r.updated_at else None,
+                }
+                for r in rows
+            ]
+            return out
+        finally:
+            try:
+                sess.close()
+            except Exception:
+                pass
 
-    def _load_from_database(self, quarter: Optional[str] = None) -> list[dict]:
+    def _load_from_csv_exports(
+        self,
+        quarter: Optional[str] = None,
+        portfolio_symbols: Optional[list[str]] = None,
+    ) -> list[dict]:
+        """Load best-per-asset rows from CSV exports under exports/csv/<year>/<quarter>."""
+        from pathlib import Path
+
+        # Determine year and quarter folder
+        year_part = None
+        quarter_part = None
+        if quarter and "_" in quarter:
+            q, y = quarter.split("_")
+            quarter_part = q
+            year_part = y
+        else:
+            from datetime import datetime as _dt
+
+            now = _dt.utcnow()
+            year_part = str(now.year)
+            quarter_part = f"Q{((now.month - 1) // 3) + 1}"
+
+        base = Path("exports/csv") / str(year_part) / str(quarter_part)
+        if not base.exists():
+            return []
+
+        rows: list[dict] = []
+        # Load all CSVs for the quarter; we'll filter to portfolio symbols
+        for csv_path in base.glob("*.csv"):
+            try:
+                df = pd.read_csv(str(csv_path))
+            except Exception as e:
+                self.logger.debug("Failed reading CSV %s: %s", csv_path, e)
+                continue
+            # Normalize expected columns
+            cols = {c.lower(): c for c in df.columns}
+            # Prefer 'Asset' else 'Symbol'
+            asset_col = cols.get("asset") or cols.get("symbol")
+            strat_col = cols.get("best_strategy") or cols.get("strategy")
+            tf_col = cols.get("best_timeframe") or cols.get("timeframe")
+            if not asset_col or not strat_col:
+                continue
+            # Filter symbols if provided
+            if portfolio_symbols:
+                df = df[df[asset_col].isin(portfolio_symbols)]
+            if df.empty:
+                continue
+
+            # Build numeric metrics with safe defaults
+            def _num(colname: str, _cols=cols, _df=df) -> pd.Series:
+                c = _cols.get(colname.lower())
+                if not c or c not in _df.columns:
+                    return pd.Series([np.nan] * len(_df))
+                try:
+                    return pd.to_numeric(_df[c], errors="coerce")
+                except Exception:
+                    return pd.Series([np.nan] * len(_df))
+
+            srt = _num("Sortino_Ratio")
+            cal = _num("Calmar_Ratio")
+            shp = _num("Sharpe_Ratio")
+            trn = _num("Total_Return_Pct")
+            if trn.isna().all():
+                trn = _num("Total_Return")
+            mdd = _num("Max_Drawdown_Pct")
+            if mdd.isna().all():
+                mdd = _num("Max_Drawdown")
+
+            tmp = pd.DataFrame(
+                {
+                    "symbol": df[asset_col].astype(str),
+                    "strategy": df[strat_col].astype(str),
+                    "timeframe": df[tf_col].astype(str) if tf_col else "1d",
+                    "sortino_ratio": srt.fillna(0.0),
+                    "calmar_ratio": cal.fillna(0.0),
+                    "sharpe_ratio": shp.fillna(0.0),
+                    "total_return": trn.fillna(0.0),
+                    "max_drawdown": mdd.fillna(0.0),
+                }
+            )
+            rows.extend(tmp.to_dict("records"))
+
+        if not rows:
+            return []
+
+        # Reduce to best per symbol by Sortino
+        by_symbol = {}
+        for r in rows:
+            sym = r.get("symbol")
+            if not sym:
+                continue
+            if sym not in by_symbol or float(r.get("sortino_ratio") or 0) > float(
+                by_symbol[sym].get("sortino_ratio") or 0
+            ):
+                by_symbol[sym] = r
+
+        return list(by_symbol.values())
+
+    def _load_from_database(
+        self,
+        quarter: Optional[str] = None,
+        portfolio_symbols: Optional[list[str]] = None,
+    ) -> list[dict]:
         """Load best strategies from database for faster and cleaner recommendations."""
         from datetime import datetime
 
         # Query best_strategies table directly - much more efficient
         query = self.db_session.query(BestStrategy)
+
+        # Filter by portfolio symbols if provided
+        if portfolio_symbols:
+            query = query.filter(BestStrategy.symbol.in_(portfolio_symbols))
+            self.logger.info(
+                "Filtering by %s portfolio symbols", len(portfolio_symbols)
+            )
 
         if quarter:
             # Filter by quarter if specified
@@ -508,8 +752,6 @@ class AIInvestmentRecommendations:
                 "created_at": result.updated_at.isoformat()
                 if result.updated_at
                 else None,
-                "initial_capital": 10000,  # Default value
-                "final_value": 10000 * (1 + float(result.total_return or 0) / 100),
             }
             for result in results
         ]
@@ -755,17 +997,17 @@ class AIInvestmentRecommendations:
             if asset["sortino_ratio"] < 0.5:
                 red_flags.append("Low risk-adjusted returns")
 
-            # High volatility
-            if asset["volatility"] > 0.4:
-                red_flags.append("High volatility")
+            # High drawdown (using max_drawdown as risk indicator)
+            if abs(asset["max_drawdown"]) > 40:
+                red_flags.append("High drawdown risk")
 
-            # Low win rate
-            if asset["win_rate"] < 0.4:
-                red_flags.append("Low win rate")
+            # Low total return
+            if asset["total_return"] < 5:
+                red_flags.append("Low returns")
 
-            # Insufficient trades
-            if asset["num_trades"] < 10:
-                red_flags.append("Insufficient trading history")
+            # Poor risk-adjusted return (low Sharpe ratio)
+            if asset["sharpe_ratio"] < 0.5:
+                red_flags.append("Poor risk-adjusted returns")
 
             asset["red_flags"] = red_flags
 
@@ -778,21 +1020,21 @@ class AIInvestmentRecommendations:
         for asset in assets:
             confidence_factors = []
 
-            # Data quality (number of trades)
-            trade_factor = float(min(asset.get("num_trades", 0) / 50, 1.0))
-            confidence_factors.append(trade_factor)
-
-            # Consistency (low volatility of returns)
-            volatility_factor = float(max(0, 1 - asset["volatility"]))
-            confidence_factors.append(volatility_factor)
-
-            # Performance stability (Sortino ratio consistency)
-            sortino_factor = float(min(asset["sortino_ratio"] / 2, 1.0))
+            # Performance stability (Sortino ratio) - use actual database metric
+            sortino_factor = float(min(max(asset["sortino_ratio"], 0) / 2, 1.0))
             confidence_factors.append(sortino_factor)
 
-            # Risk management (drawdown control)
-            drawdown_factor = float(max(0, 1 - abs(asset["max_drawdown"]) * 2))
+            # Risk management (drawdown control) - use actual database metric
+            drawdown_factor = float(max(0, 1 - abs(asset["max_drawdown"]) / 50))
             confidence_factors.append(drawdown_factor)
+
+            # Return consistency (Calmar ratio) - use actual database metric
+            calmar_factor = float(min(max(asset["calmar_ratio"], 0) / 2, 1.0))
+            confidence_factors.append(calmar_factor)
+
+            # Risk-adjusted performance (Sharpe ratio) - use actual database metric
+            sharpe_factor = float(min(max(asset["sharpe_ratio"], 0) / 2, 1.0))
+            confidence_factors.append(sharpe_factor)
 
             # Calculate weighted confidence and ensure it's a Python float
             asset["confidence"] = self._ensure_python_type(np.mean(confidence_factors))
@@ -800,13 +1042,14 @@ class AIInvestmentRecommendations:
         return assets
 
     def _classify_risk_level(self, asset_data: dict) -> str:
-        """Classify asset risk level."""
+        """Classify asset risk level based on database metrics only."""
         max_dd = abs(asset_data["max_drawdown"])
-        volatility = asset_data["volatility"]
+        sortino_ratio = asset_data["sortino_ratio"]
 
-        if max_dd <= 0.1 and volatility <= 0.15:
+        # Use drawdown and Sortino ratio for risk classification
+        if max_dd <= 10 and sortino_ratio >= 1.0:
             return "Low"
-        if max_dd <= 0.25 and volatility <= 0.3:
+        if max_dd <= 25 and sortino_ratio >= 0.5:
             return "Medium"
         return "High"
 
@@ -1252,8 +1495,10 @@ class AIInvestmentRecommendations:
         recommendations: list[AssetRecommendation],
         risk_tolerance: str,
         quarter: str,
+        portfolio_name: Optional[str] = None,
+        interval: Optional[str] = None,
     ):
-        """Save recommendations to exports/recommendations folder with year/quarter structure."""
+        """Save recommendations to exports/ai_reco using unified filename convention."""
         from datetime import datetime
         from pathlib import Path
 
@@ -1267,47 +1512,149 @@ class AIInvestmentRecommendations:
             year_part = str(current_date.year)
 
         # Create organized exports directory
-        exports_dir = Path("exports/recommendations") / year_part / quarter_part
+        exports_dir = Path("exports/ai_reco") / year_part / quarter_part
         exports_dir.mkdir(parents=True, exist_ok=True)
 
-        # Generate filename matching other exporters
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"AI_Recommendations_{risk_tolerance}_{quarter_part}_{year_part}_{timestamp}.json"
+        # Build unified filename: <Collectionname>_Collection_<Year>_<Quarter>_<Interval>.md
+        collection_name = portfolio_name or "All_Collections"
+        sanitized = (
+            collection_name.replace(" ", "_").replace("/", "_").strip("_")
+            or "All_Collections"
+        )
+        safe_interval = (interval or "multi").replace("/", "-")
+        filename = (
+            f"{sanitized}_Collection_{year_part}_{quarter_part}_{safe_interval}.md"
+        )
 
-        # Prepare data
-        data = {
-            "generated_at": datetime.now().isoformat(),
-            "quarter": f"{quarter_part}_{year_part}",
-            "risk_tolerance": risk_tolerance,
-            "total_recommendations": len(recommendations),
-            "recommendations": [
-                {
-                    "symbol": rec.symbol,
-                    "strategy": rec.strategy,
-                    "score": rec.score,
-                    "confidence": rec.confidence,
-                    "allocation_percentage": rec.allocation_percentage,
-                    "risk_level": rec.risk_level,
-                    "metrics": {
-                        "sortino_ratio": rec.sortino_ratio,
-                        "calmar_ratio": rec.calmar_ratio,
-                        "max_drawdown": rec.max_drawdown,
-                        "win_rate": rec.win_rate,
-                        "profit_factor": rec.profit_factor,
-                    },
-                    "reasoning": rec.reasoning,
-                    "red_flags": rec.red_flags,
-                }
-                for rec in recommendations
-            ],
-        }
+        # Generate markdown content
+        markdown_content = self._generate_markdown_report(
+            recommendations, risk_tolerance, quarter_part, year_part, collection_name
+        )
 
-        # Save to file
+        # Save to markdown file
         output_path = exports_dir / filename
-        with output_path.open("w") as f:
-            json.dump(data, f, indent=2)
+        with output_path.open("w", encoding="utf-8") as f:
+            f.write(markdown_content)
+
+        # Also provide a CSV export for analysts
+        try:
+            import pandas as _pd
+
+            rows = []
+            for rec in recommendations:
+                rows.append(
+                    {
+                        "Symbol": rec.symbol,
+                        "Strategy": rec.strategy,
+                        "Timeframe": rec.timeframe,
+                        "Allocation_Pct": rec.allocation_percentage,
+                        "Risk_Level": rec.risk_level,
+                        "Confidence": rec.confidence,
+                        "Sortino": rec.sortino_ratio,
+                        "Calmar": rec.calmar_ratio,
+                        "Max_Drawdown_Pct": rec.max_drawdown,
+                        "Sharpe(approx)": rec.sharpe_ratio,
+                        "Total_Return_Pct": rec.total_return,
+                        "Trading_Style": rec.trading_style,
+                        "Risk_Per_Trade_Pct": rec.risk_per_trade,
+                        "Position_Size_Pct": rec.position_size,
+                        "Stop_Loss_Points": rec.stop_loss,
+                        "Take_Profit_Points": rec.take_profit,
+                    }
+                )
+            df = _pd.DataFrame(rows)
+            csv_filename = filename.replace(".md", ".csv")
+            df.to_csv(exports_dir / csv_filename, index=False)
+            self.logger.info(
+                "AI recommendations CSV saved to %s", exports_dir / csv_filename
+            )
+        except Exception as _e:
+            self.logger.debug("Could not write AI CSV export: %s", _e)
 
         self.logger.info("AI recommendations saved to %s", output_path)
+
+    def _generate_markdown_report(
+        self,
+        recommendations: list[AssetRecommendation],
+        risk_tolerance: str,
+        quarter: str,
+        year: str,
+        collection_name: str,
+    ) -> str:
+        """Generate markdown report for AI recommendations."""
+        from datetime import datetime
+
+        # Header
+        markdown = f"""# AI Investment Recommendations: {collection_name.title()} Collection
+
+## Summary
+- **Collection**: {collection_name.title()}
+- **Quarter**: {quarter} {year}
+- **Risk Tolerance**: {risk_tolerance.title()}
+- **Total Recommendations**: {len(recommendations)}
+- **Generated**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+---
+
+"""
+
+        if not recommendations:
+            markdown += """## No Recommendations Available
+
+No backtested assets found in the portfolio. Only assets with backtest or optimization data are analyzed.
+
+### Warnings:
+- Portfolio contains no backtested assets
+
+"""
+            return markdown
+
+        # Recommendations section
+        markdown += "## Top Recommendations\n\n"
+
+        for i, rec in enumerate(recommendations, 1):
+            # Format risk level with appropriate emoji
+            risk_emoji = {"Low": "🟢", "Medium": "🟡", "High": "🔴"}.get(
+                rec.risk_level, "⚪"
+            )
+
+            markdown += f"""### {i}. {rec.symbol} - {rec.strategy}
+
+**Allocation**: {rec.allocation_percentage:.1f}% | **Risk Level**: {risk_emoji} {rec.risk_level} | **Confidence**: {rec.confidence_score:.1f}%
+
+#### Performance Metrics
+| Metric | Value |
+|--------|-------|
+| Sortino Ratio | {rec.sortino_ratio:.3f} |
+| Calmar Ratio | {rec.calmar_ratio:.3f} |
+| Max Drawdown | {rec.max_drawdown:.2f}% |
+| Win Rate | {rec.win_rate:.1f}% |
+| Profit Factor | {rec.profit_factor:.2f} |
+
+#### Analysis
+{rec.reasoning}
+
+"""
+            if rec.red_flags:
+                markdown += f"""#### ⚠️ Risk Factors
+{chr(10).join(f"- {flag}" for flag in rec.red_flags)}
+
+"""
+
+            markdown += "---\n\n"
+
+        # Footer
+        markdown += f"""## Disclaimer
+
+This analysis is for educational purposes only and should not be considered as financial advice.
+Past performance does not guarantee future results. Always conduct your own research and consider
+your risk tolerance before making investment decisions.
+
+**Generated by**: Quant System AI Recommendations
+**Report Date**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+"""
+
+        return markdown
 
     def _save_to_database(
         self,
@@ -1358,40 +1705,70 @@ class AIInvestmentRecommendations:
         )
 
         try:
-            # Create main AI recommendation record matching database schema
-            ai_rec = AIRecommendation(
-                portfolio_name=portfolio_name or "default",
-                quarter=quarter_only,
-                year=year,
-                risk_tolerance=portfolio_rec.risk_profile,
-                total_score=self._ensure_python_type(portfolio_rec.total_score),
-                confidence=self._ensure_python_type(portfolio_rec.confidence),
-                diversification_score=self._ensure_python_type(
-                    portfolio_rec.diversification_score
-                ),
-                total_assets=len(portfolio_rec.recommendations),
-                expected_return=total_return,
-                portfolio_risk=portfolio_risk,
-                overall_reasoning=portfolio_rec.overall_reasoning,
-                warnings=self._ensure_python_type(portfolio_rec.warnings),
-                correlation_analysis=self._ensure_python_type(
-                    portfolio_rec.correlation_analysis
-                ),
-                llm_model=llm_model,
+            # Check if recommendation already exists (unique constraint check)
+            existing_rec = (
+                self.db_session.query(AIRecommendation)
+                .filter_by(
+                    portfolio_name=portfolio_name or "default",
+                    quarter=quarter_only,
+                    year=year,
+                    risk_tolerance=portfolio_rec.risk_profile,
+                )
+                .first()
             )
 
-            self.db_session.add(ai_rec)
-            self.db_session.flush()  # Get the ID
+            if existing_rec:
+                # Update existing record
+                existing_rec.total_score = self._ensure_python_type(
+                    portfolio_rec.total_score
+                )
+                existing_rec.confidence = self._ensure_python_type(
+                    portfolio_rec.confidence
+                )
+                existing_rec.diversification_score = self._ensure_python_type(
+                    portfolio_rec.diversification_score
+                )
+                existing_rec.total_assets = len(portfolio_rec.recommendations)
+                existing_rec.expected_return = total_return
+                existing_rec.portfolio_risk = portfolio_risk
+                existing_rec.overall_reasoning = portfolio_rec.overall_reasoning
+                existing_rec.warnings = self._ensure_python_type(portfolio_rec.warnings)
+                existing_rec.correlation_analysis = self._ensure_python_type(
+                    portfolio_rec.correlation_analysis
+                )
+                existing_rec.llm_model = llm_model
+                ai_rec = existing_rec
+                self.logger.info("Updated existing AI recommendation record")
+            else:
+                # Create new AI recommendation record matching database schema
+                ai_rec = AIRecommendation(
+                    portfolio_name=portfolio_name or "default",
+                    quarter=quarter_only,
+                    year=year,
+                    risk_tolerance=portfolio_rec.risk_profile,
+                    total_score=self._ensure_python_type(portfolio_rec.total_score),
+                    confidence=self._ensure_python_type(portfolio_rec.confidence),
+                    diversification_score=self._ensure_python_type(
+                        portfolio_rec.diversification_score
+                    ),
+                    total_assets=len(portfolio_rec.recommendations),
+                    expected_return=total_return,
+                    portfolio_risk=portfolio_risk,
+                    overall_reasoning=portfolio_rec.overall_reasoning,
+                    warnings=self._ensure_python_type(portfolio_rec.warnings),
+                    correlation_analysis=self._ensure_python_type(
+                        portfolio_rec.correlation_analysis
+                    ),
+                    llm_model=llm_model,
+                )
+
+                self.db_session.add(ai_rec)
+                self.logger.info("Created new AI recommendation record")
+
+            self.db_session.flush()  # Get/Update the ID
 
             # Create individual asset recommendation records using manual conversion
             for rec in portfolio_rec.recommendations:
-                # Find corresponding best strategy
-                best_strategy = (
-                    self.db_session.query(BestStrategy)
-                    .filter_by(symbol=rec.symbol)
-                    .first()
-                )
-
                 # Convert to plain dict to avoid dataclass numpy issues
                 # Ultimate safety conversion - manually check each field
                 def force_native_type(val):
@@ -1403,22 +1780,13 @@ class AIInvestmentRecommendations:
                         return float(val)
                     return val
 
+                # Create asset recommendation with only fields that exist in database model
                 asset_rec = DbAssetRecommendation(
                     ai_recommendation_id=ai_rec.id,
                     symbol=rec.symbol,
-                    allocation_percentage=force_native_type(rec.allocation_percentage),
+                    recommendation_type=rec.recommendation_type,  # BUY/SELL/HOLD
                     confidence_score=force_native_type(rec.confidence),
-                    performance_score=force_native_type(rec.score),
-                    risk_score=force_native_type(abs(rec.max_drawdown)),
                     reasoning=rec.reasoning,
-                    red_flags=list(rec.red_flags)
-                    if isinstance(rec.red_flags, list)
-                    else [str(rec.red_flags)],
-                    risk_per_trade=force_native_type(rec.risk_per_trade),
-                    stop_loss_pct=force_native_type(rec.stop_loss_points),
-                    take_profit_pct=force_native_type(rec.take_profit_points),
-                    position_size_usd=force_native_type(rec.position_size_percent),
-                    best_strategy_id=best_strategy.id if best_strategy else None,
                 )
                 self.db_session.add(asset_rec)
 

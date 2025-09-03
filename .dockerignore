@@ -69,6 +69,11 @@ coverage.xml
 .mypy_cache/
 .ruff_cache/
 
+# Build-context trimming (not needed inside the image)
+artifacts/
+quant-strategies/
+tests/
+
 # Temporary files
 *.tmp
 *.temp

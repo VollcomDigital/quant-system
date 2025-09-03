@@ -1,0 +1,13 @@
+{
+  "bonds_core": {
+    "name": "Bonds Core (Liquid ETFs)",
+    "asset_type": "bond",
+    "symbols": [
+      "AGG", "BND", "TLT", "IEF", "SHY",
+      "LQD", "HYG", "JNK", "EMB", "TIP",
+      "IEI", "VGIT", "GOVT", "MUB", "VCSH"
+    ],
+    "initial_capital": 10000,
+    "commission": 0.001
+  }
+}

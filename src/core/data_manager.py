@@ -6,6 +6,7 @@ Supports multiple data sources including Bybit for crypto futures.
 from __future__ import annotations
 
 import logging
+import os
 import time
 import warnings
 from abc import ABC, abstractmethod
@@ -200,12 +201,16 @@ class YahooFinanceSource(DataSource):
         if symbol in forex_pairs:
             return f"{symbol}=X"
 
-        # Crypto format - Yahoo uses dash format
+        # Crypto format - Yahoo uses dash format and typically USD quote
         if asset_type == "crypto" or any(
             crypto in symbol.upper() for crypto in ["BTC", "ETH", "ADA", "SOL"]
         ):
-            if "USD" in symbol and "-" not in symbol:
-                return symbol.replace("USD", "-USD")
+            up = symbol.upper()
+            if "USDT" in up and "-" not in up:
+                # Map USDT quote to Yahoo's USD convention, e.g., IMXUSDT -> IMX-USD
+                return up.replace("USDT", "-USD")
+            if "USD" in up and "-" not in up:
+                return up.replace("USD", "-USD")
 
         return symbol
 
@@ -217,7 +222,11 @@ class YahooFinanceSource(DataSource):
         interval: str = "1d",
         **kwargs,
     ) -> Optional[pd.DataFrame]:
-        """Fetch data from Yahoo Finance."""
+        """Fetch data from Yahoo Finance.
+
+        Supports a 'period' kwarg (e.g. 'max', '1y') which will be preferred over
+        start/end if provided. This mirrors yfinance.Ticker.history semantics.
+        """
         import yfinance as yf
 
         self._rate_limit()
@@ -226,11 +235,18 @@ class YahooFinanceSource(DataSource):
         asset_type = kwargs.get("asset_type")
         transformed_symbol = self.transform_symbol(symbol, asset_type)
 
+        # Allow callers to pass 'period' to request the provider's period-based download
+        period = kwargs.get("period") or kwargs.get("period_mode") or None
+
         try:
             ticker = yf.Ticker(transformed_symbol)
-            data = ticker.history(start=start_date, end=end_date, interval=interval)
+            if period:
+                # Use period-based download (yfinance handles interval constraints)
+                data = ticker.history(period=period, interval=interval)
+            else:
+                data = ticker.history(start=start_date, end=end_date, interval=interval)
 
-            if data.empty:
+            if data is None or data.empty:
                 return None
 
             return self.standardize_data(data)
@@ -247,32 +263,55 @@ class YahooFinanceSource(DataSource):
         interval: str = "1d",
         **kwargs,
     ) -> Dict[str, pd.DataFrame]:
-        """Fetch batch data from Yahoo Finance."""
+        """Fetch batch data from Yahoo Finance.
+
+        If a 'period' kwarg is provided it will be used instead of start/end
+        (matches yfinance.download semantics).
+        """
         import yfinance as yf
 
         self._rate_limit()
 
+        period = kwargs.get("period") or kwargs.get("period_mode") or None
+
         try:
-            data = yf.download(
-                symbols,
-                start=start_date,
-                end=end_date,
-                interval=interval,
-                group_by="ticker",
-                progress=False,
-            )
+            if period:
+                data = yf.download(
+                    symbols,
+                    period=period,
+                    interval=interval,
+                    group_by="ticker",
+                    progress=False,
+                )
+            else:
+                data = yf.download(
+                    symbols,
+                    start=start_date,
+                    end=end_date,
+                    interval=interval,
+                    group_by="ticker",
+                    progress=False,
+                )
 
             result = {}
             if len(symbols) == 1:
                 symbol = symbols[0]
-                if not data.empty:
+                if not getattr(data, "empty", False):
                     result[symbol] = self.standardize_data(data)
             else:
+                # yfinance.download returns a DataFrame with a top-level column for each ticker
                 for symbol in symbols:
-                    if symbol in data.columns.levels[0]:
-                        symbol_data = data[symbol]
-                        if not symbol_data.empty:
-                            result[symbol] = self.standardize_data(symbol_data)
+                    try:
+                        if symbol in data.columns.levels[0]:
+                            symbol_data = data[symbol]
+                            if not getattr(symbol_data, "empty", False):
+                                result[symbol] = self.standardize_data(symbol_data)
+                    except Exception as exc:
+                        # some downloads return a flat DataFrame for single-column cases; ignore failures per-symbol
+                        self.logger.debug(
+                            "Batch fetch postprocess failed for %s: %s", symbol, exc
+                        )
+                        continue
 
             return result
 
@@ -351,9 +390,25 @@ class BybitSource(DataSource):
                 self.logger.error("Unsupported interval: %s", interval)
                 return None
 
-            # Convert dates to timestamps
-            start_ts = int(pd.to_datetime(start_date).timestamp() * 1000)
-            end_ts = int(pd.to_datetime(end_date).timestamp() * 1000)
+            # Convert dates to timestamps (robust to strings and tokens)
+            start_dt = pd.to_datetime(start_date, errors="coerce")
+            end_dt = pd.to_datetime(end_date, errors="coerce")
+            if pd.isna(end_dt):
+                end_dt = pd.Timestamp.utcnow()
+            if pd.isna(start_dt):
+                # Default window based on interval
+                try:
+                    if interval in {"1m", "3m", "5m", "15m", "30m"}:
+                        start_dt = end_dt - pd.Timedelta(days=7)
+                    elif interval in {"1h", "2h", "4h", "6h", "12h"}:
+                        start_dt = end_dt - pd.Timedelta(days=90)
+                    else:
+                        start_dt = end_dt - pd.Timedelta(days=365)
+                except Exception:
+                    start_dt = end_dt - pd.Timedelta(days=90)
+
+            start_ts = int(start_dt.timestamp() * 1000)
+            end_ts = int(end_dt.timestamp() * 1000)
 
             # Fetch kline data
             url = f"{self.base_url}/v5/market/kline"
@@ -689,7 +744,7 @@ class UnifiedDataManager:
     def add_source(self, source: DataSource):
         """Add a data source."""
         self.sources[source.config.name] = source
-        self.logger.info("Added data source: %s", source.config.name)
+        self.logger.debug("Added data source: %s", source.config.name)
 
     def get_data(
         self,
@@ -713,14 +768,108 @@ class UnifiedDataManager:
             asset_type: Asset type hint ('crypto', 'stocks', 'forex', etc.)
             **kwargs: Additional parameters for specific sources
         """
-        # Check cache first
-        if use_cache:
-            cached_data = self.cache_manager.get_data(
+        # If a native provider period was requested (e.g., period='max'), skip cache reads to ensure
+        # we fetch the full available history from the source. We'll still write-through to cache below.
+        period_requested = kwargs.get("period") or kwargs.get("period_mode")
+
+        # Check cache first (only when no explicit provider period was requested)
+        if use_cache and not period_requested:
+            # Legacy fast-path: return any single cached hit immediately (maintains test expectations)
+            legacy_cached = self.cache_manager.get_data(
                 symbol, start_date, end_date, interval
             )
-            if cached_data is not None:
-                self.logger.debug("Cache hit for %s", symbol)
-                return cached_data
+            if legacy_cached is not None:
+                self.logger.debug("Cache hit (legacy) for %s", symbol)
+                return legacy_cached
+
+            # Split cache: attempt to merge a full snapshot with a recent overlay
+            # Try Redis overlay first if available
+            full_df = self.cache_manager.get_data(
+                symbol, start_date, end_date, interval, data_type="full"
+            )
+            recent_df = None
+            try:
+                recent_df = self.cache_manager.get_recent_overlay_from_redis(
+                    symbol, interval
+                )
+            except Exception:
+                recent_df = None
+            if recent_df is None:
+                recent_df = self.cache_manager.get_data(
+                    symbol, start_date, end_date, interval, data_type="recent"
+                )
+            merged = None
+            if (
+                full_df is not None
+                and not full_df.empty
+                and recent_df is not None
+                and not recent_df.empty
+            ):
+                try:
+                    merged = (
+                        pd.concat([full_df, recent_df])
+                        .sort_index()
+                        .loc[lambda df: ~df.index.duplicated(keep="last")]
+                    )
+                except Exception:
+                    merged = full_df
+            elif full_df is not None and not full_df.empty:
+                merged = full_df
+            elif recent_df is not None and not recent_df.empty:
+                merged = recent_df
+
+            if merged is not None and not merged.empty:
+                # If requested range extends beyond merged coverage, auto-extend by fetching missing windows
+                try:
+                    req_start = pd.to_datetime(start_date)
+                    req_end = pd.to_datetime(end_date)
+                    c_start = merged.index[0]
+                    c_end = merged.index[-1]
+                    need_before = req_start < c_start
+                    need_after = req_end > c_end
+                except Exception:
+                    need_before = need_after = False
+
+                if need_before:
+                    try:
+                        df_b = self.get_data(
+                            symbol,
+                            start_date,
+                            c_start.strftime("%Y-%m-%d"),
+                            interval,
+                            use_cache=False,
+                            asset_type=asset_type,
+                            period_mode=period_requested,
+                        )
+                        if df_b is not None and not df_b.empty:
+                            merged = (
+                                pd.concat([df_b, merged])
+                                .sort_index()
+                                .loc[lambda df: ~df.index.duplicated(keep="last")]
+                            )
+                    except Exception:
+                        pass
+                if need_after:
+                    try:
+                        df_a = self.get_data(
+                            symbol,
+                            c_end.strftime("%Y-%m-%d"),
+                            end_date,
+                            interval,
+                            use_cache=False,
+                            asset_type=asset_type,
+                            period_mode=period_requested,
+                        )
+                        if df_a is not None and not df_a.empty:
+                            merged = (
+                                pd.concat([merged, df_a])
+                                .sort_index()
+                                .loc[lambda df: ~df.index.duplicated(keep="last")]
+                            )
+                    except Exception:
+                        pass
+
+                return merged
 
         # Determine asset type if not provided
         if not asset_type:
@@ -738,15 +887,48 @@ class UnifiedDataManager:
                     symbol, start_date, end_date, interval, **kwargs
                 )
                 if data is not None and not data.empty:
-                    # Cache the data
-                    if use_cache:
+                    # Always write-through to cache on a fresh fetch.
+                    # Use split-caching: store 'full' when provider period requested, else 'recent'.
+                    cache_kind = "full" if period_requested else "recent"
+                    ttl_hours = 24 if cache_kind == "recent" else 24 * 30
+                    try:
                         self.cache_manager.cache_data(
-                            symbol, data, interval, source.config.name
+                            symbol,
+                            data,
+                            interval,
+                            source.config.name,
+                            data_type=cache_kind,
+                            ttl_hours=ttl_hours,
+                        )
+                    except Exception as e:
+                        self.logger.warning(
+                            "Failed to cache data for %s from %s: %s",
+                            symbol,
+                            source.config.name,
+                            e,
                         )
 
                     self.logger.info(
                         "Successfully fetched %s from %s", symbol, source.config.name
                     )
+                    # Freshness check for daily bars
+                    if interval == "1d":
+                        try:
+                            last_bar = data.index[-1].date()
+                            from pandas.tseries.offsets import BDay
+
+                            expected = (
+                                pd.Timestamp(datetime.utcnow().date()) - BDay(1)
+                            ).date()
+                            if last_bar < expected:
+                                self.logger.warning(
+                                    "Data for %s seems stale: last=%s expected>=%s",
+                                    symbol,
+                                    last_bar,
+                                    expected,
+                                )
+                        except Exception:
+                            pass
                     return data
 
             except Exception as e:
@@ -768,8 +950,8 @@ class UnifiedDataManager:
         asset_type: str | None = None,
         **kwargs,
     ) -> Dict[str, pd.DataFrame]:
-        """Get data for multiple symbols with intelligent batching."""
-        result = {}
+        """Get data for multiple symbols with intelligent batching and cache-first behavior."""
+        result: Dict[str, pd.DataFrame] = {}
 
         # Group symbols by asset type for optimal source selection
         symbol_groups = self._group_symbols_by_type(symbols, asset_type)
@@ -777,44 +959,102 @@ class UnifiedDataManager:
         for group_type, group_symbols in symbol_groups.items():
             sources = self._get_sources_for_asset_type(group_type)
 
-            # Try batch sources first
+            # If caching enabled, try to satisfy from cache first to avoid external requests
+            missing_symbols: List[str] = []
+            if use_cache:
+                for symbol in list(group_symbols):
+                    try:
+                        full_df = self.cache_manager.get_data(
+                            symbol, start_date, end_date, interval, data_type="full"
+                        )
+                        recent_df = self.cache_manager.get_data(
+                            symbol, start_date, end_date, interval, data_type="recent"
+                        )
+                        merged = None
+                        if (
+                            full_df is not None
+                            and not full_df.empty
+                            and recent_df is not None
+                            and not recent_df.empty
+                        ):
+                            merged = (
+                                pd.concat([full_df, recent_df])
+                                .sort_index()
+                                .loc[lambda df: ~df.index.duplicated(keep="last")]
+                            )
+                        elif full_df is not None and not full_df.empty:
+                            merged = full_df
+                        elif recent_df is not None and not recent_df.empty:
+                            merged = recent_df
+
+                        if merged is not None and not merged.empty:
+                            result[symbol] = merged
+                            # Track that we used cache for this symbol
+                            continue
+                        missing_symbols.append(symbol)
+                    except Exception as e:
+                        self.logger.warning("Cache lookup failed for %s: %s", symbol, e)
+                        missing_symbols.append(symbol)
+            else:
+                missing_symbols = list(group_symbols)
+
+            # Try batch-capable sources for missing symbols
             for source in sources:
-                if source.config.supports_batch and len(group_symbols) > 1:
+                if not missing_symbols:
+                    break
+
+                if source.config.supports_batch and len(missing_symbols) > 1:
                     try:
                         batch_data = source.fetch_batch_data(
-                            group_symbols, start_date, end_date, interval, **kwargs
+                            missing_symbols, start_date, end_date, interval, **kwargs
                         )
 
+                        # Add fetched data to result and update cache
+                        fetched_symbols = []
                         for symbol, data in batch_data.items():
                             if data is not None and not data.empty:
                                 result[symbol] = data
+                                fetched_symbols.append(symbol)
                                 if use_cache:
-                                    self.cache_manager.cache_data(
-                                        symbol, data, interval, source.config.name
-                                    )
-                                group_symbols.remove(symbol)
+                                    try:
+                                        self.cache_manager.cache_data(
+                                            symbol, data, interval, source.config.name
+                                        )
+                                    except Exception as e:
+                                        self.logger.warning(
+                                            "Failed to cache data for %s from %s: %s",
+                                            symbol,
+                                            source.config.name,
+                                            e,
+                                        )
 
-                        if not group_symbols:  # All symbols fetched
-                            break
+                        # Remove fetched symbols from missing list
+                        if fetched_symbols:
+                            missing_symbols = [
+                                s for s in missing_symbols if s not in fetched_symbols
+                            ]
 
                     except Exception as e:
                         self.logger.warning(
                             "Batch fetch failed from %s: %s", source.config.name, e
                         )
 
-            # Fall back to individual requests for remaining symbols
-            for symbol in group_symbols:
-                individual_data = self.get_data(
-                    symbol,
-                    start_date,
-                    end_date,
-                    interval,
-                    use_cache,
-                    group_type,
-                    **kwargs,
-                )
-                if individual_data is not None:
-                    result[symbol] = individual_data
+            # Fall back to individual requests for any remaining missing symbols
+            for symbol in missing_symbols:
+                try:
+                    individual_data = self.get_data(
+                        symbol,
+                        start_date,
+                        end_date,
+                        interval,
+                        use_cache,
+                        group_type,
+                        **kwargs,
+                    )
+                    if individual_data is not None:
+                        result[symbol] = individual_data
+                except Exception as e:
+                    self.logger.warning("Individual fetch failed for %s: %s", symbol, e)
 
         return result
 
@@ -879,24 +1119,112 @@ class UnifiedDataManager:
         # Default to stocks
         return "stocks"
 
+    # Global override for source ordering per asset type (process-wide)
+    _global_source_order_overrides: dict[str, list[str]] = {}
+
+    @classmethod
+    def set_source_order_override(
+        cls, asset_type: str, ordered_sources: list[str]
+    ) -> None:
+        cls._global_source_order_overrides[asset_type] = list(ordered_sources)
+
     def _get_sources_for_asset_type(self, asset_type: str) -> List[DataSource]:
-        """Get appropriate sources for asset type, sorted by priority."""
+        """Get appropriate sources for asset type, sorted by priority or override."""
         suitable_sources = []
 
         for source in self.sources.values():
             if not source.config.asset_types or asset_type in source.config.asset_types:
                 suitable_sources.append(source)
 
-        # Sort by priority (lower number = higher priority)
+        # Optional filtering for crypto: allow disabling Yahoo/AlphaVantage via env,
+        # and prefer Bybit/Twelve when available to reduce noisy fallbacks.
         if asset_type == "crypto":
-            # Prioritize Bybit for crypto
-            suitable_sources.sort(
-                key=lambda x: (0 if x.config.name == "bybit" else x.config.priority)
-            )
+            import os as _os
+
+            disable_yahoo = _os.getenv("DISABLE_YAHOO_CRYPTO", "false").lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+            disable_av = _os.getenv("DISABLE_AV_CRYPTO", "false").lower() in {
+                "1",
+                "true",
+                "yes",
+            }
+            names = {s.config.name for s in suitable_sources}
+            has_primary = any(n in names for n in {"bybit", "twelve_data"})
+            if disable_yahoo or has_primary:
+                suitable_sources = [
+                    s for s in suitable_sources if s.config.name != "yahoo_finance"
+                ]
+            if disable_av or has_primary:
+                suitable_sources = [
+                    s for s in suitable_sources if s.config.name != "alpha_vantage"
+                ]
+
+        override = self._global_source_order_overrides.get(asset_type)
+        if override:
+            order_idx = {name: i for i, name in enumerate(override)}
+            suitable_sources.sort(key=lambda x: order_idx.get(x.config.name, 10_000))
         else:
-            suitable_sources.sort(key=lambda x: x.config.priority)
+            if asset_type == "crypto":
+                suitable_sources.sort(
+                    key=lambda x: (0 if x.config.name == "bybit" else x.config.priority)
+                )
+            else:
+                suitable_sources.sort(key=lambda x: x.config.priority)
 
         return suitable_sources
+
+    def probe_and_set_order(
+        self,
+        asset_type: str,
+        symbols: list[str],
+        interval: str = "1d",
+        sample_size: int = 5,
+    ) -> list[str]:
+        """Probe sources for coverage and set a global ordering by longest history.
+
+        Skips cache and uses provider period='max'. Returns ordered source names.
+        """
+        sym_sample = symbols[: max(1, min(sample_size, len(symbols)))]
+        candidates = [s for s in self._get_sources_for_asset_type(asset_type)]
+        scores: list[tuple[str, int, pd.Timestamp | None]] = []
+
+        for src in candidates:
+            total_rows = 0
+            earliest: pd.Timestamp | None = None
+            for s in sym_sample:
+                try:
+                    df = src.fetch_data(
+                        s,
+                        start_date="1900-01-01",
+                        end_date=datetime.utcnow().date().isoformat(),
+                        interval=interval,
+                        asset_type=asset_type,
+                        period="max",
+                        period_mode="max",
+                    )
+                    if df is not None and not df.empty:
+                        total_rows += len(df)
+                        f = df.index[0]
+                        earliest = f if earliest is None or f < earliest else earliest
+                except Exception as exc:
+                    self.logger.debug(
+                        "Probe error for %s via %s: %s", s, src.config.name, exc
+                    )
+                    continue
+            scores.append((src.config.name, total_rows, earliest))
+
+        def _key(t: tuple[str, int, pd.Timestamp | None]):
+            name, rows, first = t
+            first_val = first.value if hasattr(first, "value") else 2**63 - 1
+            return (-rows, first_val)
+
+        ordered = [name for name, *_ in sorted(scores, key=_key)]
+        if ordered:
+            self.set_source_order_override(asset_type, ordered)
+        return ordered
 
     def _group_symbols_by_type(
         self, symbols: List[str], default_type: Optional[str] = None
@@ -1152,10 +1480,28 @@ class TwelveDataSource(DataSource):
                 return f"{base_symbol[:3]}/{base_symbol[3:]}"
 
         # Twelve Data crypto format (no dash)
-        if "-USD" in symbol:
-            return symbol.replace("-USD", "USD")
+        up = symbol.upper()
+        if "-USD" in up:
+            return up.replace("-USD", "USD")
+        if "-USDT" in up:
+            up = up.replace("-USDT", "/USDT")
+            # fallthrough to exchange append below
+            # return here was removed to allow exchange tagging
+        # IMXUSDT -> IMX/USDT
+        if up.endswith("USDT") and "/" not in up and "-" not in up:
+            up = f"{up[:-4]}/USDT"
 
-        return symbol
+        # Optional exchange routing for crypto, e.g., IMX/USDT:BINANCE
+        try:
+            import os as _os
+
+            exch = _os.getenv("TWELVE_DATA_CRYPTO_EXCHANGE", "").strip()
+            if exch and ":" not in up and (asset_type == "crypto" or "/" in up):
+                up = f"{up}:{exch.upper()}"
+        except Exception:
+            pass
+
+        return up
 
     def fetch_data(
         self,
@@ -1173,11 +1519,23 @@ class TwelveDataSource(DataSource):
             asset_type = kwargs.get("asset_type")
             transformed_symbol = self.transform_symbol(symbol, asset_type)
 
+            # Coerce dates (supports strings or datetime-like)
+            start_dt = pd.to_datetime(start_date, errors="coerce")
+            end_dt = pd.to_datetime(end_date, errors="coerce")
+            if pd.isna(end_dt):
+                end_dt = pd.Timestamp.utcnow()
+            if pd.isna(start_dt):
+                # default to one year window for daily; smaller for intraday
+                if interval in {"1m", "5m", "15m", "30m", "1h", "4h"}:
+                    start_dt = end_dt - pd.Timedelta(days=30)
+                else:
+                    start_dt = end_dt - pd.Timedelta(days=365)
+
             params = {
                 "symbol": transformed_symbol,
                 "interval": self._map_interval(interval),
-                "start_date": start_date.strftime("%Y-%m-%d"),
-                "end_date": end_date.strftime("%Y-%m-%d"),
+                "start_date": start_dt.strftime("%Y-%m-%d"),
+                "end_date": end_dt.strftime("%Y-%m-%d"),
                 "apikey": self.api_key,
                 "format": "JSON",
                 "outputsize": 5000,
@@ -1282,5 +1640,4 @@ class TwelveDataSource(DataSource):
         return []
 
 
-# Import required modules
-import os
+# (end of module)

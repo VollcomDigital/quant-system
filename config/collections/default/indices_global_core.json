@@ -1,0 +1,13 @@
+{
+  "indices_global_core": {
+    "name": "Global Indices (ETFs)",
+    "asset_type": "indices",
+    "symbols": [
+      "SPY", "QQQ", "DIA", "IWM",
+      "EFA", "EEM", "VGK", "EWJ", "FXI",
+      "VTI", "ACWI"
+    ],
+    "initial_capital": 10000,
+    "commission": 0.001
+  }
+}

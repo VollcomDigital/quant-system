@@ -1,0 +1,20 @@
+{
+  "stocks_us_value_core": {
+    "name": "US Value Core (ETFs)",
+    "asset_type": "stocks",
+    "symbols": [
+      "VTV",
+      "IWD",
+      "SCHV",
+      "RPV",
+      "SPYV",
+      "IVE",
+      "VONV",
+      "VLUE",
+      "VYM",
+      "DVY"
+    ],
+    "initial_capital": 10000,
+    "commission": 0.001
+  }
+}

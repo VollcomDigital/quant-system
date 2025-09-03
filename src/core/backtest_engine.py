@@ -11,7 +11,7 @@ import logging
 import multiprocessing as mp
 import time
 import warnings
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
@@ -28,6 +28,193 @@ from .result_analyzer import UnifiedResultAnalyzer
 
 
 warnings.filterwarnings("ignore")
+
+# Defaults
+from pathlib import Path
+
+# Default metric used when none specified in manifest
+DEFAULT_METRIC = "sortino_ratio"
+
+
+def _run_backtest_worker(args):
+    """
+    Module-level worker for ProcessPoolExecutor to avoid pickling bound methods.
+    args: (symbol, strategy, cfg_kwargs)
+    Returns a serializable dict with result metadata.
+    """
+    symbol, strategy, cfg_kwargs = args
+    try:
+        # Import inside worker process
+        from .backtest_engine import (
+            BacktestConfig,  # type: ignore[import-not-found]
+            UnifiedBacktestEngine,  # type: ignore[import-not-found]
+        )
+    except Exception:
+        # Fallback if imports fail in worker - return error
+        return {
+            "symbol": symbol,
+            "strategy": strategy,
+            "error": "Worker imports failed",
+        }
+
+    try:
+        # Construct config inside worker (safe to create per-process)
+        try:
+            cfg = BacktestConfig(**cfg_kwargs)  # type: ignore[call-arg]
+        except Exception:
+            # Fallback minimal config object
+            class _TmpCfg:
+                def __init__(self, **kw):
+                    self.__dict__.update(kw)
+
+            cfg = _TmpCfg(**cfg_kwargs)
+
+        # Initialize external strategy loader in the worker process if a path was provided.
+        # This ensures StrategyFactory / external loader can discover strategies without
+        # relying on the parent process to have initialized the global loader.
+        try:
+            strategies_path = None
+            if isinstance(cfg_kwargs, dict):
+                strategies_path = cfg_kwargs.get("strategies_path")
+            else:
+                strategies_path = getattr(cfg, "strategies_path", None)
+
+            if strategies_path:
+                try:
+                    from pathlib import Path as _Path  # local import
+
+                    from .external_strategy_loader import (
+                        get_strategy_loader,  # type: ignore[import-not-found]
+                    )
+
+                    # Try a set of common candidate locations under the provided strategies_path
+                    candidates = []
+                    try:
+                        candidates.append(strategies_path)
+                        candidates.append(
+                            str(_Path(strategies_path) / "algorithms" / "python")
+                        )
+                        candidates.append(
+                            str(_Path(strategies_path) / "algorithms" / "original")
+                        )
+                    except Exception:
+                        pass
+
+                    loader_initialized = False
+                    for cand in candidates:
+                        if not cand:
+                            continue
+                        try:
+                            cand_path = _Path(cand)
+                            if cand_path.exists():
+                                # Initialize the global loader in this worker process using the candidate path
+                                get_strategy_loader(str(cand_path))
+                                loader_initialized = True
+                                break
+                        except Exception as exc:
+                            # ignore and try next candidate, but log for diagnostics
+                            log = logging.getLogger(__name__)
+                            log.debug(
+                                "Strategy loader init failed for %s: %s", cand, exc
+                            )
+                            continue
+
+                    # As a final attempt, call get_strategy_loader with the original value
+                    if not loader_initialized:
+                        try:
+                            get_strategy_loader(strategies_path)
+                        except Exception as exc:
+                            log = logging.getLogger(__name__)
+                            log.debug("Final strategy loader init failed: %s", exc)
+
+                except Exception:
+                    # Non-fatal: continue without external strategies
+                    pass
+        except Exception:
+            pass
+
+        engine = UnifiedBacktestEngine()
+        res = engine.run_backtest(symbol, strategy, cfg)
+        # Build serializable payload for parent process
+        metrics = res.metrics if getattr(res, "metrics", None) is not None else {}
+        trades_raw = None
+        equity_raw = None
+        try:
+            import json as _json
+
+            import pandas as _pd
+
+            trades_obj = getattr(res, "trades", None)
+            if trades_obj is not None:
+                if isinstance(trades_obj, _pd.DataFrame):
+                    trades_raw = trades_obj.to_csv(index=False)
+                else:
+                    try:
+                        trades_raw = _json.dumps(trades_obj)
+                    except Exception:
+                        trades_raw = str(trades_obj)
+
+            eq = getattr(res, "equity_curve", None)
+            if eq is not None and isinstance(eq, _pd.DataFrame):
+                equity_raw = eq.to_json(orient="records", date_format="iso")
+            elif eq is not None:
+                try:
+                    equity_raw = _json.dumps(eq)
+                except Exception:
+                    equity_raw = str(eq)
+        except Exception:
+            trades_raw = None
+            equity_raw = None
+
+        # Provide a compact, JSON-friendly summary of the backtest result for persistence/inspection
+        try:
+            bt_results_raw = {
+                "metrics": metrics,
+                "duration_seconds": getattr(res, "duration_seconds", None),
+                "data_points": getattr(res, "data_points", None),
+                "parameters": getattr(res, "parameters", None),
+                # include a lightweight final value if available on the result object
+                "final_value": None,
+            }
+            try:
+                if getattr(res, "equity_curve", None) is not None:
+                    # If equity_curve is a DataFrame, try to capture the last equity point
+                    eq = res.equity_curve
+                    if hasattr(eq, "iloc") and len(eq) > 0:
+                        last_row = eq.iloc[-1]
+                        # try both 'equity' column or the first numeric column
+                        if "equity" in last_row:
+                            bt_results_raw["final_value"] = float(last_row["equity"])
+                        else:
+                            # pick first numeric-like column
+                            for v in last_row.values:
+                                try:
+                                    bt_results_raw["final_value"] = float(v)
+                                    break
+                                except Exception as exc:
+                                    logging.getLogger(__name__).debug(
+                                        "Failed to extract final_value: %s", exc
+                                    )
+                                    continue
+            except Exception:
+                # best-effort only
+                pass
+        except Exception:
+            bt_results_raw = None
+
+        return {
+            "symbol": getattr(res, "symbol", symbol),
+            "strategy": getattr(res, "strategy", strategy),
+            "metrics": metrics,
+            "trades_raw": trades_raw,
+            "equity_raw": equity_raw,
+            "bt_results_raw": bt_results_raw,
+            "error": getattr(res, "error", None),
+            "duration_seconds": getattr(res, "duration_seconds", None),
+            "data_points": getattr(res, "data_points", None),
+        }
+    except Exception as exc:
+        return {"symbol": symbol, "strategy": strategy, "error": str(exc)}
 
 
 def create_backtesting_strategy_adapter(strategy_instance):
@@ -192,9 +379,15 @@ class UnifiedBacktestEngine:
                 if cached_result:
                     self.stats["cache_hits"] += 1
                     self.logger.debug("Cache hit for %s/%s", symbol, strategy)
-                    return self._dict_to_result(
+                    # Convert cached dict to BacktestResult and mark it as coming from cache
+                    res = self._dict_to_result(
                         cached_result, symbol, strategy, parameters, config
                     )
+                    try:
+                        res.from_cache = True
+                    except Exception:
+                        pass
+                    return res
 
             self.stats["cache_misses"] += 1
 
@@ -231,10 +424,13 @@ class UnifiedBacktestEngine:
             result = self._execute_backtest(symbol, strategy, data, parameters, config)
 
             # Cache result if not using custom parameters
-            if config.use_cache and not custom_parameters and not result.error:
-                self.cache_manager.cache_backtest_result(
-                    symbol, strategy, parameters, asdict(result), config.interval
-                )
+            # NOTE: Backtest output caching is disabled to ensure results are always
+            # recomputed and persisted per-run. Data-level caching (market data) is
+            # preserved. If desired, re-enable result caching here.
+            # if config.use_cache and not custom_parameters and not result.error:
+            #     self.cache_manager.cache_backtest_result(
+            #         symbol, strategy, parameters, asdict(result), config.interval
+            #     )
 
             result.duration_seconds = time.time() - start_time
             result.data_points = len(data)
@@ -597,27 +793,110 @@ class UnifiedBacktestEngine:
     def _process_batch(
         self, batch: list[tuple[str, str]], config: BacktestConfig
     ) -> list[BacktestResult]:
-        """Process batch of symbol/strategy combinations."""
-        with concurrent.futures.ProcessPoolExecutor(
-            max_workers=self.max_workers
-        ) as executor:
-            futures = {
-                executor.submit(
-                    self._run_single_backtest_task, symbol, strategy, config
-                ): (symbol, strategy)
-                for symbol, strategy in batch
-            }
+        """Process batch of symbol/strategy combinations.
 
-            results = []
-            for future in concurrent.futures.as_completed(futures):
-                symbol, strategy = futures[future]
-                try:
-                    result = future.result()
-                    results.append(result)
-                except Exception as e:
-                    self.logger.error(
-                        "Batch backtest failed for %s/%s: %s", symbol, strategy, e
-                    )
+        Uses a module-level worker to avoid pickling bound methods or objects that
+        are not serializable by multiprocessing. Each worker constructs its own
+        engine and runs the single backtest there.
+        """
+        results: list[BacktestResult] = []
+
+        # Build serializable cfg_kwargs for workers (they will construct BacktestConfig)
+        for i in range(
+            0, len(batch), max(1, len(batch))
+        ):  # keep batching but here we pass full batch to executor.map
+            # Prepare args for each (symbol, strategy)
+            worker_args = []
+            for symbol, strategy in batch:
+                cfg_kwargs = {
+                    "symbols": [symbol],
+                    "strategies": [strategy],
+                    "start_date": config.start_date,
+                    "end_date": config.end_date,
+                    "period": getattr(config, "period", None),
+                    "initial_capital": getattr(config, "initial_capital", 10000),
+                    "interval": getattr(config, "interval", "1d"),
+                    "max_workers": getattr(config, "max_workers", None),
+                    # propagate strategies_path from parent cfg (may be present on _TmpCfg)
+                    "strategies_path": getattr(config, "strategies_path", None),
+                    # include commonly expected config attributes so worker-side _TmpCfg has them
+                    "use_cache": getattr(config, "use_cache", True),
+                    "commission": getattr(config, "commission", 0.001),
+                    "save_trades": getattr(config, "save_trades", False),
+                    "save_equity_curve": getattr(config, "save_equity_curve", False),
+                    # Additional worker-facing attributes to avoid attribute errors in fallback _TmpCfg
+                    "override_old_trades": getattr(config, "override_old_trades", True),
+                    "memory_limit_gb": getattr(config, "memory_limit_gb", 8.0),
+                    "asset_type": getattr(config, "asset_type", None),
+                    "futures_mode": getattr(config, "futures_mode", False),
+                    "leverage": getattr(config, "leverage", 1.0),
+                }
+                worker_args.append((symbol, strategy, cfg_kwargs))
+
+            # Use ProcessPoolExecutor with module-level worker to avoid pickling issues
+            try:
+                with concurrent.futures.ProcessPoolExecutor(
+                    max_workers=self.max_workers
+                ) as executor:
+                    for worker_res in executor.map(_run_backtest_worker, worker_args):
+                        # worker_res is a serializable dict
+                        sym = worker_res.get("symbol")
+                        strat = worker_res.get("strategy")
+                        err = worker_res.get("error")
+                        metrics = worker_res.get("metrics", {}) or {}
+                        duration = worker_res.get("duration_seconds", None)
+                        data_points = worker_res.get("data_points", None)
+
+                        if err:
+                            self.logger.error(
+                                "Batch backtest failed for %s/%s: %s", sym, strat, err
+                            )
+                            self.stats["errors"] += 1
+                            results.append(
+                                BacktestResult(
+                                    symbol=sym or "",
+                                    strategy=strat or "",
+                                    parameters={},
+                                    config=config,
+                                    metrics={},
+                                    error=err,
+                                )
+                            )
+                        else:
+                            # Construct a minimal BacktestResult for downstream processing
+                            br = BacktestResult(
+                                symbol=sym or "",
+                                strategy=strat or "",
+                                parameters={},
+                                config=config,
+                                metrics=metrics,
+                                trades=worker_res.get("trades_raw"),
+                                start_date=getattr(config, "start_date", None),
+                                end_date=getattr(config, "end_date", None),
+                                duration_seconds=duration or 0,
+                                data_points=int(data_points)
+                                if data_points is not None
+                                else 0,
+                                error=None,
+                            )
+                            # Attach raw backtest payloads if present so engine.run can persist them
+                            try:
+                                br.bt_results_raw = worker_res.get(
+                                    "bt_results_raw", None
+                                )
+                            except Exception:
+                                pass
+                            # Reflect worker-level cache hits in parent engine stats
+                            try:
+                                if worker_res.get("cache_hit"):
+                                    self.stats["cache_hits"] += 1
+                            except Exception:
+                                pass
+                            results.append(br)
+            except Exception as e:
+                self.logger.error("Failed to execute worker batch: %s", e)
+                # Convert all batch items to error BacktestResult
+                for symbol, strategy in batch:
                     self.stats["errors"] += 1
                     results.append(
                         BacktestResult(
@@ -630,7 +909,10 @@ class UnifiedBacktestEngine:
                         )
                     )
 
-            return results
+            # we've processed the whole provided batch once; break
+            break
+
+        return results
 
     def _run_single_backtest_task(
         self, symbol: str, strategy: str, config: BacktestConfig
@@ -1039,6 +1321,432 @@ class UnifiedBacktestEngine:
         """Get engine performance statistics."""
         return self.stats.copy()
 
+    def run(self, manifest: dict[str, Any], outdir: Path | str) -> dict[str, Any]:
+        """
+        Manifest-driven executor.
+
+        This method expands the provided manifest (as produced by the CLI) into
+        BacktestConfig objects and runs batch backtests for each requested
+        (interval x strategies x symbols) combination. Results are persisted
+        to the DB via src.database.unified_models (best-effort).
+
+        Returns a summary dict with counts and plan_hash.
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        outdir = _Path(outdir)
+        outdir.mkdir(parents=True, exist_ok=True)
+
+        plan = manifest.get("plan", {})
+        symbols = plan.get("symbols", []) or []
+        strategies = plan.get("strategies", []) or []
+        intervals = plan.get("intervals", []) or ["1d"]
+        start = plan.get("start")
+        end = plan.get("end")
+        period_mode = plan.get("period_mode", "max")
+        plan_hash = plan.get("plan_hash")
+        target_metric = plan.get("metric", DEFAULT_METRIC)
+
+        # Resolve period_mode -> if 'max' leave start/end None so data manager uses full range
+        if period_mode == "max":
+            start_date = None
+            end_date = None
+        else:
+            start_date = start
+            end_date = end
+
+        # Create run row in DB (best-effort)
+        run_obj = None
+        run_id = None
+        try:
+            from src.database import unified_models  # type: ignore[import-not-found]
+
+            try:
+                # Prefer robust ensure_run_for_manifest which will attempt fallback creation
+                if hasattr(unified_models, "ensure_run_for_manifest"):
+                    run_obj = unified_models.ensure_run_for_manifest(manifest)
+                else:
+                    run_obj = unified_models.create_run_from_manifest(manifest)
+                run_id = getattr(run_obj, "run_id", None)
+            except Exception:
+                run_obj = None
+                run_id = None
+        except Exception:
+            run_obj = None
+            run_id = None
+
+        # Prepare a persistence_context passed to lower-level helpers
+        # If run_id couldn't be created/resolved, disable persistence to avoid null run_id inserts.
+        if run_id is None:
+            persistence_context = None
+        else:
+            persistence_context = {
+                "run_id": run_id,
+                "target_metric": target_metric,
+                "plan_hash": plan_hash,
+            }
+
+        total_results = 0
+        errors = 0
+        persisted = 0
+        results_summary = []
+
+        # For each interval, create a BacktestConfig and run batch backtests
+        for interval in intervals:
+            try:
+                # Respect export flags from manifest so workers capture trades/equity when requested.
+                exports = plan.get("exports", []) or []
+                if isinstance(exports, str):
+                    exports = [exports]
+
+                # Capture trades by default when DB persistence is active so we can store
+                # detailed executions into unified_models (trades table and trades_raw).
+                # Still honor explicit exports flags when provided.
+                save_trades = (
+                    "all" in exports
+                    or "trades" in exports
+                    or "trade" in exports
+                    or (persistence_context is not None)
+                )
+                save_equity = (
+                    "all" in exports or "equity" in exports or "equity_curve" in exports
+                )
+
+                cfg_kwargs = {
+                    "symbols": symbols,
+                    "strategies": strategies,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "period": period_mode,
+                    "initial_capital": plan.get("initial_capital", 10000),
+                    "interval": interval,
+                    "max_workers": plan.get("max_workers", None),
+                    # propagate strategies_path from manifest so workers can initialize loaders
+                    "strategies_path": plan.get("strategies_path"),
+                    "save_trades": save_trades,
+                    "save_equity_curve": save_equity,
+                }
+                # Build BacktestConfig
+                try:
+                    cfg = BacktestConfig(**cfg_kwargs)
+                except Exception:
+                    # Fallback: construct minimal config object-like dict
+                    class _TmpCfg:
+                        def __init__(self, **kw):
+                            self.__dict__.update(kw)
+
+                    cfg = _TmpCfg(**cfg_kwargs)
+
+                # Ensure fallback config has expected attributes with sensible defaults
+                # so later code can access them regardless of how cfg was constructed.
+                _defaults = {
+                    "initial_capital": 10000,
+                    "interval": getattr(cfg, "interval", "1d"),
+                    "max_workers": getattr(cfg, "max_workers", None),
+                    "use_cache": getattr(cfg, "use_cache", True),
+                    "commission": getattr(cfg, "commission", 0.001),
+                    "save_trades": getattr(cfg, "save_trades", False),
+                    "save_equity_curve": getattr(cfg, "save_equity_curve", False),
+                    "override_old_trades": getattr(cfg, "override_old_trades", True),
+                    "memory_limit_gb": getattr(cfg, "memory_limit_gb", 8.0),
+                    "asset_type": getattr(cfg, "asset_type", None),
+                    "futures_mode": getattr(cfg, "futures_mode", False),
+                    "leverage": getattr(cfg, "leverage", 1.0),
+                }
+                for _k, _v in _defaults.items():
+                    if not hasattr(cfg, _k):
+                        try:
+                            setattr(cfg, _k, _v)
+                        except Exception:
+                            # be defensive if cfg disallows setattr
+                            pass
+
+                # Run batch
+                batch_results = self.run_batch_backtests(cfg)
+                total_results += len(batch_results)
+
+                # Persist individual results (best-effort) using direct_backtest helper
+                try:
+                    import src.core.direct_backtest as direct_mod  # type: ignore[import-not-found]
+
+                    # Only attempt persistence when we have a valid persistence_context (run_id resolved)
+                    if persistence_context:
+                        for r in batch_results:
+                            # Map BacktestResult dataclass to expected dict for persistence
+                            rd = {
+                                "symbol": r.symbol,
+                                "strategy": r.strategy,
+                                "timeframe": getattr(r.config, "interval", interval),
+                                "metrics": r.metrics or {},
+                                "trades": r.trades if hasattr(r, "trades") else None,
+                                "bt_results": getattr(r, "bt_results_raw", None),
+                                "start_date": getattr(r, "start_date", start_date),
+                                "end_date": getattr(r, "end_date", end_date),
+                                "error": getattr(r, "error", None),
+                            }
+
+                            # Force a persistence stub if worker returned no metrics/trades/bt_results
+                            # but did not set an explicit error. This ensures full lineage for the run.
+                            if (
+                                not rd.get("metrics")
+                                and not rd.get("trades")
+                                and not rd.get("bt_results")
+                                and not rd.get("error")
+                            ):
+                                rd["error"] = "no_result"
+
+                            try:
+                                direct_mod._persist_result_to_db(
+                                    rd, persistence_context
+                                )
+                                persisted += 1
+                            except Exception:
+                                errors += 1
+                    else:
+                        # Persistence disabled (no run_id); skip storing individual results
+                        pass
+                except Exception:
+                    # If persistence helper unavailable, skip persistence but continue
+                    pass
+
+                # Summarize top strategies for this interval
+                for r in batch_results[:5]:
+                    results_summary.append(
+                        {
+                            "symbol": r.symbol,
+                            "strategy": r.strategy,
+                            "interval": getattr(r.config, "interval", interval),
+                            "metric": (r.metrics or {}).get(target_metric),
+                            "error": getattr(r, "error", None),
+                        }
+                    )
+
+            except Exception as e:
+                errors += 1
+                logging.getLogger(__name__).exception(
+                    "Failed running interval %s: %s", interval, e
+                )
+                continue
+
+        summary = {
+            "plan_hash": plan_hash,
+            "total_results": total_results,
+            "persisted": persisted,
+            "errors": errors,
+            "results_sample": results_summary,
+        }
+
+        # Best-effort: finalize ranks/aggregates and upsert BestStrategy rows into unified_models
+        try:
+            if run_id is not None and target_metric:
+                try:
+                    from src.database import (
+                        unified_models,  # type: ignore[import-not-found]
+                    )
+
+                    sess = unified_models.Session()
+                    try:
+                        # Get distinct symbols for run
+                        symbols = (
+                            sess.query(unified_models.BacktestResult.symbol)
+                            .filter(unified_models.BacktestResult.run_id == run_id)
+                            .distinct()
+                            .all()
+                        )
+                        symbols = [s[0] for s in symbols]
+
+                        def _is_higher_better(metric_name: str) -> bool:
+                            mn = (metric_name or "").lower()
+                            if "drawdown" in mn or "max_drawdown" in mn or "mdd" in mn:
+                                return False
+                            return True
+
+                        for symbol in symbols:
+                            rows = (
+                                sess.query(unified_models.BacktestResult)
+                                .filter(
+                                    unified_models.BacktestResult.run_id == run_id,
+                                    unified_models.BacktestResult.symbol == symbol,
+                                )
+                                .all()
+                            )
+
+                            entries = []
+                            higher_better = _is_higher_better(target_metric)
+                            for r in rows:
+                                mval = None
+                                try:
+                                    if r.metrics and isinstance(r.metrics, dict):
+                                        raw = r.metrics.get(target_metric)
+                                        mval = None if raw is None else float(raw)
+                                except Exception as exc:
+                                    logging.getLogger(__name__).debug(
+                                        "Failed to parse metric %s: %s",
+                                        target_metric,
+                                        exc,
+                                    )
+                                # Treat None as worst
+                                sort_key = (
+                                    float("-inf")
+                                    if higher_better
+                                    else float("inf")
+                                    if mval is None
+                                    else mval
+                                )
+                                if mval is None:
+                                    sort_key = (
+                                        float("-inf") if higher_better else float("inf")
+                                    )
+                                entries.append((sort_key, mval is None, r))
+
+                            # Sort and assign ranks
+                            entries.sort(key=lambda x: x[0], reverse=higher_better)
+                            for idx, (_sort_key, _is_null, row) in enumerate(entries):
+                                try:
+                                    row.rank_in_symbol = idx + 1
+                                    sess.add(row)
+                                except Exception:
+                                    pass
+
+                            # Persist SymbolAggregate and BestStrategy for top entry
+                            if entries:
+                                best_row = entries[0][2]
+                                topn = []
+                                for e in entries[:3]:
+                                    r = e[2]
+                                    topn.append(
+                                        {
+                                            "strategy": r.strategy,
+                                            "interval": r.interval,
+                                            "rank": r.rank_in_symbol,
+                                            "metric": None
+                                            if r.metrics is None
+                                            else r.metrics.get(target_metric),
+                                        }
+                                    )
+                                existing_agg = (
+                                    sess.query(unified_models.SymbolAggregate)
+                                    .filter(
+                                        unified_models.SymbolAggregate.run_id == run_id,
+                                        unified_models.SymbolAggregate.symbol == symbol,
+                                        unified_models.SymbolAggregate.best_by
+                                        == target_metric,
+                                    )
+                                    .one_or_none()
+                                )
+                                summary_json = {"top": topn}
+                                if existing_agg:
+                                    existing_agg.best_result = best_row.result_id
+                                    existing_agg.summary = summary_json
+                                    sess.add(existing_agg)
+                                else:
+                                    agg = unified_models.SymbolAggregate(
+                                        run_id=run_id,
+                                        symbol=symbol,
+                                        best_by=target_metric,
+                                        best_result=best_row.result_id,
+                                        summary=summary_json,
+                                    )
+                                    sess.add(agg)
+
+                                # Upsert BestStrategy
+                                try:
+                                    bs_existing = (
+                                        sess.query(unified_models.BestStrategy)
+                                        .filter(
+                                            unified_models.BestStrategy.symbol
+                                            == symbol,
+                                            unified_models.BestStrategy.timeframe
+                                            == best_row.interval,
+                                        )
+                                        .one_or_none()
+                                    )
+
+                                    def _num(mdict, key):
+                                        try:
+                                            if mdict and isinstance(mdict, dict):
+                                                v = mdict.get(key)
+                                                return (
+                                                    float(v) if v is not None else None
+                                                )
+                                        except Exception:
+                                            return None
+                                        return None
+
+                                    sortino_val = _num(
+                                        best_row.metrics, "sortino_ratio"
+                                    ) or _num(best_row.metrics, "Sortino_Ratio")
+                                    calmar_val = _num(
+                                        best_row.metrics, "calmar_ratio"
+                                    ) or _num(best_row.metrics, "Calmar_Ratio")
+                                    sharpe_val = _num(
+                                        best_row.metrics, "sharpe_ratio"
+                                    ) or _num(best_row.metrics, "Sharpe_Ratio")
+                                    total_return_val = _num(
+                                        best_row.metrics, "total_return"
+                                    ) or _num(best_row.metrics, "Total_Return")
+                                    max_dd_val = _num(
+                                        best_row.metrics, "max_drawdown"
+                                    ) or _num(best_row.metrics, "Max_Drawdown")
+
+                                    if bs_existing:
+                                        bs_existing.strategy = best_row.strategy
+                                        bs_existing.sortino_ratio = sortino_val
+                                        bs_existing.calmar_ratio = calmar_val
+                                        bs_existing.sharpe_ratio = sharpe_val
+                                        bs_existing.total_return = total_return_val
+                                        bs_existing.max_drawdown = max_dd_val
+                                        bs_existing.backtest_result_id = getattr(
+                                            best_row, "result_id", None
+                                        )
+                                        bs_existing.updated_at = datetime.utcnow()
+                                        sess.add(bs_existing)
+                                    else:
+                                        bs = unified_models.BestStrategy(
+                                            symbol=symbol,
+                                            timeframe=best_row.interval,
+                                            strategy=best_row.strategy,
+                                            sortino_ratio=sortino_val,
+                                            calmar_ratio=calmar_val,
+                                            sharpe_ratio=sharpe_val,
+                                            total_return=total_return_val,
+                                            max_drawdown=max_dd_val,
+                                            backtest_result_id=getattr(
+                                                best_row, "result_id", None
+                                            ),
+                                            updated_at=datetime.utcnow(),
+                                        )
+                                        sess.add(bs)
+                                except Exception:
+                                    logging.getLogger(__name__).exception(
+                                        "Failed to upsert BestStrategy for %s", symbol
+                                    )
+
+                        sess.commit()
+                    finally:
+                        try:
+                            sess.close()
+                        except Exception:
+                            pass
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "Failed to finalize BestStrategy for run %s", run_id
+                    )
+        except Exception:
+            # Non-fatal: continue even if finalization fails
+            pass
+
+        # Write summary file
+        try:
+            summary_path = outdir / "engine_run_summary.json"
+            with summary_path.open("w", encoding="utf-8") as fh:
+                _json.dump(summary, fh, indent=2, sort_keys=True, ensure_ascii=False)
+        except Exception:
+            pass
+
+        return summary
+
     def clear_cache(self, symbol: str | None = None, strategy: str | None = None):
         """Clear cached results."""
         self.cache_manager.clear_cache(cache_type="backtest", symbol=symbol)
@@ -1080,36 +1788,165 @@ class UnifiedBacktestEngine:
             return None
 
     def _extract_metrics_from_bt_results(self, bt_results) -> dict[str, Any]:
-        """Extract metrics from backtesting library results."""
+        """Extract metrics from backtesting library results.
+
+        This function is defensive: backtesting library results may contain pandas
+        Timestamps/Timedeltas or other non-scalar types. Coerce values to floats
+        where sensible and fall back to None/0 when conversion fails.
+        """
+        import math
+
         try:
+
+            def _as_float(v):
+                """Safely coerce a value to float or return None."""
+                if v is None:
+                    return None
+                # Already a float/int
+                if isinstance(v, (int, float)):
+                    if isinstance(v, bool):
+                        return float(v)
+                    if math.isfinite(v):
+                        return float(v)
+                    return None
+                # Numpy numeric types
+                try:
+                    import numpy as _np
+
+                    if isinstance(v, _np.generic):
+                        return float(v.item())
+                except Exception:
+                    pass
+                # Pandas Timestamp/Timedelta -> convert to numeric where appropriate
+                try:
+                    import pandas as _pd
+
+                    if isinstance(v, _pd.Timedelta):
+                        # convert to total days as a numeric proxy (timedeltas appear for volatility sometimes)
+                        try:
+                            return float(v.total_seconds())
+                        except Exception:
+                            return None
+                    if isinstance(v, _pd.Timestamp):
+                        # Timestamp is not numeric; return None
+                        return None
+                except Exception:
+                    pass
+                # Strings that may include percent signs or commas
+                if isinstance(v, str):
+                    try:
+                        s = v.strip().replace("%", "").replace(",", "")
+                        return float(s)
+                    except Exception:
+                        return None
+                # Fallback: try numeric conversion
+                try:
+                    return float(v)
+                except Exception:
+                    return None
+
+            def _get_first(keys, default=None):
+                for k in keys:
+                    try:
+                        if isinstance(bt_results, dict) and k in bt_results:
+                            return bt_results.get(k)
+                    except Exception:
+                        pass
+                return default
+
+            # Map keys with fallbacks
+            total_return = (
+                _as_float(
+                    _get_first(["Return [%]", "Total_Return", "total_return"], 0.0)
+                )
+                or 0.0
+            )
+            sharpe = (
+                _as_float(
+                    _get_first(["Sharpe Ratio", "Sharpe_Ratio", "sharpe_ratio"], 0.0)
+                )
+                or 0.0
+            )
+            sortino = (
+                _as_float(
+                    _get_first(["Sortino Ratio", "Sortino_Ratio", "sortino_ratio"], 0.0)
+                )
+                or 0.0
+            )
+            calmar = (
+                _as_float(
+                    _get_first(["Calmar Ratio", "Calmar_Ratio", "calmar_ratio"], 0.0)
+                )
+                or 0.0
+            )
+            max_dd = _as_float(
+                _get_first(["Max. Drawdown [%]", "Max_Drawdown", "max_drawdown"], 0.0)
+            )
+            max_dd = 0.0 if max_dd is None else abs(max_dd)
+            volatility = (
+                _as_float(_get_first(["Volatility [%]", "volatility"], 0.0)) or 0.0
+            )
+            num_trades = _get_first(["# Trades", "num_trades", "Trades"], 0) or 0
+            try:
+                num_trades = int(num_trades)
+            except Exception:
+                num_trades = 0
+            win_rate = _as_float(_get_first(["Win Rate [%]", "win_rate"], 0.0)) or 0.0
+            profit_factor = (
+                _as_float(_get_first(["Profit Factor", "profit_factor"], 1.0)) or 1.0
+            )
+            best_trade = (
+                _as_float(_get_first(["Best Trade [%]", "best_trade"], 0.0)) or 0.0
+            )
+            worst_trade = (
+                _as_float(_get_first(["Worst Trade [%]", "worst_trade"], 0.0)) or 0.0
+            )
+            avg_trade = (
+                _as_float(_get_first(["Avg. Trade [%]", "avg_trade"], 0.0)) or 0.0
+            )
+            avg_trade_duration = (
+                _as_float(
+                    _get_first(["Avg. Trade Duration", "avg_trade_duration"], 0.0)
+                )
+                or 0.0
+            )
+            start_value = _as_float(_get_first(["Start", "start_value"], 0.0)) or 0.0
+            end_value = (
+                _as_float(
+                    _get_first(["End", "end_value", "Equity Final [$]"], start_value)
+                )
+                or start_value
+            )
+            buy_hold = (
+                _as_float(_get_first(["Buy & Hold Return [%]", "buy_hold_return"], 0.0))
+                or 0.0
+            )
+            exposure = (
+                _as_float(_get_first(["Exposure Time [%]", "exposure_time"], 0.0))
+                or 0.0
+            )
+
             metrics = {
-                # Core performance metrics
-                "total_return": float(bt_results.get("Return [%]", 0.0)),
-                "sharpe_ratio": float(bt_results.get("Sharpe Ratio", 0.0)),
-                "sortino_ratio": float(bt_results.get("Sortino Ratio", 0.0)),
-                "calmar_ratio": float(bt_results.get("Calmar Ratio", 0.0)),
-                # Risk metrics
-                "max_drawdown": abs(float(bt_results.get("Max. Drawdown [%]", 0.0))),
-                "volatility": float(bt_results.get("Volatility [%]", 0.0)),
-                # Trade metrics
-                "num_trades": int(bt_results.get("# Trades", 0)),
-                "win_rate": float(bt_results.get("Win Rate [%]", 0.0)),
-                "profit_factor": float(bt_results.get("Profit Factor", 1.0)),
-                # Additional metrics
-                "best_trade": float(bt_results.get("Best Trade [%]", 0.0)),
-                "worst_trade": float(bt_results.get("Worst Trade [%]", 0.0)),
-                "avg_trade": float(bt_results.get("Avg. Trade [%]", 0.0)),
-                "avg_trade_duration": float(bt_results.get("Avg. Trade Duration", 0.0)),
-                # Portfolio metrics
-                "start_value": float(bt_results.get("Start", 0.0)),
-                "end_value": float(bt_results.get("End", 0.0)),
-                "buy_hold_return": float(bt_results.get("Buy & Hold Return [%]", 0.0)),
-                # Exposure
-                "exposure_time": float(bt_results.get("Exposure Time [%]", 0.0)),
+                "total_return": total_return,
+                "sharpe_ratio": sharpe,
+                "sortino_ratio": sortino,
+                "calmar_ratio": calmar,
+                "max_drawdown": max_dd,
+                "volatility": volatility,
+                "num_trades": num_trades,
+                "win_rate": win_rate,
+                "profit_factor": profit_factor,
+                "best_trade": best_trade,
+                "worst_trade": worst_trade,
+                "avg_trade": avg_trade,
+                "avg_trade_duration": avg_trade_duration,
+                "start_value": start_value,
+                "end_value": end_value,
+                "buy_hold_return": buy_hold,
+                "exposure_time": exposure,
             }
 
             return metrics
-
         except Exception as e:
             self.logger.error(
                 "Error extracting metrics from backtesting results: %s", e

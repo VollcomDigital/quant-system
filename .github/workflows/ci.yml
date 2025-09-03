@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [ main ]
@@ -10,6 +13,10 @@ jobs:
   ci:
     name: Code Quality & Tests
     runs-on: ubuntu-latest
+    env:
+      UNIFIED_MODELS_SQLITE: "1"   # Force SQLite for unified models during CI
+      TESTING: "true"               # Enable test-mode code paths
+      DATABASE_URL: "sqlite:///quant_unified_test.db"  # Safety: default DB points to SQLite
     steps:
       - name: Checkout
         uses: actions/checkout@v4

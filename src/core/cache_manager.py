@@ -9,6 +9,7 @@ import gzip
 import hashlib
 import json
 import logging
+import os
 import pickle
 import sqlite3
 import threading
@@ -18,6 +19,12 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+
+# Optional Redis for recent overlay cache
+try:
+    import redis as _redis  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - optional
+    _redis = None
 
 
 @dataclass
@@ -60,6 +67,22 @@ class UnifiedCacheManager:
 
         self._init_database()
         self.logger = logging.getLogger(__name__)
+
+        # Optional Redis client for recent overlay layer
+        self.redis_client = None
+        try:
+            use_redis = os.getenv("USE_REDIS_RECENT", "false").lower() == "true"
+            redis_url = os.getenv("REDIS_URL", "")
+            if use_redis and _redis is not None and redis_url:
+                self.redis_client = _redis.from_url(redis_url, decode_responses=False)
+                # ping to verify
+                try:
+                    self.redis_client.ping()
+                    self.logger.info("Redis recent overlay enabled (%s)", redis_url)
+                except Exception:
+                    self.redis_client = None
+        except Exception:
+            self.redis_client = None
 
     def _init_database(self) -> None:
         """Initialize SQLite database for metadata."""
@@ -596,6 +619,39 @@ class UnifiedCacheManager:
         # Note: pickle.loads() can be unsafe with untrusted data
         # In production, consider using safer serialization formats
         return pickle.loads(decompressed)  # nosec B301
+
+    # -------- Optional Redis recent overlay helpers ---------
+    def _redis_recent_key(self, symbol: str, interval: str) -> str:
+        return f"data:recent:{symbol}:{interval}"
+
+    def get_recent_overlay_from_redis(
+        self, symbol: str, interval: str
+    ) -> pd.DataFrame | None:
+        try:
+            if not self.redis_client:
+                return None
+            key = self._redis_recent_key(symbol, interval)
+            blob = self.redis_client.get(key)
+            if not blob:
+                return None
+            data = self._decompress_data(blob)
+            if isinstance(data, pd.DataFrame) and not data.empty:
+                return data
+            return None
+        except Exception:
+            return None
+
+    def set_recent_overlay_to_redis(
+        self, symbol: str, interval: str, df: pd.DataFrame, ttl_hours: int = 24
+    ) -> None:
+        try:
+            if not self.redis_client or df is None or df.empty:
+                return
+            key = self._redis_recent_key(symbol, interval)
+            blob = self._compress_data(df)
+            self.redis_client.setex(key, int(ttl_hours * 3600), blob)
+        except Exception:
+            return
 
     def _hash_parameters(self, parameters: dict[str, Any]) -> str:
         """Generate hash for parameters."""

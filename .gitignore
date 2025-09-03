@@ -37,6 +37,7 @@ exports/*
 !exports/**/.gitkeep
 dist/
 build/
+artifacts/
 *.tar.gz
 *.whl
 
@@ -59,6 +60,11 @@ lean_config.json
 .idea/
 *.iml
 *.iws
+
+# pyenv / direnv
+.python-version
+.direnv/
+.envrc
 
 # Testing and Type Checking
 .coverage

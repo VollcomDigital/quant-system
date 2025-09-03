@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from src.core.backtest_engine import BacktestResult
-from src.core.portfolio_manager import PortfolioManager
+from src.core.collection_manager import PortfolioManager
 
 
 class TestPortfolioManager:

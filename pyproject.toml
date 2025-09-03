@@ -20,6 +20,7 @@ sqlalchemy = "^2.0"
 psycopg2-binary = "^2.9"
 # Data sources
 yfinance = "^0.2"
+yfinance-cache = "^0.7.13"
 requests = "^2.32.4"
 # Web scraping
 beautifulsoup4 = "^4.13.4"

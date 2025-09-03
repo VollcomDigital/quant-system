@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
-from .detailed_portfolio_report import DetailedPortfolioReporter
+# The DetailedPortfolioReporter implementation lives in collection_report.py.
+# Expose it at package level for callers that import src.reporting.DetailedPortfolioReporter
+from .collection_report import DetailedPortfolioReporter
 
 __all__ = ["DetailedPortfolioReporter"]

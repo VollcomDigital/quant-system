@@ -1,9 +1,0 @@
-{
-  "single_bond": {
-    "name": "Single Bond Test",
-    "asset_type": "bond",
-    "symbols": ["TLT"],
-    "initial_capital": 10000,
-    "commission": 0.001
-  }
-}

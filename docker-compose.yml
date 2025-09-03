@@ -11,7 +11,7 @@ services:
       - "5433:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
+      - ./scripts/initdb/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     restart: unless-stopped
 
   # pgAdmin for database management
@@ -41,6 +41,7 @@ services:
       - CACHE_DIR=${CACHE_DIR:-/app/cache}
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
       - DATABASE_URL=${DATABASE_URL:-postgresql://quantuser:quantpass@postgres:5432/quant_system}
+      - TAILWIND_CSS_HREF=${TAILWIND_CSS_HREF:-exports/reports/assets/tailwind.min.css}
       - PYTHONPATH=/app
       - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY}
       - TWELVE_DATA_API_KEY=${TWELVE_DATA_API_KEY}
@@ -54,17 +55,34 @@ services:
       - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}
+      - USE_REDIS_RECENT=${USE_REDIS_RECENT:-false}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
     volumes:
       - ./cache:/app/cache
       - ./exports:/app/exports
       - ./logs:/app/logs
       - ./config:/app/config:ro
-      - ./quant-strategies/algorithms/python:/app/external_strategies:ro
+      - ./src:/app/src:ro
+      - ./scripts:/app/scripts:ro
+      - ./tests:/app/tests:ro
+      # Mount external strategies from host; set STRATEGIES_HOST_PATH to an absolute host path
+      - ${STRATEGIES_HOST_PATH}:/app/external_strategies:ro
+      - ./artifacts:/app/artifacts
     depends_on:
       - postgres
     stdin_open: true
     tty: true
     command: ["bash"]
+
+  # Optional Redis for recent overlay cache (enable via profile)
+  redis:
+    image: redis:7-alpine
+    container_name: quant-redis
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
+    profiles: ["redis"]
 
 networks:
   default:

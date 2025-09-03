@@ -1,9 +1,0 @@
-{
-  "test_bonds": {
-    "name": "Test Bonds Collection",
-    "asset_type": "bond",
-    "symbols": ["TLT", "IEF", "SHY"],
-    "initial_capital": 10000,
-    "commission": 0.001
-  }
-}
