@@ -1,4 +1,6 @@
 name: Daily Backtest
+permissions:
+  contents: read
 
 on:
   schedule:
