@@ -9,6 +9,7 @@ from ..utils.http import create_retry_session
 from .base import DataSource
 from .cache import ParquetCache
 from .ratelimiter import RateLimiter
+from .symbol_mapper import map_symbol
 
 
 class AlpacaSource(DataSource):
@@ -50,7 +51,7 @@ class AlpacaSource(DataSource):
         return s
 
     def fetch(self, symbol: str, timeframe: str, only_cached: bool = False) -> pd.DataFrame:
-        tf = timeframe
+        tf = timeframe.lower()
         cached = self.cache.load("alpaca", symbol, tf)
         if cached is not None and len(cached) > 0:
             return cached
@@ -65,9 +66,10 @@ class AlpacaSource(DataSource):
         session = create_retry_session()
         page_token = None
 
-        if self._is_crypto(symbol):
+        sym_fetch = map_symbol("alpaca", symbol)
+        if self._is_crypto(sym_fetch):
             # Crypto markets
-            mapped = self._map_crypto_symbol(symbol)
+            mapped = self._map_crypto_symbol(sym_fetch)
             url = "https://data.alpaca.markets/v1beta3/crypto/us/bars"
             params = {
                 "symbols": mapped,
@@ -103,7 +105,7 @@ class AlpacaSource(DataSource):
             # Stocks/ETFs
             url = "https://data.alpaca.markets/v2/stocks/bars"
             params = {
-                "symbols": symbol,
+                "symbols": sym_fetch,
                 "timeframe": self._map_tf(tf),
                 "limit": 10000,
                 "adjustment": "raw",
@@ -118,7 +120,7 @@ class AlpacaSource(DataSource):
                 resp = session.get(url, params=p, headers=headers, timeout=30)
                 resp.raise_for_status()
                 data = resp.json()
-                bars = (data.get("bars") or {}).get(symbol, [])
+                bars = (data.get("bars") or {}).get(sym_fetch, [])
                 for b in bars:
                     ts = pd.to_datetime(b["t"], utc=True)
                     rows.append(

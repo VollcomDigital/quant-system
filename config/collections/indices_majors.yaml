@@ -7,26 +7,27 @@ cache_dir: .cache/data
 
 collections:
   - name: indices_majors
-    source: yfinance
+    source: tiingo
     fees: 0.0005
     slippage: 0.0005
     symbols:
-      - SPY
-      - QQQ
-      - DIA
-      - IWM
-      - EFA
-      - EEM
-      - ^GSPC
-      - ^NDX
-      - ^DJI
-      - ^RUT
-      - ^GDAXI
-      - ^FCHI
-      - ^FTSE
-      - ^N225
-      - ^HSI
+      # Use ETF proxies with stable daily data from Tiingo
+      - SPY   # S&P 500
+      - QQQ   # Nasdaq 100
+      - DIA   # Dow Jones Industrial Average
+      - IWM   # Russell 2000
+      - EFA   # MSCI EAFE
+      - EEM   # MSCI Emerging Markets
+      - VGK   # Europe
+      - VPL   # Pacific
+      - EWJ   # Japan
+      - EWU   # UK
+      - EWG   # Germany
+      - EWQ   # France
+      - FXI   # China large-cap
+      - INDA  # India
+      - EWZ   # Brazil
 
-timeframes: ["1d", "1w"]
+timeframes: ["1d"]
 
 strategies: []

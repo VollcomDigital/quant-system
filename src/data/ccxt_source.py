@@ -9,6 +9,7 @@ import pandas as pd
 from .base import DataSource
 from .cache import ParquetCache
 from .ratelimiter import RateLimiter
+from .symbol_mapper import map_symbol
 
 CCXT_TF_MAP: dict[str, str] = {
     "1m": "1m",
@@ -49,6 +50,9 @@ class CCXTSource(DataSource):
         if tf not in CCXT_TF_MAP:
             raise ValueError(f"Unsupported timeframe for ccxt: {tf}")
 
+        # Map common variants to CCXT's expected format (e.g., BTCUSDT -> BTC/USDT)
+        sym_fetch = map_symbol(self.exchange_name, symbol)
+
         ohlcv = []
         limit = 1000
         since = None
@@ -57,7 +61,7 @@ class CCXTSource(DataSource):
         while True:
             self._limiter.acquire()
             try:
-                batch = self.exchange.fetch_ohlcv(symbol, timeframe=tf, since=since, limit=limit)
+                batch = self.exchange.fetch_ohlcv(sym_fetch, timeframe=tf, since=since, limit=limit)
             except Exception as e:
                 # Handle ccxt-specific throttle/availability errors with backoff
                 import ccxt

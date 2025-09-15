@@ -11,6 +11,7 @@ from .backtest.runner import BacktestRunner
 from .config import load_config
 from .reporting.all_csv_export import AllCSVExporter
 from .reporting.csv_export import CSVExporter
+from .reporting.health import HealthReporter
 from .reporting.html import HTMLReporter
 from .reporting.markdown import MarkdownReporter
 from .reporting.tradingview import TradingViewExporter
@@ -124,6 +125,8 @@ def run(
             "metric": cfg.metric,
             "results_count": len(results),
             "metrics": getattr(runner, "metrics", {}),
+            "failures_count": len(getattr(runner, "failures", [])),
+            "failures": getattr(runner, "failures", []),
         }
         (base_out / "summary.json").write_text(json.dumps(summary, indent=2))
     except Exception:
@@ -154,6 +157,12 @@ def run(
         pass
 
     typer.echo(f"Done. Reports in: {base_out}")
+
+    # Health report
+    try:
+        HealthReporter(base_out).export(getattr(runner, "failures", []))
+    except Exception:
+        pass
 
 
 @app.command()

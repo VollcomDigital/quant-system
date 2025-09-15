@@ -16,6 +16,6 @@ services:
     volumes:
       - ./:/app
       # Mount your external strategies repo here
-      - /Users/manuelheck/Documents/Websites/Private/quant/quant-strategies/algorithms/python:/ext/strategies:ro
+      - ${HOST_STRATEGIES_PATH:-./external-strategies}:/ext/strategies:ro
     working_dir: /app
     command: ["sleep", "infinity"]

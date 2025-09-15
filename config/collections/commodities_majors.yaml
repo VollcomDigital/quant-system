@@ -7,27 +7,27 @@ cache_dir: .cache/data
 
 collections:
   - name: commodities_majors
-    source: yfinance
+    source: tiingo
     fees: 0.0005
     slippage: 0.0005
     symbols:
-      - GLD
-      - SLV
-      - PPLT
-      - USO
-      - UNG
-      - DBC
-      - DBA
-      - DBB
-      - GC=F
-      - SI=F
-      - CL=F
-      - NG=F
-      - HG=F
-      - ZC=F
-      - ZS=F
-      - ZW=F
+      # Precious metals
+      - GLD    # Gold
+      - SLV    # Silver
+      - PPLT   # Platinum
+      - PALL   # Palladium
+      # Energy
+      - USO    # Crude Oil
+      - UNG    # Natural Gas
+      # Specific ags/base metals as ETFs (avoid futures tickers)
+      - CPER   # Copper
+      - WEAT   # Wheat
+      - CORN   # Corn
+      - SOYB   # Soybeans
+      - CANE   # Sugar
+      - JO     # Coffee (ETN)
+      - NIB    # Cocoa (ETN)
 
-timeframes: ["1d", "1w"]
+timeframes: ["1d"]
 
 strategies: []

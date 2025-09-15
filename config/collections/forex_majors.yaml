@@ -12,20 +12,29 @@ collections:
     fees: 0.0002
     slippage: 0.0002
     symbols:
-      # Major USD pairs
-      - EURUSD=X
-      - GBPUSD=X
-      - USDJPY=X
-      - USDCHF=X
-      - USDCAD=X
-      - AUDUSD=X
-      - NZDUSD=X
+      # Major USD pairs (provider-agnostic)
+      - EURUSD
+      - GBPUSD
+      - USDJPY
+      - USDCHF
+      - USDCAD
+      - AUDUSD
+      - NZDUSD
       # Crosses (popular/liquid)
-      - EURGBP=X
-      - EURJPY=X
-      - GBPJPY=X
+      - EURGBP
+      - EURJPY
+      - GBPJPY
+      - AUDJPY
+      - CADJPY
+      - CHFJPY
+      - EURCHF
+      - EURCAD
+      - EURAUD
+      - GBPCAD
+      - GBPAUD
+      - NZDJPY
 
 # Choose timeframes compatible across sources
-timeframes: ["1d", "4h"]
+timeframes: ["1d", "1h"]
 
 strategies: []

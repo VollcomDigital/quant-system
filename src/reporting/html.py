@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 from ..backtest.results_cache import ResultsCache
 
 if TYPE_CHECKING:
-    from ..backtest.runner import BestResult
+    pass
 
 
 class HTMLReporter:
@@ -25,32 +25,56 @@ class HTMLReporter:
         self.inline_css = inline_css
 
     def export(self, best: list[object]):
-        # Load all rows for top-N sections
+        # Load all rows for top-N sections from results cache
         all_rows = self.cache.list_by_run(self.run_id)
+        # Fallback: if the current run reused cached results and didn't write
+        # rows with this run_id, synthesize rows from the provided BestResult list.
+        if not all_rows and best:
+            try:
+                from ..backtest.runner import BestResult as _BR  # type: ignore
+
+                tmp: list[dict[str, Any]] = []
+                for b in best:
+                    if isinstance(b, _BR):
+                        tmp.append(
+                            {
+                                "collection": b.collection,
+                                "symbol": b.symbol,
+                                "timeframe": b.timeframe,
+                                "strategy": b.strategy,
+                                "params": b.params,
+                                "metric": b.metric_name,
+                                "metric_value": float(b.metric_value),
+                                "stats": b.stats if isinstance(b.stats, dict) else {},
+                            }
+                        )
+                all_rows = tmp
+            except Exception:
+                pass
         grouped: dict[tuple, list[dict[str, Any]]] = {}
         for r in all_rows:
             key = (r["collection"], r["symbol"])
             grouped.setdefault(key, []).append(r)
 
-        def card_for_best(r: BestResult) -> str:
-            stats = r.stats
+        def card_for_row(row: dict[str, Any]) -> str:
+            stats = row.get("stats", {}) or {}
             return f"""
             <div class='p-4 rounded-lg bg-slate-800 text-slate-100 shadow'>
                 <div class='flex justify-between items-baseline'>
-                    <h3 class='text-lg font-semibold'>{r.collection} / {r.symbol}</h3>
-                    <span class='text-xs px-2 py-1 rounded bg-slate-700'>{r.timeframe}</span>
+                    <h3 class='text-lg font-semibold'>{row.get("collection", "")} / {row.get("symbol", "")}</h3>
+                    <span class='text-xs px-2 py-1 rounded bg-slate-700'>{row.get("timeframe", "")}</span>
                 </div>
                 <div class='mt-2 text-sm'>
-                    <div><span class='font-semibold'>Strategy:</span> {r.strategy}</div>
-                    <div><span class='font-semibold'>Metric:</span> {r.metric_name} = {r.metric_value:.6f}</div>
-                    <div><span class='font-semibold'>Params:</span> <code class='text-xs'>{r.params}</code></div>
+                    <div><span class='font-semibold'>Strategy:</span> {row.get("strategy", "")}</div>
+                    <div><span class='font-semibold'>Metric:</span> {row.get("metric", "")} = {float(row.get("metric_value", float("nan"))):.6f}</div>
+                    <div><span class='font-semibold'>Params:</span> <code class='text-xs'>{row.get("params", {})}</code></div>
                 </div>
                 <div class='mt-3 grid grid-cols-2 gap-2 text-sm'>
-                    <div>Sharpe: {stats.get("sharpe", float("nan")):.4f}</div>
-                    <div>Sortino: {stats.get("sortino", float("nan")):.4f}</div>
-                    <div>Profit: {stats.get("profit", float("nan")):.4f}</div>
-                    <div>Trades: {stats.get("trades", 0)}</div>
-                    <div class='col-span-2'>Max DD: {stats.get("max_drawdown", float("nan")):.4f}</div>
+                    <div>Sharpe: {float(stats.get("sharpe", float("nan"))):.4f}</div>
+                    <div>Sortino: {float(stats.get("sortino", float("nan"))):.4f}</div>
+                    <div>Profit: {float(stats.get("profit", float("nan"))):.4f}</div>
+                    <div>Trades: {int(stats.get("trades", 0))}</div>
+                    <div class='col-span-2'>Max DD: {float(stats.get("max_drawdown", float("nan"))):.4f}</div>
                 </div>
             </div>
             """
@@ -89,18 +113,16 @@ class HTMLReporter:
             </div>
             """
 
-        best_by_key: dict[tuple, BestResult] = {}
-        for r in best:
-            best_by_key[(r.collection, r.symbol)] = r
-
+        # Build a card per (collection, symbol) showing the true best across
+        # all timeframes/strategies by metric_value
         cards = []
-        for key in sorted(best_by_key.keys()):
-            r = best_by_key[key]
+        for key in sorted(grouped.keys()):
+            rows = grouped[key]
+            if not rows:
+                continue
+            top = max(rows, key=lambda x: x["metric_value"])  # best overall
             cards.append(
-                "<section class='mb-6'>"
-                + card_for_best(r)
-                + (table_for_topn(grouped.get(key, [])) if key in grouped else "")
-                + "</section>"
+                "<section class='mb-6'>" + card_for_row(top) + table_for_topn(rows) + "</section>"
             )
 
         html = f"""

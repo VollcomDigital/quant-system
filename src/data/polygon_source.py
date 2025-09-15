@@ -10,6 +10,7 @@ from ..utils.http import create_retry_session
 from .base import DataSource
 from .cache import ParquetCache
 from .ratelimiter import RateLimiter
+from .symbol_mapper import map_symbol
 
 
 class PolygonSource(DataSource):
@@ -38,7 +39,7 @@ class PolygonSource(DataSource):
         raise ValueError(f"Unsupported timeframe for Polygon: {tf}")
 
     def fetch(self, symbol: str, timeframe: str, only_cached: bool = False) -> pd.DataFrame:
-        tf = timeframe
+        tf = timeframe.lower()
         cached = self.cache.load("polygon", symbol, tf)
         if cached is not None and len(cached) > 0:
             return cached
@@ -52,11 +53,12 @@ class PolygonSource(DataSource):
 
         rows = []
         session = create_retry_session()
+        sym_fetch = map_symbol("polygon", symbol)
         while start < end:
             self._limiter.acquire()
             chunk_end = min(start + timedelta(days=365 * 2), end)
             url = (
-                f"https://api.polygon.io/v2/aggs/ticker/{symbol}/range/{mult}/{span}/"
+                f"https://api.polygon.io/v2/aggs/ticker/{sym_fetch}/range/{mult}/{span}/"
                 f"{start.date()}"  # from
                 f"/{chunk_end.date()}"  # to
             )

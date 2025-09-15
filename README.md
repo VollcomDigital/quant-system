@@ -67,19 +67,51 @@ docker-compose run --rm app bash -lc "poetry run python -m src.main run --config
 
 ## Outputs
 
-- reports/<timestamp>/summary.csv: CSV of best combinations (one per symbol)
-- reports/<timestamp>/all_results.csv: CSV of all parameter evaluations (consolidated)
-- reports/<timestamp>/top3.csv: Top-N (default 3) per symbol
-- reports/<timestamp>/report.md: Markdown report (top combos and metrics)
-- reports/<timestamp>/tradingview.md: TradingView alert export (per best combo)
-- reports/<timestamp>/summary.json: Run summary (timings, counters)
-- reports/<timestamp>/metrics.prom: Prometheus-style metrics textfile
+- reports/`{timestamp}`/summary.csv: CSV of best combinations (one per symbol)
+- reports/`{timestamp}`/all_results.csv: CSV of all parameter evaluations (consolidated)
+- reports/`{timestamp}`/top3.csv: Top-N (default 3) per symbol
+- reports/`{timestamp}`/report.md: Markdown report (top combos and metrics)
+- reports/`{timestamp}`/tradingview.md: TradingView alert export (per best combo)
+- reports/`{timestamp}`/summary.json: Run summary (timings, counters)
+- reports/`{timestamp}`/metrics.prom: Prometheus-style metrics textfile
 
 ## Notes
 
 - Data caching uses Parquet files under .cache/data; HTTP cached for 12h. yfinance also integrates yfinance-cache when available.
-- Free data: yfinance for equities/ETFs; crypto via ccxt with exchange set (e.g., binance, bybit). Calls are rate-limited to avoid throttling.
+- Free data: yfinance for equities/ETFs/futures; crypto via ccxt with exchange set (e.g., binance, bybit). Calls are rate-limited to avoid throttling.
 - Premium data templates: Polygon, Tiingo, Alpaca under src/data/*. Provide API keys via env vars and implement fetch.
+- Additional sources: Finnhub (fx/equities intraday), Twelve Data (fx/equities intraday), Alpha Vantage (daily fallback).
+
+### Symbol Mapping
+
+Use provider‑agnostic symbols in config; a mapper translates per provider:
+
+- Futures: use roots like `GC`, `CL`, `SI`, `ZW`, `ZC`, `ZS`, ...
+  - yfinance: mapped to `GC=F`, `CL=F`, etc.
+  - polygon/tiingo/alpaca: Yahoo decorations removed.
+- Indices: you can use `SPX`, `NDX`, `DJI`, `RUT`, `VIX`.
+  - yfinance: mapped to `^GSPC`, `^NDX`, `^DJI`, `^RUT`, `^VIX`.
+- Share classes: prefer dot form in config, e.g., `BRK.B`.
+  - yfinance: mapped to `BRK-B`; others strip back to dot.
+- Forex: `EURUSD` or `EUR/USD` in config.
+  - yfinance: mapped to `EURUSD=X`; others use raw pair.
+- Crypto: `BTCUSD`, `BTC/USDT`, or `BTCUSDT` in config.
+  - yfinance: mapped to `BTC-USD`; ccxt uses the slash form.
+
+If you see a log line with a Yahoo‑decorated symbol (e.g., `ZW=F`) under yfinance, it usually means your config already uses the decorated form. Prefer the canonical form (`ZW`) in config so mapping can adapt automatically.
+
+### Providers Overview
+
+- Tiingo: stable daily/intraday for US equities/ETFs. Recommended for bonds, commodities ETFs, and index ETF proxies. Timeframes: 1d and selected intraday (no resampling).
+- yfinance: broad free coverage for indices and weekly bars. Recommended for index levels (e.g., SPX), forex daily/hourly. Timeframes: native only.
+- CCXT: crypto OHLCV from exchanges (e.g., Binance). Timeframes: exchange-supported only.
+- Polygon/Alpaca: robust intraday equities data at scale (paid). Use when you need minute bars with SLAs.
+- Finnhub: equities/FX/crypto intraday + fundamentals/news (paid). Good for FX intraday. Env: FINNHUB_API_KEY.
+- Twelve Data: FX/equities intraday (paid/free). Good as primary/backup for FX intraday. Env: TWELVEDATA_API_KEY.
+- Alpha Vantage: daily fallback for equities/FX (free). Not ideal for heavy intraday. Env: ALPHAVANTAGE_API_KEY.
+
+See new collection examples under `config/collections/` for FX intraday via Finnhub and Twelve Data.
+
 - Results cache: SQLite under .cache/results to resume and skip recomputation per param-set. Cache invalidates automatically when data changes (based on fingerprint).
 - Concurrency: set `asset_workers`, `param_workers`, and `max_fetch_concurrency` to control parallelization.
 - Per-collection configs live under `config/collections/`. Extend symbol lists to be as comprehensive as desired (majors/minors).
@@ -107,9 +139,10 @@ docker-compose run --rm app bash -lc "poetry run python -m src.main run --config
 
 ## Environment Variables (.env)
 
-- Copy `.env.example` to `.env` and fill keys: `POLYGON_API_KEY`, `TIINGO_API_KEY`, `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY`.
+- Copy `.env.example` to `.env` and fill keys: `POLYGON_API_KEY`, `TIINGO_API_KEY`, `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY`, `FINNHUB_API_KEY`, `TWELVEDATA_API_KEY`, `ALPHAVANTAGE_API_KEY`.
 - `docker-compose` loads `.env` automatically; the app also loads `.env` at startup.
 - Override cache and strategies path via `DATA_CACHE_DIR` and `STRATEGIES_PATH`.
+- For docker-compose host mount, set `HOST_STRATEGIES_PATH` to your local strategies repo; if unset, it falls back to `./external-strategies`.
 - Provider keys for scheduled runs can be set as repository secrets and are exported in `.github/workflows/daily-backtest.yml`.
 
 ## Git Ignore
@@ -130,8 +163,16 @@ docker-compose run --rm app bash -lc "poetry run python -m src.main run --config
 
 - Install and enable locally:
 
+```bash
   pip install pre-commit
   pre-commit install
+```
+
+- Run hooks on all files once:
+
+```bash
+  pre-commit run --all-files
+```
 
 - Hooks: Ruff lint and format, YAML checks, whitespace fixes.
 

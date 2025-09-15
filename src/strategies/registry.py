@@ -43,10 +43,42 @@ def discover_external_strategies(strategies_root: Path) -> dict[str, type[BaseSt
                 mod = None
         if mod is None:
             continue
+        # Native BaseStrategy subclasses
         for _, obj in inspect.getmembers(mod, inspect.isclass):
             if issubclass(obj, BaseStrategy) and obj is not BaseStrategy:
                 name = getattr(obj, "name", obj.__name__)
                 found[name] = obj
+
+        # Auto-adapt external classes that define generate_signals(self, data)
+        for _, ext_cls in inspect.getmembers(mod, inspect.isclass):
+            if ext_cls is BaseStrategy or issubclass(ext_cls, BaseStrategy):
+                continue
+            if hasattr(ext_cls, "generate_signals") and callable(ext_cls.generate_signals):
+                ext_mod_name = mod.__name__
+                ext_cls_name = ext_cls.__name__
+
+                def _make_adapter(module_name: str, class_name: str) -> type[BaseStrategy]:
+                    from .adapters.ctor_signals_adapter import CtorSignalsAdapter
+
+                    class _AutoAdapter(BaseStrategy):  # type: ignore[misc]
+                        name = class_name
+
+                        def param_grid(self) -> dict:
+                            return {}
+
+                        def generate_signals(self, df, params):
+                            merged = {
+                                **params,
+                                "external_module": module_name,
+                                "external_class": class_name,
+                            }
+                            return CtorSignalsAdapter().generate_signals(df, merged)
+
+                    _AutoAdapter.__name__ = f"AutoAdapter_{class_name}"
+                    return _AutoAdapter
+
+                adapter_cls = _make_adapter(ext_mod_name, ext_cls_name)
+                found[ext_cls_name] = adapter_cls
     return found
 
 

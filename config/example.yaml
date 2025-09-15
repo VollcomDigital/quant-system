@@ -18,29 +18,29 @@ collections:
     fees: 0.0006  # approx Bybit/Binance taker
     slippage: 0.0005
 
-  # Bonds (majors via ETFs on Yahoo Finance)
+  # Bonds (majors via ETFs on Tiingo for stable daily data)
   - name: bonds_majors
-    source: yfinance
+    source: tiingo
     symbols: ["TLT", "IEF", "SHY", "BND", "HYG"]
     fees: 0.0005  # approx IBKR
     slippage: 0.0005
 
-  # Commodities (majors via ETFs or futures tickers on Yahoo Finance)
+  # Commodities (majors via ETFs on Tiingo)
   - name: commodities_majors
-    source: yfinance
-    symbols: ["GLD", "SLV", "USO", "DBC", "GC=F", "CL=F"]
+    source: tiingo
+    symbols: ["GLD", "SLV", "PPLT", "USO", "UNG", "DBC", "DBA", "DBB", "CPER", "WEAT", "CORN", "SOYB"]
     fees: 0.0005
     slippage: 0.0005
 
-  # Indices (majors via ETFs or index tickers on Yahoo Finance)
+  # Indices (majors via ETF proxies on Tiingo)
   - name: indices_majors
-    source: yfinance
-    symbols: ["SPY", "QQQ", "DIA", "IWM", "^GSPC", "^NDX", "^DJI"]
+    source: tiingo
+    symbols: ["SPY", "QQQ", "DIA", "IWM", "EFA", "EEM"]
     fees: 0.0005
     slippage: 0.0005
 
 # Choose timeframes compatible across sources for full history
-timeframes: ["1d", "1w"]
+timeframes: ["1d"]
 
 strategies:
   # Example: replace with your external strategy name and optionally module/class.

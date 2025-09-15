@@ -1,0 +1,27 @@
+metric: sortino
+engine: vectorbt
+asset_workers: 4
+param_workers: 1
+max_fetch_concurrency: 2
+cache_dir: .cache/data
+
+collections:
+  - name: forex_intraday_finnhub
+    source: finnhub
+    fees: 0.0002
+    slippage: 0.0002
+    symbols:
+      - EURUSD
+      - GBPUSD
+      - USDJPY
+      - USDCHF
+      - USDCAD
+      - AUDUSD
+      - NZDUSD
+      - EURGBP
+      - EURJPY
+      - GBPJPY
+
+timeframes: ["1h", "15m", "5m"]
+
+strategies: []

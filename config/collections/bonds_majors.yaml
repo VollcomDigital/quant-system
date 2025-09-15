@@ -7,7 +7,7 @@ cache_dir: .cache/data
 
 collections:
   - name: bonds_majors
-    source: yfinance
+    source: tiingo
     fees: 0.0005
     slippage: 0.0005
     symbols:
@@ -15,13 +15,17 @@ collections:
       - IEF
       - IEI
       - SHY
+      - BIL
       - BND
       - AGG
       - LQD
       - HYG
+      - JNK
       - IGSB
       - TIP
+      - MUB
+      - EMB
 
-timeframes: ["1d", "1w"]
+timeframes: ["1d"]
 
 strategies: []

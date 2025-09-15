@@ -10,6 +10,7 @@ from ..utils.http import create_retry_session
 from .base import DataSource
 from .cache import ParquetCache
 from .ratelimiter import RateLimiter
+from .symbol_mapper import map_symbol
 
 
 class TiingoSource(DataSource):
@@ -40,10 +41,11 @@ class TiingoSource(DataSource):
         params_base = {"token": self.api_key}
 
         rows = []
+        sym_fetch = map_symbol("tiingo", symbol)
 
         if tf.endswith("d"):
             # Daily: /tiingo/daily/{ticker}/prices
-            url = f"https://api.tiingo.com/tiingo/daily/{symbol}/prices"
+            url = f"https://api.tiingo.com/tiingo/daily/{sym_fetch}/prices"
             params = params_base | {"startDate": "1990-01-01"}
             self._limiter.acquire()
             resp = session.get(url, params=params, headers=headers, timeout=30)
@@ -75,7 +77,7 @@ class TiingoSource(DataSource):
             end = datetime.now(timezone.utc)
             while start < end:
                 chunk_end = min(start + timedelta(days=30), end)
-                url = f"https://api.tiingo.com/iex/{symbol}/prices"
+                url = f"https://api.tiingo.com/iex/{sym_fetch}/prices"
                 params = params_base | {
                     "startDate": start.date().isoformat(),
                     "endDate": chunk_end.date().isoformat(),
