@@ -1,29 +1,25 @@
 ---
-name: Bug Report
-about: Report a bug to help us improve
-title: '[BUG] '
-labels: ['bug']
-assignees: ''
+name: Bug report
+about: Create a report to help us improve
+labels: bug
 ---
 
-## Bug Description
-A clear description of what the bug is.
+## Describe the bug
+A clear and concise description of what the bug is.
 
-## Steps to Reproduce
-1. Step 1
-2. Step 2
-3. Step 3
+## To Reproduce
+Steps to reproduce the behavior:
 
-## Expected Behavior
+1. Command(s) run
+2. Config used
+3. What happened
+
+## Expected behavior
 What you expected to happen.
 
-## Actual Behavior
-What actually happened.
-
 ## Environment
-- Python version:
-- OS:
-- Portfolio/Strategy:
+- Docker or local Python version
+- OS/arch
 
-## Additional Context
-Any other context about the problem.
+## Additional context
+Logs, stack traces, screenshots (redact secrets).

@@ -1,32 +1,57 @@
-# Contributing
+# Contributing Guide
 
-Thanks for your interest in contributing to quant-system!
+Thanks for your interest in contributing! This document describes how to propose changes and what we expect for code quality, tests, and security.
 
-## License and Use
+## Development Setup
 
-This repository is released under the Business Source License 1.1 (BUSL‑1.1).
-Commercial use is restricted until the Change Date listed in `LICENSE`. On that
-date, the project will convert to the MIT License.
+- Use Python 3.10 (vectorbt requires <3.11). The Docker image already provides a working toolchain.
+- Recommended path: develop inside Docker with Poetry:
 
-## Deprecations and Import Paths
+  - Build: `docker-compose build`
+  - Shell: `docker-compose run --rm app bash`
+  - Install deps: `poetry install`
 
-We recently renamed modules:
+## Working on Issues
 
-- `src.core.portfolio_manager` → `src.core.collection_manager` (class: `PortfolioManager`)
-- `src.utils.tradingview_alert_exporter` → `src.utils.tv_alert_exporter`
+- Check existing issues before opening a new one.
+- For significant changes, open a discussion or issue first to align on the approach.
 
-Compatibility shims exist for now and will emit `DeprecationWarning`. Please
-update imports to the new modules. The shims are scheduled for removal after
-the next minor release.
+## Branching and Commits
 
-## Development
+- Create feature branches off `main` using concise names, e.g. `feat/xyz`, `fix/abc`.
+- Write clear commit messages (imperative mood). Group small related changes together.
 
-- Use `docker compose` and the unified CLI. See `README.md` and `docs/docker.md`.
-- Run `pre-commit` locally: `pre-commit install && pre-commit run -a`.
-- Tests run inside Docker via the pre-commit hook.
+## Code Quality
 
-## Pull Requests
+- Run linters and formatters via pre-commit:
 
-- Keep PRs focused and small.
-- Include tests for behavior changes.
-- Pass pre-commit hooks (format, lint, tests).
+  ```bash
+  pip install pre-commit
+  pre-commit install
+  pre-commit run --all-files
+  ```
+
+- Python style is enforced by Ruff (including import sorting).
+
+## Tests & Coverage
+
+- Add unit tests for new logic. Keep tests deterministic (no network calls) unless explicitly marked as integration.
+- Coverage gate is 80% (enforced by pre-commit and CI). Prefer small tests over untested features.
+
+## Security
+
+- Never commit secrets. Pre-commit and CI include secret scanning; Dependabot and CodeQL are enabled.
+- Report security issues privately (see SECURITY.md). Do not open public issues for vulnerabilities.
+
+## Submitting a PR
+
+1. Ensure pre-commit passes locally.
+2. Include a brief description of the change and rationale.
+3. Reference related issues.
+4. Keep PRs focused; large unrelated changes are likely to be requested to split.
+
+## Release & Changelog
+
+- Maintainers will tag releases and update release notes.
+
+Thanks again for helping improve this project!

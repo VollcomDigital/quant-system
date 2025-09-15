@@ -1,0 +1,33 @@
+metric: sortino
+engine: vectorbt
+asset_workers: 4
+param_workers: 1
+max_fetch_concurrency: 2
+cache_dir: .cache/data
+
+collections:
+  - name: commodities_majors
+    source: tiingo
+    fees: 0.0005
+    slippage: 0.0005
+    symbols:
+      # Precious metals
+      - GLD    # Gold
+      - SLV    # Silver
+      - PPLT   # Platinum
+      - PALL   # Palladium
+      # Energy
+      - USO    # Crude Oil
+      - UNG    # Natural Gas
+      # Specific ags/base metals as ETFs (avoid futures tickers)
+      - CPER   # Copper
+      - WEAT   # Wheat
+      - CORN   # Corn
+      - SOYB   # Soybeans
+      - CANE   # Sugar
+      - JO     # Coffee (ETN)
+      - NIB    # Cocoa (ETN)
+
+timeframes: ["1d"]
+
+strategies: []

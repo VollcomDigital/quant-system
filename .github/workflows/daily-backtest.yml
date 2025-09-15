@@ -1,0 +1,52 @@
+name: Daily Backtest
+permissions:
+  contents: read
+
+on:
+  schedule:
+    - cron: '0 5 * * *'  # 05:00 UTC daily
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      STRATEGIES_DIR: strategies
+    steps:
+      - name: Checkout quant-system
+        uses: actions/checkout@v4
+
+      - name: Checkout strategies repo
+        if: ${{ secrets.STRATEGIES_REPO != '' && secrets.GH_TOKEN != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ secrets.STRATEGIES_REPO }}
+          token: ${{ secrets.GH_TOKEN }}
+          path: strategies
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Poetry
+        run: pip install poetry==1.8.3
+
+      - name: Install deps
+        run: poetry install --no-root
+
+      - name: Run backtests (all collections)
+        env:
+          POLYGON_API_KEY: ${{ secrets.POLYGON_API_KEY }}
+          TIINGO_API_KEY: ${{ secrets.TIINGO_API_KEY }}
+          ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID }}
+          ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY }}
+        run: |
+          mkdir -p reports
+          poetry run python -m src.main run --config config/example.yaml --strategies-path "${{ env.STRATEGIES_DIR }}"
+
+      - name: Upload reports artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: backtest-reports
+          path: reports/**

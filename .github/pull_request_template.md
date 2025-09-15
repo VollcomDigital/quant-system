@@ -1,31 +1,26 @@
-# Pull Request
+## Summary
 
-## Description
-Brief description of what this PR does.
+Briefly describe the change and the motivation.
 
-## Type of Change
-- [ ] Bug fix
-- [ ] New feature
-- [ ] Breaking change
-- [ ] Documentation update
-- [ ] Performance improvement
-- [ ] Code refactoring
+## Changes
 
-## Changes Made
-- Change 1
-- Change 2
-- Change 3
+- What was added/changed?
+- Any breaking changes?
 
-## Testing
-- [ ] Tests pass locally
-- [ ] New tests added (if applicable)
-- [ ] Manual testing completed
+## How to Test
 
-## Checklist
-- [ ] Code follows project style guidelines
-- [ ] Self-review completed
-- [ ] Documentation updated (if needed)
-- [ ] No breaking changes (or documented)
+- Commands or steps to validate locally (Docker/Poetry)
+- Relevant config or environment variables
 
-## Related Issues
-Fixes #(issue number)
+## Checklist (KISS)
+
+- [ ] Pre-commit passes locally (`pre-commit run --all-files`)
+- [ ] Tests added/updated where it makes sense (80% cov gate)
+- [ ] Docs/README updated if needed
+- [ ] No secrets committed; `.env` values are excluded
+- [ ] Backward compatibility considered (configs, CLI flags)
+
+## Related Issues/Links
+
+- Closes #
+- References #

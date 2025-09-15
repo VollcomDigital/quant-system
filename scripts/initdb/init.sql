@@ -1,4 +1,0 @@
--- Initialization SQL for quant-system Postgres
--- This file is mounted into /docker-entrypoint-initdb.d/init.sql
--- Add optional safe setup below (keep idempotent when possible)
--- Example: CREATE SCHEMA IF NOT EXISTS research;

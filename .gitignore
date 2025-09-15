@@ -1,117 +1,24 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-*.egg-info/
-.installed.cfg
-*.egg
+.pytest_cache/
+.mypy_cache/
 .ruff_cache/
 
-# Virtual Environments
-venv/
-env/
-ENV/
-.env
-.venv/
-env.bak/
-venv.bak/
-Pipfile
-Pipfile.lock
-
-# Jupyter Notebooks
-.ipynb_checkpoints/
-
-# Logs and Data
-logs/
-*.log
-*.csv
-cache/
-!data/
-
-# Output files and reports
-reports_output/
-backtests/results/
-exports/*
-!exports/**/.gitkeep
-dist/
-build/
-artifacts/
-*.tar.gz
-*.whl
-
-# Performance and benchmark data
-.benchmarks/
-performance_reports/
-benchmark_results/
-
-# QuantConnect Lean files
-lean_config.json
-*.backtest.json
-*.backtest.csv
-
-# IDE and Editor files
-# VSCode
-.vscode/
-*.code-workspace
-
-# JetBrains
-.idea/
-*.iml
-*.iws
-
-# pyenv / direnv
-.python-version
-.direnv/
-.envrc
-
-# Testing and Type Checking
-.coverage
-.coverage.*
-htmlcov/
-.tox/
-.nox/
-nosetests.xml
-coverage.xml
-*.cover
-.hypothesis/
-.pytest_cache/
+# Local data and reports
 .cache/
-.mypy_cache/
-.dmypy.json
-dmypy.json
-.pyre/
-.benchmarks/
+reports/
+http_cache.sqlite
 
-# macOS
+# Environments and secrets
+.env
+.env.*
+!.env.example
+.venv/
+
+# OS
 .DS_Store
-.AppleDouble
-.LSOverride
-Icon
-._*
-.DocumentRevisions-V100
-.fseventsd
-.Spotlight-V100
-.TemporaryItems
-.Trashes
-.VolumeIcon.icns
-.com.apple.timemachine.donotpresent
-.AppleDB
-.AppleDesktop
-Network Trash Folder
-Temporary Items
-.apdisk
 
-# Windows
-Thumbs.db
-ehthumbs.db
-Desktop.ini
-.qodo
-
-# Submodules (track only committed versions)
-# Ignore local development changes in submodules
-
-# Local agent configuration (hidden from repo)
-.agent.md
-AGENT.md
+# Editors/IDE
+.vscode/
+.idea/

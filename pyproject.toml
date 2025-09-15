@@ -1,106 +1,48 @@
 [tool.poetry]
 name = "quant-system"
-version = "2.0.0"
-description = "Comprehensive quantitative analysis system with multi-asset support, advanced portfolio optimization, and extensive backtesting capabilities"
-authors = ["Louis Letcher <heck.manu@icloud.com>"]
-license = "MIT"
+version = "0.1.0"
+description = "Dockerized, cache-aware, config-driven backtesting system using vectorbt"
+authors = ["Louis Letcher <y36189959+LouisLetcher@users.noreply.github.com>"]
 readme = "README.md"
-packages = [{ include = "src", from = "." }]
+packages = [
+    { include = "src" }
+]
 
 [tool.poetry.dependencies]
-python = ">=3.12,<4.0"
-# Core data analysis
-pandas = "^2.3"
-numpy = "^2.3.2"
-scipy = "^1.11.0"
-# Backtesting
-backtesting = "^0.6"
-# Database
-sqlalchemy = "^2.0"
-psycopg2-binary = "^2.9"
-# Data sources
-yfinance = "^0.2"
-yfinance-cache = "^0.7.13"
-requests = "^2.32.4"
-# Web scraping
-beautifulsoup4 = "^4.13.4"
-# Configuration
-pyyaml = "^6.0"
+python = ">=3.9,<3.11"
+numpy = "1.24.4"
+pandas = "2.0.3"
+pyarrow = "17.0.0"
+requests-cache = "1.2.1"
+typer = "0.12.3"
+PyYAML = "6.0.2"
+pydantic = "2.8.2"
+yfinance = "0.2.43"
+ccxt = "4.4.15"
+vectorbt = "0.24.5"
+plotly = "<6.0.0"
+tabulate = "0.9.0"
+python-dotenv = "^1.0.1"
+backtesting = "^0.3.3"
+numba = "==0.57.1"
+llvmlite = "==0.40.1"
 
 [tool.poetry.group.dev.dependencies]
-# Essential dev tools only
-ruff = "^0.12"
-pytest = "^8.4"
-pytest-cov = "^6.2"
-pre-commit = "^4.3"
+ruff = "^0.6.4"
+pre-commit = "^3.8.0"
+pytest = "^8.3.3"
+pytest-cov = "^5.0.0"
 
-[tool.poetry.group.security.dependencies]
-# Security scanning tools
-bandit = "^1.7"
-safety = "^3.0"
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = ["E", "F", "B", "I", "UP"]
+ignore = ["E203", "E266", "E501", "W503"]
 
-[tool.poetry.group.jupyter.dependencies]
-# Optional for data analysis
-jupyter = "^1.0"
-jupyterlab = "^4.0"
-plotly = "^6.3.0"
-matplotlib = "^3.10"
-seaborn = "^0.13.0"
-
-[tool.poetry.group.api.dependencies]
-# Optional API dependencies
-fastapi = "^0.116"
-uvicorn = "^0.34"
-pydantic = "^2.11"
-
-
+[tool.ruff.isort]
+known-first-party = ["src"]
+profile = "black"
 
 [build-system]
-requires = ["poetry-core"]
+requires = ["poetry-core>=1.9.0"]
 build-backend = "poetry.core.masonry.api"
-
-# Tool Configurations
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-addopts = ["--cov=src", "--cov-report=term", "-ra"]
-markers = ["integration: integration tests"]
-pythonpath = ["."]
-
-[tool.coverage.run]
-source = ["src"]
-omit = [
-    "*/tests/*",
-    "*/test_*",
-    "*/__pycache__/*",
-    "*/migrations/*"
-]
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "def __repr__",
-    "raise AssertionError",
-    "raise NotImplementedError",
-    "if __name__ == .__main__.:"
-]
-
-[tool.mypy]
-python_version = "3.12"
-ignore_missing_imports = true
-show_error_codes = true
-warn_return_any = false
-warn_unused_configs = false
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-check_untyped_defs = false
-disallow_untyped_decorators = false
-no_implicit_optional = false
-warn_redundant_casts = false
-warn_unused_ignores = false
-warn_no_return = false
-warn_unreachable = false
-strict_equality = false
-
-[[tool.mypy.overrides]]
-module = ["yfinance.*", "backtesting.*"]
-ignore_missing_imports = true

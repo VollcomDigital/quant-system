@@ -1,92 +1,21 @@
 services:
-  # PostgreSQL database
-  postgres:
-    image: postgres:15-alpine
-    container_name: quant-postgres
-    environment:
-      - POSTGRES_DB=${POSTGRES_DB:-quant_system}
-      - POSTGRES_USER=${POSTGRES_USER:-quantuser}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-quantpass}
-    ports:
-      - "5433:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-      - ./scripts/initdb/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    restart: unless-stopped
-
-  # pgAdmin for database management
-  pgadmin:
-    image: dpage/pgadmin4:latest
-    container_name: quant-pgadmin
-    environment:
-      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL:-admin@quant.local}
-      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD:-quantpass}
-      - PGADMIN_CONFIG_SERVER_MODE=${PGADMIN_CONFIG_SERVER_MODE:-False}
-    ports:
-      - "5050:80"
-    depends_on:
-      - postgres
-    restart: unless-stopped
-
-  # Local quant system with production features
-  quant:
+  app:
     build:
       context: .
-      dockerfile: DOCKERFILE
-      target: development
-    image: quant-system:local
-    container_name: quant-system
+      dockerfile: docker/Dockerfile
+    image: quant-system:latest
     environment:
-      - ENVIRONMENT=${ENVIRONMENT:-development}
-      - CACHE_DIR=${CACHE_DIR:-/app/cache}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - DATABASE_URL=${DATABASE_URL:-postgresql://quantuser:quantpass@postgres:5432/quant_system}
-      - TAILWIND_CSS_HREF=${TAILWIND_CSS_HREF:-exports/reports/assets/tailwind.min.css}
-      - PYTHONPATH=/app
-      - ALPHA_VANTAGE_API_KEY=${ALPHA_VANTAGE_API_KEY}
-      - TWELVE_DATA_API_KEY=${TWELVE_DATA_API_KEY}
-      - POLYGON_API_KEY=${POLYGON_API_KEY}
-      - TIINGO_API_KEY=${TIINGO_API_KEY}
-      - FINNHUB_API_KEY=${FINNHUB_API_KEY}
-      - BYBIT_API_KEY=${BYBIT_API_KEY}
-      - BYBIT_API_SECRET=${BYBIT_API_SECRET}
-      - BYBIT_TESTNET=${BYBIT_TESTNET:-false}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - OPENAI_MODEL=${OPENAI_MODEL:-gpt-4o}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-3-5-sonnet-20241022}
-      - USE_REDIS_RECENT=${USE_REDIS_RECENT:-false}
-      - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
+      - PYTHONUNBUFFERED=1
+      - TZ=UTC
+      # Override STRATEGIES_PATH or DATA_CACHE_DIR via env if needed
+      - STRATEGIES_PATH=/ext/strategies
+      - DATA_CACHE_DIR=/app/.cache/data
+      - PATH=/root/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+    env_file:
+      - .env
     volumes:
-      - ./cache:/app/cache
-      - ./exports:/app/exports
-      - ./logs:/app/logs
-      - ./config:/app/config:ro
-      - ./src:/app/src:ro
-      - ./scripts:/app/scripts:ro
-      - ./tests:/app/tests:ro
-      # Mount external strategies from host; set STRATEGIES_HOST_PATH to an absolute host path
-      - ${STRATEGIES_HOST_PATH}:/app/external_strategies:ro
-      - ./artifacts:/app/artifacts
-    depends_on:
-      - postgres
-    stdin_open: true
-    tty: true
-    command: ["bash"]
-
-  # Optional Redis for recent overlay cache (enable via profile)
-  redis:
-    image: redis:7-alpine
-    container_name: quant-redis
-    ports:
-      - "6379:6379"
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
-    restart: unless-stopped
-    profiles: ["redis"]
-
-networks:
-  default:
-    driver: bridge
-
-volumes:
-  postgres-data:
+      - ./:/app
+      # Mount your external strategies repo here
+      - ${HOST_STRATEGIES_PATH:-./external-strategies}:/ext/strategies:ro
+    working_dir: /app
+    command: ["sleep", "infinity"]

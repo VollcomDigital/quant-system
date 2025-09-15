@@ -1,20 +1,4 @@
-# Global owners
-* @LouisLetcher
-
-# Core system
-/src/core/ @LouisLetcher
-
-# Strategy algorithms
-/src/backtesting_engine/algorithms/ @LouisLetcher
-
-# CI/CD and workflows
-/.github/ @LouisLetcher
-
-# Documentation
-/docs/ @LouisLetcher
-
-# Configuration
-/config/ @LouisLetcher
-
-# Scripts
-/scripts/ @LouisLetcher
+# See GOVERNANCE.md for details
+*       @manuelheck
+.github/ @manuelheck
+src/    @manuelheck

@@ -1,229 +1,192 @@
-# Quant System
+# Quant System (Dockerized)
 
-A unified, Dockerized quantitative backtesting and reporting system. Run cross‑strategy comparisons for asset collections (e.g., bonds) and persist results to PostgreSQL with exportable artifacts.
+## Overview
 
-## 🚀 Quick Start
+This repository provides a Docker-based, cache-aware backtesting system to systematically evaluate multiple strategies across multiple assets, timeframes, and the full available history. It discovers strategies from an external repo and produces:
 
-### Docker Setup
+- Markdown report (best combination per asset/strategy/timeframe)
+- TradingView alert export (markdown)
+- CSV summary of best results
 
-```bash
-# Clone repository
-git clone <repository-url>
-cd quant-system
+## Key Features
 
-# Start PostgreSQL and pgAdmin
-docker compose up -d postgres pgadmin
+- Pluggable data sources (free and premium-friendly) with local Parquet caching
+- Strategy discovery from external repo via a clean BaseStrategy interface
+- Batch runs across collections (e.g., crypto, forex, bonds, stocks)
+- Parameter grid search with best-by metric (Sharpe, Sortino, or Profit)
+- Dockerized runtime for reproducibility
+- Results cache (SQLite) to resume and skip already-computed grids
+- Structured logging and timing metrics per data fetch and grid search
 
-# Build the app image (uses DOCKERFILE)
-docker compose build quant
+## Requirements
 
-# Show CLI help
-docker compose run --rm quant python -m src.cli.unified_cli --help
+- Docker and docker-compose
+- Poetry (for local non-Docker runs)
+- Python 3.9 or 3.10 (vectorbt requires <3.11)
+- External strategies repo mounted at runtime (defaults to /Users/manuelheck/Documents/Websites/Private/quant/quant-strategies/algorithms/python)
+- Optional: pre-commit for local linting hooks
 
-# Interactive shell inside the app container
-docker compose run --rm quant bash
-```
+## Project Structure
 
-## 📈 Usage
+- src/main.py: CLI entrypoint (Typer)
+- src/config.py: Loads and validates YAML config
+- src/data/: Data source interfaces and caching helpers
+- src/strategies/: Base strategy interface and external loader
+- src/backtest/: Runner, metric computation, and results cache (resume)
+- src/utils/telemetry.py: Structured logging utilities and timed context
+- src/reporting/: Markdown, CSV, TradingView exporters
+- config/example.yaml: Example configuration
+- config/collections/: Per-collection configs (crypto, bonds, commodities, indices)
 
-See also: docs/pgadmin-and-performance.md for DB inspection and performance tips.
+## Quick Start
 
-The unified CLI currently exposes a single subcommand: `collection`.
+1) Configure your run in config/example.yaml (collections, timeframes, metrics, strategies, params).
+2) Ensure your strategies repo contains classes deriving BaseStrategy (see src/strategies/base.py and the example).
+3) Check discovered strategies:
 
-### Run Bonds (1d interval, max period, all strategies)
+   docker-compose run --rm app bash -lc "poetry run python -m src.main list-strategies --strategies-path /ext/strategies"
 
-Use the collection key (`bonds`) or the JSON file path. The `direct` action runs the backtests and writes results to the DB. Add `--exports all` to generate CSV/HTML/TV/AI artifacts when possible.
-
-```bash
-# Using the collection key (recommended)
-docker compose run --rm \
-  -e STRATEGIES_PATH=/app/external_strategies \
-  quant python -m src.cli.unified_cli collection bonds \
-  --action direct \
-  --interval 1d \
-  --period max \
-  --strategies all \
-  --exports all \
-  --log-level INFO
-
-# Using the JSON file
-docker compose run --rm \
-  -e STRATEGIES_PATH=/app/external_strategies \
-  quant python -m src.cli.unified_cli collection config/collections/bonds.json \
-  --action direct \
-  --interval 1d \
-  --period max \
-  --strategies all \
-  --exports all \
-  --log-level INFO
-```
-
-Notes
-
-- Default metric is `sortino_ratio`.
-- Strategies are mounted at `/app/external_strategies` via `docker-compose.yml`; `STRATEGIES_PATH` makes discovery explicit.
-- Artifacts are written under `artifacts/run_*`. DB tables used include `runs`, `backtest_results`, `best_strategies`, and `run_artifacts`.
-- pgAdmin is available at `http://localhost:5050` (defaults configured via `.env`/`.env.example`).
-
-### Dry Run (plan only + optional exports)
+4) Run via docker-compose (Poetry):
 
 ```bash
-docker compose run --rm \
-  -e STRATEGIES_PATH=/app/external_strategies \
-  quant python -m src.cli.unified_cli collection bonds \
-  --interval 1d --period max --strategies all \
-  --dry-run --exports all --log-level DEBUG
+docker-compose run --rm app bash -lc "poetry run python -m src.main run --config config/collections/crypto_majors.yaml"
+# or bonds/commodities/indices individually
+docker-compose run --rm app bash -lc "poetry run python -m src.main run --config config/collections/bonds_majors.yaml"
+# generate reports with top-5 per symbol and offline HTML
+docker-compose run --rm app bash -lc "poetry run python -m src.main run --config config/collections/crypto_majors.yaml --top-n 5 --inline-css"
 ```
 
-### Other Actions
+## Make Targets
 
-The `collection` subcommand supports these `--action` values: `backtest`, `direct`, `optimization`, `export`, `report`, `tradingview`. In most workflows, use `--action direct` and optionally `--exports`.
+- `make build` / `make build-nc`: build image (no-cache).
+- `make sh`: open a shell in the container.
+- `make list-strategies`: verify external strategies are discovered.
+- `make run-bonds` / `make run-crypto` / `make run-commodities` / `make run-indices` / `make run-forex`: run a collection.
+- `make discover-crypto EXCHANGE=binance QUOTE=USDT TOP=100 OUT=config/collections/crypto_top100.yaml NAME=crypto_top100`: generate a crypto universe config.
+- `make lock` / `make lock-update`: create or update `poetry.lock` inside the container for reproducible builds.
 
-## 🔧 Configuration
+## Outputs
 
-### Environment Variables (.env)
+- reports/`{timestamp}`/summary.csv: CSV of best combinations (one per symbol)
+- reports/`{timestamp}`/all_results.csv: CSV of all parameter evaluations (consolidated)
+- reports/`{timestamp}`/top3.csv: Top-N (default 3) per symbol
+- reports/`{timestamp}`/report.md: Markdown report (top combos and metrics)
+- reports/`{timestamp}`/tradingview.md: TradingView alert export (per best combo)
+- reports/`{timestamp}`/summary.json: Run summary (timings, counters)
+- reports/`{timestamp}`/metrics.prom: Prometheus-style metrics textfile
+
+## Notes
+
+- Data caching uses Parquet files under .cache/data; HTTP cached for 12h. yfinance also integrates yfinance-cache when available.
+- Free data: yfinance for equities/ETFs/futures; crypto via ccxt with exchange set (e.g., binance, bybit). Calls are rate-limited to avoid throttling.
+- Premium data templates: Polygon, Tiingo, Alpaca under src/data/*. Provide API keys via env vars and implement fetch.
+- Additional sources: Finnhub (fx/equities intraday), Twelve Data (fx/equities intraday), Alpha Vantage (daily fallback).
+
+### Symbol Mapping
+
+Use provider‑agnostic symbols in config; a mapper translates per provider:
+
+- Futures: use roots like `GC`, `CL`, `SI`, `ZW`, `ZC`, `ZS`, ...
+  - yfinance: mapped to `GC=F`, `CL=F`, etc.
+  - polygon/tiingo/alpaca: Yahoo decorations removed.
+- Indices: you can use `SPX`, `NDX`, `DJI`, `RUT`, `VIX`.
+  - yfinance: mapped to `^GSPC`, `^NDX`, `^DJI`, `^RUT`, `^VIX`.
+- Share classes: prefer dot form in config, e.g., `BRK.B`.
+  - yfinance: mapped to `BRK-B`; others strip back to dot.
+- Forex: `EURUSD` or `EUR/USD` in config.
+  - yfinance: mapped to `EURUSD=X`; others use raw pair.
+- Crypto: `BTCUSD`, `BTC/USDT`, or `BTCUSDT` in config.
+  - yfinance: mapped to `BTC-USD`; ccxt uses the slash form.
+
+If you see a log line with a Yahoo‑decorated symbol (e.g., `ZW=F`) under yfinance, it usually means your config already uses the decorated form. Prefer the canonical form (`ZW`) in config so mapping can adapt automatically.
+
+### Providers Overview
+
+- Tiingo: stable daily/intraday for US equities/ETFs. Recommended for bonds, commodities ETFs, and index ETF proxies. Timeframes: 1d and selected intraday (no resampling).
+- yfinance: broad free coverage for indices and weekly bars. Recommended for index levels (e.g., SPX), forex daily/hourly. Timeframes: native only.
+- CCXT: crypto OHLCV from exchanges (e.g., Binance). Timeframes: exchange-supported only.
+- Polygon/Alpaca: robust intraday equities data at scale (paid). Use when you need minute bars with SLAs.
+- Finnhub: equities/FX/crypto intraday + fundamentals/news (paid). Good for FX intraday. Env: FINNHUB_API_KEY.
+- Twelve Data: FX/equities intraday (paid/free). Good as primary/backup for FX intraday. Env: TWELVEDATA_API_KEY.
+- Alpha Vantage: daily fallback for equities/FX (free). Not ideal for heavy intraday. Env: ALPHAVANTAGE_API_KEY.
+
+See new collection examples under `config/collections/` for FX intraday via Finnhub and Twelve Data.
+
+- Results cache: SQLite under .cache/results to resume and skip recomputation per param-set. Cache invalidates automatically when data changes (based on fingerprint).
+- Concurrency: set `asset_workers`, `param_workers`, and `max_fetch_concurrency` to control parallelization.
+- Per-collection configs live under `config/collections/`. Extend symbol lists to be as comprehensive as desired (majors/minors).
+- Strategy selection: all discovered strategies are tested by default; `strategies:` only overrides parameter grids by name.
+
+## CI & Scheduling
+
+- Linting via Ruff in `.github/workflows/ci.yml` on push/PR.
+- Daily scheduled backtest via `.github/workflows/daily-backtest.yml` (05:00 UTC). To use your strategies repo in CI:
+  - Add secrets `STRATEGIES_REPO` (e.g., org/repo) and `GH_TOKEN` with read access.
+  - The workflow checks out both repos and runs `poetry run python -m src.main run --config config/example.yaml --strategies-path strategies`.
+  - Security: Gitleaks runs on PRs and `main`.
+  - CodeQL: Uses GitHub’s Default setup (enable under Security → Code scanning). No custom workflow is required.
+
+## Governance
+
+- Branch protection and required status checks recommendations are in `GOVERNANCE.md`.
+- CODEOWNERS is set under `.github/CODEOWNERS`.
+
+## Symbol Discovery (Crypto)
+
+- Build a universe of top volume pairs via ccxt and emit a config file:
+
+  docker-compose run --rm app bash -lc "poetry run python -m src.main discover-symbols --exchange binance --quote USDT --top-n 100 --name crypto_top100 --output config/collections/crypto_top100.yaml"
+
+## Environment Variables (.env)
+
+- Copy `.env.example` to `.env` and fill keys: `POLYGON_API_KEY`, `TIINGO_API_KEY`, `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY`, `FINNHUB_API_KEY`, `TWELVEDATA_API_KEY`, `ALPHAVANTAGE_API_KEY`.
+- `docker-compose` loads `.env` automatically; the app also loads `.env` at startup.
+- Override cache and strategies path via `DATA_CACHE_DIR` and `STRATEGIES_PATH`.
+- For docker-compose host mount, set `HOST_STRATEGIES_PATH` to your local strategies repo; if unset, it falls back to `./external-strategies`.
+- Provider keys for scheduled runs can be set as repository secrets and are exported in `.github/workflows/daily-backtest.yml`.
+
+## Git Ignore
+
+- `.gitignore` excludes local caches, reports, virtualenvs, and `.env`.
+
+## Strategy Selection
+
+- The runner discovers all strategies under your external repo and tests all of them by default.
+- If you provide `strategies:` in config, their `params` act as overrides for the discovered strategies with matching names; nothing is filtered by collection.
+
+## New CLI Options and Outputs
+
+- `--only-cached`: avoid API calls and use cached Parquet data only; errors on cache miss.
+- Emits `summary.json` (run summary + counts) and `metrics.prom` (Prometheus-style gauges) alongside CSV/Markdown exports in `reports/<timestamp>/`.
+
+## Pre-commit Hooks
+
+- Install and enable locally:
 
 ```bash
-# PostgreSQL (inside the container, use the service name 'postgres')
-DATABASE_URL=postgresql://quantuser:quantpass@postgres:5432/quant_system
-
-# Optional data providers
-ALPHA_VANTAGE_API_KEY=your_key
-TWELVE_DATA_API_KEY=your_key
-POLYGON_API_KEY=your_key
-TIINGO_API_KEY=your_key
-FINNHUB_API_KEY=your_key
-BYBIT_API_KEY=your_key
-BYBIT_API_SECRET=your_secret
-BYBIT_TESTNET=false
-
-# Optional LLMs
-OPENAI_API_KEY=your_key
-OPENAI_MODEL=gpt-4o
-ANTHROPIC_API_KEY=your_key
-ANTHROPIC_MODEL=claude-3-5-sonnet-20241022
+  pip install pre-commit
+  pre-commit install
 ```
 
-Host access tips
-
-- Postgres is published on `localhost:5433` (mapped to container `5432`).
-- pgAdmin runs at `http://localhost:5050` (see `.env` for credentials).
-
-### Collections
-
-Collections live under `config/collections/` and are split into:
-
-- `default/` (curated, liquid, fast to iterate)
-- `custom/` (your own research sets)
-
-Default examples:
-
-- Bonds: `default/bonds_core.json` (liquid bond ETFs), `default/bonds.json` (broader set)
-- Commodities: `default/commodities_core.json` (gold/silver/energy/agriculture/broad)
-- Crypto: `default/crypto_liquid.json` (top market-cap, USDT pairs)
-- Forex: `default/forex_majors.json` (majors and key crosses; Yahoo Finance format `=X`)
-- Indices: `default/indices_global_core.json` (SPY/QQQ/DIA/IWM/EFA/EEM/EWJ/FXI etc.)
-- Stocks: `default/stocks_us_mega_core.json`, `default/stocks_us_growth_core.json`
-  - Factors: `default/stocks_us_value_core.json`, `default/stocks_us_quality_core.json`, `default/stocks_us_minvol_core.json`
-  - Global factors: `default/stocks_global_factor_core.json`
-
-Custom examples (research-driven):
-
-- `custom/stocks_traderfox_dax.json`
-- `custom/stocks_traderfox_european.json`
-- `custom/stocks_traderfox_us_financials.json`
-- `custom/stocks_traderfox_us_healthcare.json`
-- `custom/stocks_traderfox_us_tech.json`
-
-You can reference any collection by key without the folder prefix (resolver searches `default/` and `custom/`). For example, `bonds_core` resolves `config/collections/default/bonds_core.json`.
-
-## 🧪 Testing
+- Run hooks on all files once:
 
 ```bash
-# Run tests in Docker
-docker compose run --rm quant pytest
+  pre-commit run --all-files
 ```
 
-## 📊 Exports & Reporting
+- Hooks: Ruff lint and format, YAML checks, whitespace fixes.
 
-Artifacts and exports are written under `artifacts/run_*` and `exports/`. When running with `--action direct` or `--dry-run`, pass `--exports csv,report,tradingview,ai` or `--exports all`.
+## Backtesting Engine & Optimization
 
-```bash
-# Produce exports from DB for bonds without re-running backtests
-docker compose run --rm quant \
-  python -m src.cli.unified_cli collection bonds --dry-run --exports all
-```
+- Uses vectorbt to execute and grid-search parameters with resume via SQLite.
+- The `backtesting` library is also available; we can enable it as an alternative engine with a strategy adapter if you prefer its built-in optimizer.
 
-Output locations and unified naming (`{Collection}_Collection_{Year}_{Quarter}_{Interval}`):
-- CSV: `exports/csv/{Year}/{Quarter}/{Collection}_Collection_{Year}_{Quarter}_{Interval}.csv`
-- HTML reports: `exports/reports/{Year}/{Quarter}/{Collection}_Collection_{Year}_{Quarter}_{Interval}.html`
-- TradingView alerts (Markdown): `exports/tv_alerts/{Year}/{Quarter}/{Collection}_Collection_{Year}_{Quarter}_{Interval}.md`
-- AI recommendations:
-  - Markdown: `exports/ai_reco/{Year}/{Quarter}/{Collection}_Collection_{Year}_{Quarter}_{Interval}.md`
-  - HTML (dark Tailwind): same path with `.html` and a Download CSV link
+Strategy Interface (External)
 
-Notes:
-- Exporters are DB-backed (read best strategies); no HTML scraping.
-- With multiple intervals in plan, filenames prefer `1d`. Pass `--interval 1d` to constrain both content and filenames.
+- Derive from BaseStrategy and implement (in your external repo only):
+  - name: str
+  - param_grid(self) -> dict[str, list]
+  - generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]
+  - optional: to_tradingview_pine(self, params: dict) -> str
 
-## 🗄️ Data & Cache
-
-- Split caching: the system maintains two layers for market data.
-  - Full snapshot: stored when requesting provider periods like `--period max` (long TTL).
-  - Recent overlay: normal runs cache the last ~90 days (short TTL).
-  - Reads merge both, prefer recent on overlap, and auto‑extend when a request exceeds cached range.
-- Fresh fetch: add `--no-cache` (alias: `--fresh`) to bypass cache reads and fetch from the provider. The result still writes through to cache.
-- Coverage probe: before backtests, the CLI samples a few symbols with `period=max` and prefers the source with the most rows and earliest start for this run.
-
-### Prefetching Collections (avoid rate limits)
-
-Use the prefetch script to refresh data on a schedule (e.g., nightly recent overlay and weekly full snapshot):
-
-```bash
-# Full history snapshot (bonds)
-docker compose run --rm quant \
-  python scripts/prefetch_collection.py bonds --mode full --interval 1d
-
-# Recent overlay (last 90 days)
-docker compose run --rm quant \
-  python scripts/prefetch_collection.py bonds --mode recent --interval 1d --recent-days 90
-```
-
-Example cron (runs at 01:30 local time):
-
-```
-30 1 * * * cd /path/to/quant-system && docker compose run --rm quant \
-  python scripts/prefetch_collection.py bonds --mode recent --interval 1d --recent-days 90 >/dev/null 2>&1
-```
-
-### Optional Redis Overlay (advanced)
-
-- For higher throughput, you can use Redis for the “recent” layer and keep full snapshots on disk.
-- Pros: very fast hot reads, simple TTL eviction. Cons: extra service; volatile if not persisted.
-- Suggested setup: run Redis via compose, store recent overlay (last 90 days) with TTL ~24–48h; keep full history on disk (gzip).
-- Current repo ships with file‑based caching; Redis is an optional enhancement and can be added without breaking existing flows.
-
-## 📚 Further Docs
-
-- docs/pgadmin-and-performance.md — pgAdmin queries and performance tips
-- docs/data-sources.md — supported providers and configuration
-- docs/development.md — local dev, testing, and repo layout
-- docs/docker.md — Docker specifics and mounts
-- docs/features.md — feature overview and roadmap
-- docs/cli-guide.md — CLI details and examples
-
-## 🛠️ Troubleshooting
-
-- Command name: use `docker compose` (or legacy `docker-compose`) consistently.
-- Subcommand: it is `collection` (singular), not `collections`.
-- Strategy discovery: ensure strategies are mounted at `/app/external_strategies` and set `STRATEGIES_PATH=/app/external_strategies` when running.
-- Database URL: inside containers use `postgres:5432` (`DATABASE_URL=postgresql://quantuser:quantpass@postgres:5432/quant_system`). On the host, Postgres is published at `localhost:5433`.
-- Initialize tables: if tables are missing, run:
-  `docker compose run --rm quant python -c "from src.database.unified_models import create_tables; create_tables()"`
-- Long runs/timeouts: backtests can take minutes to hours depending on strategies and symbols. Prefer `--log-level INFO` or `DEBUG` to monitor progress. Use `--dry-run` to validate plans quickly. Extra tips in docs/pgadmin-and-performance.md.
-- Permissions/cache: ensure `cache/`, `exports/`, `logs/`, and `artifacts/` exist and are writable on the host (compose mounts them into the container).
-- API limits: some data sources rate-limit; providing API keys in `.env` can reduce throttling.
-
-## ⚠️ Disclaimer
-
-This project is for educational and research purposes only. It does not constitute financial advice. Use at your own risk and always perform your own due diligence before making investment decisions.
+Note: This repo does not contain strategies; it loads them from your external repo. If none are found, the run will fail.

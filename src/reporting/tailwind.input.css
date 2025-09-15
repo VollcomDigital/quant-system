@@ -1,8 +1,0 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
-/* Optional: custom utility tweaks for cards/tables */
-.card { @apply rounded-xl border border-white/10 bg-white/5 backdrop-blur; }
-.card-header { @apply px-5 py-4; }
-.card-body { @apply p-5; }

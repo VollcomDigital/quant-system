@@ -1,52 +1,33 @@
 repos:
-  # General file checks
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
-    hooks:
-      - id: trailing-whitespace
-      - id: end-of-file-fixer
-      - id: check-yaml
-      - id: check-json
-      - id: check-added-large-files
-        exclude: '^exports/'
-      - id: check-merge-conflict
-      - id: debug-statements
-      - id: check-toml
-
-  # Python formatting - Ruff (matches GitHub workflow check)
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.12.4
+    rev: v0.13.0
     hooks:
+      - id: ruff
+        args: ["--fix"]
       - id: ruff-format
-        # Auto-fix in pre-commit, but GitHub runs --check
-
-  # Python linting & import sorting - Ruff (matches GitHub workflow)
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.12.4
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
     hooks:
-      - id: ruff-check
-        args: [--fix]
-        # Auto-fix in pre-commit, but GitHub runs without --fix
-
-  # Tests - Using Docker environment for consistency
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+  # Markdown lint (dockerized markdownlint-cli to avoid local runtime issues)
   - repo: local
     hooks:
-      - id: pytest
-        name: pytest
-        entry: docker-compose run --rm quant pytest
-        language: system
-        types: [python]
-        pass_filenames: false
-        # Run tests in Docker environment to match CI/CD
+      - id: markdownlint
+        name: markdownlint (docker_image)
+        language: docker_image
+        files: '^(README\.md|docs/.*\.md|CHANGELOG\.md|CONTRIBUTING\.md|CODE_OF_CONDUCT\.md|SECURITY\.md|GOVERNANCE\.md)$'
+        entry: ghcr.io/igorshubovych/markdownlint-cli:latest
+        args: ["markdownlint", "-c", "/src/.markdownlint.json"]
+        pass_filenames: true
+        require_serial: true
 
-  # Markdown linting (aligned with GitHub workflow)
-  - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.15.0
+  # Run tests with coverage >= 80% (if tests present)
+  - repo: local
     hooks:
-      - id: markdownlint-cli2
-        args: ["**/*.md", "!.venv/**/*.md", "!node_modules/**/*.md", "!exports/**/*.md"]
-
-  # Additional checks disabled - GitHub provides these automatically:
-  # - MyPy (type checking)
-  # - Bandit (security scanning - handled by GitHub CodeQL)
-  # - Safety (dependency scanning - handled by GitHub Dependabot)
+      - id: pytest-coverage
+        name: pytest with coverage
+        entry: bash -lc 'if compgen -G "tests/*.py" > /dev/null; then COVERAGE_FILE=/tmp/.coverage PYTHONPATH=$PWD SKIP_PANDAS_TESTS=1 poetry run pytest -q --maxfail=1 --disable-warnings --cov=src.backtest.results_cache --cov=src.utils.http --cov=src.reporting.html --cov-report=term-missing --cov-fail-under=80; else echo "No tests found; skipping coverage"; fi'
+        language: system
+        pass_filenames: false

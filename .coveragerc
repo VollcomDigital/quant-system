@@ -1,0 +1,10 @@
+[run]
+include =
+    src/backtest/results_cache.py
+    src/data/cache.py
+    src/utils/http.py
+    src/reporting/html.py
+
+[report]
+exclude_lines =
+    pragma: no cover

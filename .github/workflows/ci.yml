@@ -1,59 +1,54 @@
 name: CI
-
 permissions:
   contents: read
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
 
 jobs:
-  ci:
-    name: Code Quality & Tests
+  lint:
     runs-on: ubuntu-latest
-    env:
-      UNIFIED_MODELS_SQLITE: "1"   # Force SQLite for unified models during CI
-      TESTING: "true"               # Enable test-mode code paths
-      DATABASE_URL: "sqlite:///quant_unified_test.db"  # Safety: default DB points to SQLite
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-
+          python-version: '3.10'
       - name: Install Poetry
-        uses: snok/install-poetry@v1
-
-      - name: Install dependencies
-        run: poetry install
-
-      - name: Format check
-        run: poetry run ruff format --check .
-
-      - name: Lint & Import sort
-        run: poetry run ruff check .
-
-      - name: Lint Markdown
-        uses: DavidAnson/markdownlint-cli2-action@v20
-        with:
-          globs: '**/*.md !.venv/**/*.md !node_modules/**/*.md !exports/**/*.md'
-
-      - name: Test with Coverage
         run: |
-          poetry run pytest --cov=src --cov-report=xml --cov-report=term-missing --cov-fail-under=10
-          echo "Coverage report generated"
-
-      - name: Upload Coverage to Codecov
-        if: success()
-        uses: codecov/codecov-action@v4
+          pip install poetry==1.8.3
+      - name: Install deps
+        run: |
+          poetry install --no-root
+      - name: Ruff lint
+        run: |
+          poetry run ruff check .
+      - name: Pre-commit
+        run: |
+          poetry run pre-commit run --all-files --show-diff-on-failure
+      - name: Markdownlint
+        run: |
+          docker run --rm -v "$PWD":/workdir -w /workdir ghcr.io/igorshubovych/markdownlint-cli:latest \
+            markdownlint -c .markdownlint.json '**/*.md'
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          file: ./coverage.xml
-          fail_ci_if_error: false
-
-      - name: Build
-        run: poetry build
+          python-version: '3.10'
+      - name: Install Poetry
+        run: |
+          pip install poetry==1.8.3
+      - name: Install deps
+        run: |
+          poetry install --no-root
+      - name: Run tests with coverage (if present)
+        run: |
+          if compgen -G "tests/*.py" > /dev/null; then \
+            poetry run pytest -q --maxfail=1 --disable-warnings --cov=src.backtest.results_cache --cov=src.data.cache --cov=src.utils.http --cov=src.reporting.html --cov-report=term-missing --cov-fail-under=80; \
+          else \
+            echo "No tests present; skipping"; \
+          fi

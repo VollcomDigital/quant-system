@@ -1,8 +1,0 @@
-blank_issues_enabled: true
-contact_links:
-  - name: Documentation
-    url: https://github.com/LouisLetcher/quant-system/tree/main/docs
-    about: Check the documentation first
-  - name: Discussions
-    url: https://github.com/LouisLetcher/quant-system/discussions
-    about: Ask questions and discuss ideas

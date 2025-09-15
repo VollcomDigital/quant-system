@@ -1,0 +1,56 @@
+metric: sortino  # sharpe | sortino | profit
+engine: vectorbt  # single engine for backtesting + param sweeps
+asset_workers: 4
+param_workers: 2
+max_fetch_concurrency: 2
+fees: 0.0005
+slippage: 0.0005
+risk_free_rate: 0.0
+cache_dir: .cache/data
+
+collections:
+  # Crypto majors (Binance via ccxt)
+  - name: crypto_majors
+    source: binance
+    exchange: binance
+    quote: USDT
+    symbols: ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT"]
+    fees: 0.0006  # approx Bybit/Binance taker
+    slippage: 0.0005
+
+  # Bonds (majors via ETFs on Tiingo for stable daily data)
+  - name: bonds_majors
+    source: tiingo
+    symbols: ["TLT", "IEF", "SHY", "BND", "HYG"]
+    fees: 0.0005  # approx IBKR
+    slippage: 0.0005
+
+  # Commodities (majors via ETFs on Tiingo)
+  - name: commodities_majors
+    source: tiingo
+    symbols: ["GLD", "SLV", "PPLT", "USO", "UNG", "DBC", "DBA", "DBB", "CPER", "WEAT", "CORN", "SOYB"]
+    fees: 0.0005
+    slippage: 0.0005
+
+  # Indices (majors via ETF proxies on Tiingo)
+  - name: indices_majors
+    source: tiingo
+    symbols: ["SPY", "QQQ", "DIA", "IWM", "EFA", "EEM"]
+    fees: 0.0005
+    slippage: 0.0005
+
+# Choose timeframes compatible across sources for full history
+timeframes: ["1d"]
+
+strategies:
+  # Example: replace with your external strategy name and optionally module/class.
+  # If module/class are omitted, loader tries to find a BaseStrategy subclass matching `name`.
+  # Replace placeholders with your external strategy names and optional module/class.
+  - name: YourStrategyName
+    # module: your_package.module
+    # class: YourStrategyClass
+    params: {}
+  # - name: AnotherStrategy
+  #   module: your_package.other_module
+  #   class: AnotherStrategyClass
+  #   params: {}
