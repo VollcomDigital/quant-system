@@ -68,12 +68,10 @@ class CCXTSource(DataSource):
 
                 if isinstance(
                     e,
-                    (
-                        ccxt.RateLimitExceeded,
-                        ccxt.DDoSProtection,
-                        ccxt.ExchangeNotAvailable,
-                        ccxt.NetworkError,
-                    ),
+                    ccxt.RateLimitExceeded
+                    | ccxt.DDoSProtection
+                    | ccxt.ExchangeNotAvailable
+                    | ccxt.NetworkError,
                 ):
                     time.sleep(backoff)
                     backoff = min(max_backoff, backoff * 2)
