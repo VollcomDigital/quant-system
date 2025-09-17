@@ -14,18 +14,18 @@ jobs:
       STRATEGIES_DIR: strategies
     steps:
       - name: Checkout quant-system
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Checkout strategies repo
         if: ${{ secrets.STRATEGIES_REPO != '' && secrets.GH_TOKEN != '' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ secrets.STRATEGIES_REPO }}
           token: ${{ secrets.GH_TOKEN }}
           path: strategies
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.10'
 

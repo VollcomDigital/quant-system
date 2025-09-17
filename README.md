@@ -23,7 +23,7 @@ This repository provides a Docker-based, cache-aware backtesting system to syste
 - Docker and docker-compose
 - Poetry (for local non-Docker runs)
 - Python 3.9 or 3.10 (vectorbt requires <3.11)
-- External strategies repo mounted at runtime (defaults to /Users/manuelheck/Documents/Websites/Private/quant/quant-strategies/algorithms/python)
+- External strategies repo mounted at runtime. Set `HOST_STRATEGIES_PATH` in `.env` (or use the default `./external-strategies` folder) and it mounts inside the container at `/ext/strategies`.
 - Optional: pre-commit for local linting hooks
 
 ## Project Structure
