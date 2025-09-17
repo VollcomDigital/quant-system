@@ -1,0 +1,114 @@
+metric: sortino
+engine: vectorbt
+asset_workers: 4
+param_workers: 2
+max_fetch_concurrency: 2
+cache_dir: .cache/data
+
+collections:
+  - name: large_cap_europe
+    source: yfinance
+    fees: 0.0005
+    slippage: 0.0005
+    symbols:
+      - SAP.DE
+      - SIE.DE
+      - DTE.DE
+      - ALV.DE
+      - MUV2.DE
+      - BAS.DE
+      - VOW3.DE
+      - BMW.DE
+      - MBG.DE
+      - ADS.DE
+      - DB1.DE
+      - DBK.DE
+      - CON.DE
+      - FRE.DE
+      - HEN3.DE
+      - MRK.DE
+      - BEI.DE
+      - VNA.DE
+      - IFX.DE
+      - RWE.DE
+      - EON.DE
+      - LIN.DE
+      - 1COV.DE
+      - FME.DE
+      - DPW.DE
+      - HEI.DE
+      - QIA.DE
+      - SHL.DE
+      - ZAL.DE
+      - AIR.DE
+      - MTX.DE
+      - PUM.DE
+      - SY1.DE
+      - RHM.DE
+      - EVK.DE
+      - FRA.DE
+      - BAYN.DE
+      - LHA.DE
+      - TKA.DE
+      - SAX.DE
+      - TEG.DE
+      - WAF.DE
+      - G1A.DE
+      - LEG.DE
+      - UTDI.DE
+      - JUN3.DE
+      - SZG.DE
+      - WCH.DE
+      - NESN.SW
+      - ROG.SW
+      - NOVN.SW
+      - MC.PA
+      - OR.PA
+      - TTE.PA
+      - SHEL.L
+      - BP.L
+      - GSK.L
+      - AZN.L
+      - ULVR.L
+      - VOD.L
+      - LLOY.L
+      - BARC.L
+      - HSBA.L
+      - STAN.L
+      - UBS
+      - SAN.MC
+      - BBVA.MC
+      - BNP.PA
+      - ACA.PA
+      - GLE.PA
+      - KER.PA
+      - AI.PA
+      - AIR.PA
+      - SAF.PA
+      - CAP.PA
+      - ASM.AS
+      - BESI.AS
+      - ADYEN.AS
+      - PRX.AS
+      - HEIA.AS
+      - ABN.AS
+      - INGA.AS
+      - PHIA.AS
+      - UNA.AS
+      - MT.AS
+      - AMS
+      - WKL.AS
+      - RAND.AS
+      - TKWY.AS
+      - LIGHT.AS
+      - FLOW.AS
+      - ALFEN.AS
+      - BFIT.AS
+      - ENX.PA
+      - RI.PA
+      - AD.AS
+      - KPN.AS
+
+timeframes: ["1d"]
+
+strategies: []

@@ -1,0 +1,47 @@
+metric: sortino
+engine: vectorbt
+asset_workers: 4
+param_workers: 2
+max_fetch_concurrency: 2
+cache_dir: .cache/data
+
+collections:
+  - name: large_cap_asia
+    source: yfinance
+    fees: 0.0005
+    slippage: 0.0005
+    symbols:
+      - TSM
+      - BABA
+      - BIDU
+      - PDD
+      - JD
+      - NTES
+      - RIO
+      - VALE
+      - TM
+      - SONY
+      - NTTYY
+      - INFY
+      - HDB
+      - SFTBY
+      - PTR
+      - CEO
+      - RY
+      - TD
+      - BNS
+      - BMO
+      - HSBA.L
+      - STLA
+      - SHOP.TO
+      - BP.L
+      - SHEL.L
+      - AZN.L
+      - GSK.L
+      - NESN.SW
+      - ROG.SW
+      - NOVN.SW
+
+timeframes: ["1d"]
+
+strategies: []

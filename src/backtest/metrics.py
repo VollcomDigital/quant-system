@@ -10,7 +10,9 @@ def sharpe_ratio(
     er = returns.mean() * periods_per_year - risk_free_rate
     sd = returns.std(ddof=0) * np.sqrt(periods_per_year)
     if sd == 0 or np.isnan(sd):
-        return float("nan")
+        if np.isclose(er, 0.0):
+            return 0.0
+        return float("inf") if er > 0 else float("-inf")
     return float(er / sd)
 
 
@@ -22,7 +24,9 @@ def sortino_ratio(
     dd = downside.std(ddof=0) * np.sqrt(periods_per_year)
     er = returns.mean() * periods_per_year - risk_free_rate
     if dd == 0 or np.isnan(dd):
-        return float("nan")
+        if np.isclose(er, 0.0):
+            return 0.0
+        return float("inf") if er > 0 else float("-inf")
     return float(er / dd)
 
 

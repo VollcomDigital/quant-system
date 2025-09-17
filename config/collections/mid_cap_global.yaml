@@ -1,0 +1,121 @@
+metric: sortino
+engine: vectorbt
+asset_workers: 4
+param_workers: 2
+max_fetch_concurrency: 2
+cache_dir: .cache/data
+
+collections:
+  - name: mid_cap_global
+    source: yfinance
+    fees: 0.0005
+    slippage: 0.0005
+    symbols:
+      - ALLY
+      - CFG
+      - KEY
+      - FITB
+      - HBAN
+      - RF
+      - MTB
+      - STI
+      - ZION
+      - PBCT
+      - CMA
+      - WAL
+      - EWBC
+      - PACW
+      - COLB
+      - OZK
+      - FHN
+      - BKU
+      - ONB
+      - UMBF
+      - BANF
+      - WAFD
+      - IBOC
+      - OPFI
+      - RBRK
+      - KRMN
+      - LTH
+      - BJ
+      - AU
+      - WELL
+      - T
+      - ED
+      - KR
+      - AEP
+      - PAGS
+      - SG
+      - NVR
+      - AA
+      - CACI
+      - MLR
+      - GRMN
+      - FIX
+      - FDX
+      - DAL
+      - BH
+      - ARIS
+      - CCJ
+      - TDW
+      - PWR
+      - FOR
+      - RSG
+      - DT
+      - PR
+      - CRC
+      - COR
+      - ITT
+      - ATR
+      - AIT
+      - AWI
+      - DCI
+      - ALG
+      - NRG
+      - BAH
+      - SCCO
+      - TNC
+      - NTNX
+      - QLYS
+      - MAR
+      - PCAR
+      - KRUS
+      - XMTR
+      - GCT
+      - LFMD
+      - ROAD
+      - CGON
+      - FSLR
+      - KAI
+      - HWKN
+      - PSMT
+      - FCFS
+      - MGRC
+      - COKE
+      - DORM
+      - LOPE
+      - CVCO
+      - IPAR
+      - CSWI
+      - ATRO
+      - AIOT
+      - INTA
+      - MTSR
+      - ANGO
+      - RR
+      - ALHC
+      - SLNO
+      - PDEX
+      - CME
+      - ORLY
+      - CRWV
+      - RYTM
+      - TARS
+      - WLFC
+      - FTAI
+      - AMSC
+
+timeframes: ["1d"]
+
+strategies: []
