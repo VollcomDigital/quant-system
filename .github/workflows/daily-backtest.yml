@@ -46,7 +46,7 @@ jobs:
           poetry run python -m src.main run --config config/example.yaml --strategies-path "${{ env.STRATEGIES_DIR }}"
 
       - name: Upload reports artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: backtest-reports
           path: reports/**
