@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: build build-nc sh run run-bonds run-crypto run-commodities run-indices run-forex list-strategies lock lock-update discover-crypto
+.PHONY: build build-nc sh run run-bonds run-crypto run-commodities run-indices run-forex list-strategies lock lock-update discover-crypto manifest-status dashboard
 
 build:
 	docker-compose build
@@ -35,6 +35,12 @@ list-strategies:
 discover-crypto:
 	# Usage: make discover-crypto EXCHANGE=binance QUOTE=USDT TOP=100 OUT=config/collections/crypto_top100.yaml NAME=crypto_top100
 	docker-compose run --rm app bash -lc "poetry install && poetry run python -m src.main discover-symbols --exchange $(EXCHANGE) --quote $(QUOTE) --top-n $(TOP) --name $(NAME) --output $(OUT)"
+
+manifest-status:
+	docker-compose run --rm app bash -lc "poetry install && poetry run python -m src.main manifest-status --reports-dir reports --latest"
+
+dashboard:
+	docker-compose run --rm --service-ports app bash -lc "poetry install && poetry run python -m src.main dashboard --reports-dir reports --host 0.0.0.0 --port 8000"
 
 lock:
 	docker-compose run --rm app bash -lc "poetry lock --no-update && git add poetry.lock"

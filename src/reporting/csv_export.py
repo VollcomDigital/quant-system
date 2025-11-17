@@ -26,7 +26,10 @@ class CSVExporter:
                     "params",
                     "sharpe",
                     "sortino",
+                    "omega",
+                    "tail_ratio",
                     "profit",
+                    "pain_index",
                     "trades",
                     "max_drawdown",
                 ]
@@ -43,7 +46,10 @@ class CSVExporter:
                         r.params,
                         f"{r.stats.get('sharpe', float('nan')):.6f}",
                         f"{r.stats.get('sortino', float('nan')):.6f}",
+                        f"{r.stats.get('omega', float('nan')):.6f}",
+                        f"{r.stats.get('tail_ratio', float('nan')):.6f}",
                         f"{r.stats.get('profit', float('nan')):.6f}",
+                        f"{r.stats.get('pain_index', float('nan')):.6f}",
                         r.stats.get("trades", 0),
                         f"{r.stats.get('max_drawdown', float('nan')):.6f}",
                     ]

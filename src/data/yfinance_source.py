@@ -113,7 +113,101 @@ class YFinanceSource(DataSource):
         frame = frame.dropna(subset=["Close"])
         if frame.empty:
             return None
+        frame = frame.sort_index()
         return frame
+
+    def fetch_splits(self, symbol: str) -> pd.DataFrame:
+        sym_fetch = map_symbol("yfinance", symbol)
+        try:
+            ticker = yf.Ticker(sym_fetch)
+            actions = getattr(ticker, "actions", None)
+            splits = getattr(ticker, "splits", None)
+            if (splits is None or getattr(splits, "empty", True)) and actions is not None:
+                splits = actions.get("Stock Splits")
+        except Exception:
+            splits = None
+        if splits is None or getattr(splits, "empty", True):
+            return pd.DataFrame(columns=["ratio"], dtype=float)
+        series = splits.copy()
+        series.name = "ratio"
+        df = series.to_frame()
+        df.index = pd.to_datetime(df.index, utc=True).tz_convert(None)
+        return df
+
+    def fetch_dividends(self, symbol: str) -> pd.DataFrame:
+        sym_fetch = map_symbol("yfinance", symbol)
+        try:
+            ticker = yf.Ticker(sym_fetch)
+            actions = getattr(ticker, "actions", None)
+            dividends = getattr(ticker, "dividends", None)
+            if (dividends is None or getattr(dividends, "empty", True)) and actions is not None:
+                dividends = actions.get("Dividends")
+        except Exception:
+            dividends = None
+        if dividends is None or getattr(dividends, "empty", True):
+            return pd.DataFrame(columns=["dividend"], dtype=float)
+        series = dividends.copy()
+        series.name = "dividend"
+        df = series.to_frame()
+        df.index = pd.to_datetime(df.index, utc=True).tz_convert(None)
+        return df
+
+    def fetch_fundamentals(self, symbol: str) -> dict[str, Any]:
+        sym_fetch = map_symbol("yfinance", symbol)
+        try:
+            ticker = yf.Ticker(sym_fetch)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to create yfinance ticker for {symbol}: {exc}") from exc
+
+        snapshot: dict[str, Any] = {"symbol": symbol}
+
+        info = {}
+        try:
+            raw_info = getattr(ticker, "info", {}) or {}
+            wanted = [
+                "longName",
+                "exchange",
+                "quoteType",
+                "currency",
+                "sector",
+                "industry",
+                "marketCap",
+                "trailingPE",
+                "forwardPE",
+                "beta",
+                "trailingEps",
+                "dividendYield",
+                "returnOnEquity",
+            ]
+            info = {key: raw_info.get(key) for key in wanted if key in raw_info}
+        except Exception:
+            info = {}
+        snapshot["info"] = info
+
+        fundamentals: dict[str, Any] = {}
+        for attr, label in (
+            ("financials", "income_statement"),
+            ("balance_sheet", "balance_sheet"),
+            ("cashflow", "cash_flow"),
+        ):
+            frame = getattr(ticker, attr, None)
+            if frame is None or getattr(frame, "empty", True):
+                fundamentals[label] = {}
+                continue
+            cleaned = frame.astype(float).fillna(0.0)
+            cleaned.columns = cleaned.columns.to_list()
+            fundamentals[label] = {
+                str(idx): {str(col): float(cleaned.loc[idx, col]) for col in cleaned.columns}
+                for idx in cleaned.index
+            }
+        snapshot["fundamentals"] = fundamentals
+
+        splits = self.fetch_splits(symbol)
+        dividends = self.fetch_dividends(symbol)
+        snapshot["splits"] = splits.to_dict(orient="index")
+        snapshot["dividends"] = dividends.to_dict(orient="index")
+
+        return snapshot
 
     def fetch(self, symbol: str, timeframe: str, only_cached: bool = False) -> pd.DataFrame:
         tf = timeframe.lower()
