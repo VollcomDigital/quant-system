@@ -2,7 +2,7 @@
 name = "quant-system"
 version = "0.1.0"
 description = "Dockerized, cache-aware, config-driven backtesting system using vectorbt"
-authors = ["Vollcom-Digital <admin@vollcom-digital.com>"]
+authors = ["Vollcom Digital GmbH <admin@vollcom-digital.com>"]
 readme = "README.md"
 packages = [
     { include = "src" }
