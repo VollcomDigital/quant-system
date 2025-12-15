@@ -1,5 +1,7 @@
 metric: sortino  # sharpe | sortino | profit
-engine: vectorbt  # single engine for backtesting + param sweeps
+engine: pybroker  # single engine for simulations and param sweeps
+param_search: grid  # grid | optuna
+param_trials: 25
 asset_workers: 4
 param_workers: 2
 max_fetch_concurrency: 2

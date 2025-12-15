@@ -14,7 +14,7 @@ class CtorSignalsAdapter(BaseStrategy):
     - expose generate_signals(self, data: pd.DataFrame) -> pd.Series with values {1,-1,0}
 
     The adapter converts the 1/-1/0 signal series into entry/exit boolean series
-    compatible with the backtesting engine.
+    compatible with the PyBroker engine.
 
     Config example:
 

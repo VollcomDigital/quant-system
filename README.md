@@ -22,8 +22,8 @@ This repository provides a Docker-based, cache-aware backtesting system to syste
 
 - Docker and docker-compose
 - Poetry (for local non-Docker runs)
-- Python 3.9 or 3.10 (vectorbt requires <3.11)
-- External strategies repo mounted at runtime. Set `HOST_STRATEGIES_PATH` in `.env` (or use the default `./external-strategies` folder) and it mounts inside the container at `/ext/strategies`.
+- Python 3.11 (PyBroker requires >=3.11 and <3.12)
+- External strategies repo mounted at runtime (defaults to /Users/manuelheck/Documents/Websites/Private/quant/quant-strategies/algorithms/python)
 - Optional: pre-commit for local linting hooks
 
 ## Project Structure
@@ -64,6 +64,8 @@ docker-compose run --rm app bash -lc "poetry run python -m src.main run --config
 - `make run-bonds` / `make run-crypto` / `make run-commodities` / `make run-indices` / `make run-forex`: run a collection.
 - `make discover-crypto EXCHANGE=binance QUOTE=USDT TOP=100 OUT=config/collections/crypto_top100.yaml NAME=crypto_top100`: generate a crypto universe config.
 - `make lock` / `make lock-update`: create or update `poetry.lock` inside the container for reproducible builds.
+- `make manifest-status`: inspect the most recent run’s dashboard refresh actions (`--latest`).
+- `poetry run quant-system dashboard --reports-dir reports`: launch a lightweight FastAPI dashboard (defaults to `127.0.0.1:8000`).
 
 ## Outputs
 
@@ -158,6 +160,56 @@ See new collection examples under `config/collections/` for FX intraday via Finn
 
 - `--only-cached`: avoid API calls and use cached Parquet data only; errors on cache miss.
 - Emits `summary.json` (run summary + counts) and `metrics.prom` (Prometheus-style gauges) alongside CSV/Markdown exports in `reports/<timestamp>/`.
+- `discover-symbols`: fetch top symbols from one or more CCXT exchanges, merge by quote, and emit a YAML stub. Supports multiple `--exchange` flags, `--max-per-exchange` before merging, exclusions via `--exclude-symbol/--exclude-pattern`, manual additions with `--extra-symbol`, and `--annotate` to include volume/exchange metadata.
+- `ingest-data`: on-demand cache refresher. Accepts a `--source` (currently `yfinance`), target symbols, and `--timeframe` flags to pull fresh OHLCV data into `.cache/data`.
+- `fundamentals`: snapshot yfinance fundamentals (info, splits, dividends, financial statements) for a symbol in JSON or YAML format.
+- `manifest-status`: inspect dashboard refresh actions (supports `--latest`). Example:
+
+  ```bash
+  poetry run quant-system manifest-status --reports-dir reports --run-id 20240101-000000
+  # or simply
+  poetry run quant-system manifest-status --reports-dir reports --latest
+  ```
+
+  The command falls back to `summary.json` when `manifest_status.json` is missing so older runs still surface CSV fallbacks or missing summaries.
+
+- `clean-cache`: prune stale files from data/results caches. Defaults to removing items older than 30 days while keeping recent entries. Use `--dry-run` to preview deletions. Example:
+
+  ```bash
+  poetry run quant-system clean-cache --cache-dir .cache/data --results-cache-dir .cache/results --max-age-days 14
+  ```
+
+  To preview without deleting anything:
+
+  ```bash
+  poetry run quant-system clean-cache --cache-dir .cache/data --dry-run
+  ```
+
+### Dashboard
+
+Spin up a lightweight FastAPI dashboard to browse runs and open existing HTML reports:
+
+```bash
+poetry run quant-system dashboard --reports-dir reports --host 0.0.0.0 --port 8000
+```
+
+- `/` renders a Tailwind-powered index of runs with links to `report.html`.
+- `/<run_id>` shows summary metrics, manifest/notification tables, and download links.
+- `/api/runs` provides JSON summaries (run id, metrics, timestamps) for automation.
+
+### Notifications
+
+Configure Slack alerts in your run config:
+
+```yaml
+notifications:
+  slack:
+    webhook_url: ${SLACK_WEBHOOK_URL}
+    metric: sharpe
+    threshold: 2.0
+```
+
+During a run, the top result for the configured metric is evaluated; if it meets the threshold the system posts a summary message to the webhook. Results below the threshold are skipped and reported in the CLI output.
 
 ## Pre-commit Hooks
 
@@ -178,8 +230,8 @@ See new collection examples under `config/collections/` for FX intraday via Finn
 
 ## Backtesting Engine & Optimization
 
-- Uses vectorbt to execute and grid-search parameters with resume via SQLite.
-- The `backtesting` library is also available; we can enable it as an alternative engine with a strategy adapter if you prefer its built-in optimizer.
+- Uses PyBroker to execute and grid-search parameters with resume via SQLite.
+- Supports Optuna-based Bayesian parameter search via `param_search: optuna` and `param_trials`.
 
 Strategy Interface (External)
 
