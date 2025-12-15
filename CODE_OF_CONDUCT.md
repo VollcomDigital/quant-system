@@ -24,7 +24,7 @@ This Code of Conduct applies within all project spaces and also applies when an 
 
 ## Enforcement
 
-Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the maintainers at [36189959+LouisLetcher@users.noreply.github.com](mailto:36189959+LouisLetcher@users.noreply.github.com). All complaints will be reviewed and investigated promptly and fairly.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be reported to the maintainers at [admin@vollcom-digital.com](mailto:admin@vollcom-digital.com). All complaints will be reviewed and investigated promptly and fairly.
 
 ## Attribution
 

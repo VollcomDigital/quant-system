@@ -36,9 +36,9 @@ Enable on `Settings → Branches → Branch protection rules` for `main`:
 Add `CODEOWNERS` so critical files require review from maintainers:
 
 ```text
-*       @manuelheck
-.github/ @manuelheck
-src/    @manuelheck
+*       @vollcom-digital
+.github/ @vollcom-digital
+src/    @vollcom-digital
 ```
 
 Place this in `.github/CODEOWNERS` (see file added in this repo). Adjust handles as needed.
