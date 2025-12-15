@@ -28,6 +28,12 @@ repos:
     hooks:
       - id: pytest-coverage
         name: pytest with coverage
-        entry: bash -lc 'if compgen -G "tests/*.py" > /dev/null; then COVERAGE_FILE=/tmp/.coverage PYTHONPATH=$PWD SKIP_PANDAS_TESTS=1 poetry run pytest -q --maxfail=1 --disable-warnings --cov=src.backtest.results_cache --cov=src.utils.http --cov=src.reporting.html --cov-report=term-missing --cov-fail-under=80; else echo "No tests found; skipping coverage"; fi'
+        entry: |
+          bash -lc 'if compgen -G "tests/*.py" > /dev/null; then
+          export COVERAGE_FILE=/tmp/.coverage PYTHONPATH=$PWD SKIP_PANDAS_TESTS=1;
+          if command -v arch >/dev/null 2>&1 && [ "$(uname -s)" = "Darwin" ] && sysctl -n sysctl.proc_translated 2>/dev/null | grep -q 1; then
+          arch -arm64 poetry run pytest tests -q --maxfail=1 --disable-warnings --cov=src.main --cov-report=term-missing --cov-fail-under=80;
+          else poetry run pytest tests -q --maxfail=1 --disable-warnings --cov=src.main --cov-report=term-missing --cov-fail-under=80; fi;
+          else echo "No tests found; skipping coverage"; fi'
         language: system
         pass_filenames: false

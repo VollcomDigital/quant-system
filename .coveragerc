@@ -1,9 +1,7 @@
 [run]
 include =
-    src/backtest/results_cache.py
-    src/data/cache.py
-    src/utils/http.py
-    src/reporting/html.py
+    src/main.py
+    src/backtest/runner.py
 
 [report]
 exclude_lines =

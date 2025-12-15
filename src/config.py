@@ -28,12 +28,28 @@ class CollectionConfig:
 
 
 @dataclass
+class SlackNotificationConfig:
+    webhook_url: str
+    metric: str = "sharpe"
+    threshold: float | None = None
+    channel: str | None = None
+    username: str | None = None
+
+
+@dataclass
+class NotificationsConfig:
+    slack: SlackNotificationConfig | None = None
+
+
+@dataclass
 class Config:
     collections: list[CollectionConfig]
     timeframes: list[str]
     metric: str  # sharpe | sortino | profit
     strategies: list[StrategyConfig]
-    engine: str = "vectorbt"  # vectorbt | backtesting (planned)
+    engine: str = "pybroker"  # pybroker engine
+    param_search: str = "grid"  # grid | optuna
+    param_trials: int = 25
     max_workers: int = 1
     asset_workers: int = 1
     param_workers: int = 1
@@ -42,6 +58,7 @@ class Config:
     slippage: float = 0.0
     risk_free_rate: float = 0.0
     cache_dir: str = ".cache/data"
+    notifications: NotificationsConfig | None = None
 
 
 def load_config(path: str | Path) -> Config:
@@ -72,12 +89,30 @@ def load_config(path: str | Path) -> Config:
         for s in raw["strategies"]
     ]
 
+    notifications_cfg = None
+    notifications_raw = raw.get("notifications")
+    if isinstance(notifications_raw, dict):
+        slack_raw = notifications_raw.get("slack")
+        slack_cfg = None
+        if isinstance(slack_raw, dict) and slack_raw.get("webhook_url"):
+            slack_cfg = SlackNotificationConfig(
+                webhook_url=slack_raw["webhook_url"],
+                metric=slack_raw.get("metric", raw.get("metric", "sharpe")),
+                threshold=slack_raw.get("threshold"),
+                channel=slack_raw.get("channel"),
+                username=slack_raw.get("username"),
+            )
+        if slack_cfg is not None:
+            notifications_cfg = NotificationsConfig(slack=slack_cfg)
+
     cfg = Config(
         collections=collections,
         timeframes=raw["timeframes"],
         metric=raw.get("metric", "sharpe").lower(),
         strategies=strategies,
-        engine=raw.get("engine", "vectorbt").lower(),
+        engine=str(raw.get("engine", "pybroker")).lower(),
+        param_search=str(raw.get("param_search", raw.get("param_optimizer", "grid"))).lower(),
+        param_trials=int(raw.get("param_trials", raw.get("opt_trials", 25))),
         max_workers=int(raw.get("max_workers", raw.get("asset_workers", 1))),
         asset_workers=int(raw.get("asset_workers", raw.get("max_workers", 1))),
         param_workers=int(raw.get("param_workers", 1)),
@@ -86,5 +121,6 @@ def load_config(path: str | Path) -> Config:
         slippage=float(raw.get("slippage", 0.0)),
         risk_free_rate=float(raw.get("risk_free_rate", 0.0)),
         cache_dir=raw.get("cache_dir", ".cache/data"),
+        notifications=notifications_cfg,
     )
     return cfg

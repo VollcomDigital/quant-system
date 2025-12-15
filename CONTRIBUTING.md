@@ -4,7 +4,7 @@ Thanks for your interest in contributing! This document describes how to propose
 
 ## Development Setup
 
-- Use Python 3.10 (vectorbt requires <3.11). The Docker image already provides a working toolchain.
+- Use Python 3.11 (PyBroker targets >=3.11). The Docker image already provides a working toolchain.
 - Recommended path: develop inside Docker with Poetry:
 
   - Build: `docker-compose build`
