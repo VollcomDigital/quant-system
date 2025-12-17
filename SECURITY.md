@@ -8,7 +8,7 @@ We aim to keep the `main` branch secure and up-to-date. Security updates are pro
 
 Please report security issues privately. Do not create public GitHub issues for vulnerabilities.
 
-- Email: [36189959+LouisLetcher@users.noreply.github.com](mailto:36189959+LouisLetcher@users.noreply.github.com)
+- Email: [admin@vollcom-digital.com](mailto:admin@vollcom-digital.com)
 - Or use GitHub’s “Report a vulnerability” (Security > Advisories) if available
 
 We will acknowledge your report within 72 hours, provide an initial assessment, and keep you informed of the remediation progress.
