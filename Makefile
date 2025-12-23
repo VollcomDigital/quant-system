@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: build build-nc sh run run-bonds run-crypto run-commodities run-indices run-forex list-strategies lock lock-update discover-crypto manifest-status dashboard
+.PHONY: build build-nc sh run run-bonds run-crypto run-commodities run-indices run-forex baseline-all list-strategies lock lock-update discover-crypto manifest-status dashboard
 
 build:
 	docker-compose build
@@ -28,6 +28,9 @@ run-indices:
 
 run-forex:
 	docker-compose run --rm app bash -lc "poetry install && RUN_ID=forex-$(shell date +%Y%m%d%H%M) poetry run python -m src.main run --config config/collections/forex_majors.yaml"
+
+baseline-all:
+	docker-compose run --rm app bash -lc "poetry install && ./scripts/run_baselines.sh"
 
 list-strategies:
 	docker-compose run --rm app bash -lc "poetry install && poetry run python -m src.main list-strategies --strategies-path /ext/strategies"
