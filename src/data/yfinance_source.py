@@ -278,7 +278,16 @@ class YFinanceSource(DataSource):
             df = self._direct_chart_download(sym_fetch, interval)
             if df is None or df.empty:
                 raise RuntimeError(f"No data for {symbol} {tf}")
-        df = df.rename(columns={c: c.split()[0] for c in df.columns})
+        if isinstance(df.columns, pd.MultiIndex):
+            price_fields = {"Open", "High", "Low", "Close", "Adj Close", "Volume"}
+            level_to_use = 0
+            for level in range(df.columns.nlevels):
+                level_vals = df.columns.get_level_values(level)
+                if any(str(v) in price_fields for v in level_vals):
+                    level_to_use = level
+                    break
+            df.columns = df.columns.get_level_values(level_to_use)
+        df = df.rename(columns={c: str(c).split()[0] for c in df.columns})
         df.index = df.index.tz_localize(None)
 
         self.cache.save("yfinance", symbol, tf, df)
