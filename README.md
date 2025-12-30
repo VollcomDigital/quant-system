@@ -36,7 +36,7 @@ This repository provides a Docker-based, cache-aware backtesting system to syste
 - src/utils/telemetry.py: Structured logging utilities and timed context
 - src/reporting/: Markdown, CSV, TradingView exporters
 - config/example.yaml: Example configuration
-- config/collections/: Per-collection configs (crypto, bonds, commodities, indices)
+- config/collections/: Per-collection configs (stocks, bonds, crypto, commodities)
 
 ## Quick Start
 
@@ -49,11 +49,11 @@ This repository provides a Docker-based, cache-aware backtesting system to syste
 4) Run via docker-compose (Poetry):
 
 ```bash
-docker-compose run --rm app bash -lc "poetry run python -m src.main run --config config/collections/crypto_majors.yaml"
-# or bonds/commodities/indices individually
-docker-compose run --rm app bash -lc "poetry run python -m src.main run --config config/collections/bonds_majors.yaml"
+docker-compose run --rm app bash -lc "poetry run python -m src.main run --config config/collections/crypto.yaml"
+# or stocks/bonds/commodities individually
+docker-compose run --rm app bash -lc "poetry run python -m src.main run --config config/collections/bonds_global.yaml"
 # generate reports with top-5 per symbol and offline HTML
-docker-compose run --rm app bash -lc "poetry run python -m src.main run --config config/collections/crypto_majors.yaml --top-n 5 --inline-css"
+docker-compose run --rm app bash -lc "poetry run python -m src.main run --config config/collections/crypto.yaml --top-n 5 --inline-css"
 ```
 
 ## Make Targets
@@ -61,7 +61,7 @@ docker-compose run --rm app bash -lc "poetry run python -m src.main run --config
 - `make build` / `make build-nc`: build image (no-cache).
 - `make sh`: open a shell in the container.
 - `make list-strategies`: verify external strategies are discovered.
-- `make run-bonds` / `make run-crypto` / `make run-commodities` / `make run-indices` / `make run-forex`: run a collection.
+- `make run-stocks-dividend` / `make run-stocks-large-cap-value` / `make run-stocks-large-cap-growth` / `make run-stocks-mid-cap` / `make run-stocks-small-cap` / `make run-stocks-international` / `make run-stocks-emerging` / `make run-bonds-global` / `make run-bonds-high-yield` / `make run-bonds-corporate` / `make run-bonds-municipal` / `make run-bonds-tips` / `make run-bonds-us-treasuries` / `make run-crypto` / `make run-commodities`: run a collection.
 - `make discover-crypto EXCHANGE=binance QUOTE=USDT TOP=100 OUT=config/collections/crypto_top100.yaml NAME=crypto_top100`: generate a crypto universe config.
 - `make lock` / `make lock-update`: create or update `poetry.lock` inside the container for reproducible builds.
 - `make manifest-status`: inspect the most recent run’s dashboard refresh actions (`--latest`).
