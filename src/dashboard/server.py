@@ -279,15 +279,18 @@ def create_app(reports_dir: Path) -> FastAPI:
                 continue
             # Ensure the resolved run directory is contained within the reports root
             try:
+                # This will raise ValueError if run_dir is not within root
                 _ = run_dir.relative_to(root)
             except ValueError:
                 # Attempt to escape the reports root; skip this run_id
                 continue
-            if not run_dir.exists() or not run_dir.is_dir():
+            # At this point, run_dir is a resolved, validated path under root.
+            safe_run_dir = run_dir
+            if not safe_run_dir.exists() or not safe_run_dir.is_dir():
                 continue
             payload[run_id] = {
-                "summary": _load_summary(run_dir),
-                "top": _load_summary_csv(run_dir, limit=10),
+                "summary": _load_summary(safe_run_dir),
+                "top": _load_summary_csv(safe_run_dir, limit=10),
             }
         if not payload:
             raise HTTPException(status_code=404, detail="No runs found")
