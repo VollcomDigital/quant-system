@@ -4,7 +4,6 @@ import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-import _osx_support
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse

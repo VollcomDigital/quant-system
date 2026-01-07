@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import importlib
-import itertools
 import inspect
+import itertools
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -487,7 +487,7 @@ class BacktestRunner:
             fixed_params = dict(static_params)
             search_space: dict[str, list[Any]] = {}
             for name, values in grid.items():
-                if isinstance(values, (set, tuple, list)):
+                if isinstance(values, set | tuple | list):
                     options = list(values)
                 else:
                     options = [values]
