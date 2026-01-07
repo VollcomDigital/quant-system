@@ -15,7 +15,7 @@ run:
 	docker-compose run --rm app bash -lc "poetry install && poetry run python -m src.main run --config config/example.yaml"
 
 run-stocks-dividend:
-	docker-compose run --rm app bash -lc "poetry install && RUN_ID=stocks-dividend-$(shell date +%Y%m%d%H%M) poetry run python -m src.main run --config config/collections/stocks_dividend.yaml"
+	docker-compose run --rm app bash -lc "RUN_ID=stocks-dividend-$(shell date +%Y%m%d%H%M) poetry run python -m src.main run --config config/collections/stocks_dividend.yaml"
 
 run-stocks-large-cap-value:
 	docker-compose run --rm app bash -lc "poetry install && RUN_ID=stocks-large-cap-value-$(shell date +%Y%m%d%H%M) poetry run python -m src.main run --config config/collections/stocks_large_cap_value.yaml"
