@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 from src.backtest.results_cache import ResultsCache
@@ -61,7 +62,7 @@ def test_refresh_manifest_creates_dashboard_for_legacy_run(tmp_path: Path):
     legacy_dashboard = json.loads((legacy_dir / "dashboard.json").read_text())
     assert legacy_dashboard["run_id"] == "20240101-000000"
     assert "highlights" in legacy_dashboard
-    assert legacy_dashboard["highlights"]["omega"]["value"] == 1.8
+    assert math.isclose(legacy_dashboard["highlights"]["omega"]["value"], 1.8, rel_tol=1e-09, abs_tol=1e-09)
     assert any(
         status["run_id"] == "20240101-000000" and status["status"] == "created"
         for status in statuses
