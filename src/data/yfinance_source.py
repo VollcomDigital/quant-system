@@ -124,7 +124,8 @@ class YFinanceSource(DataSource):
             splits = getattr(ticker, "splits", None)
             if (splits is None or getattr(splits, "empty", True)) and actions is not None:
                 splits = actions.get("Stock Splits")
-        except Exception:
+        except Exception as exc:
+            self.logger.warning("Failed to fetch splits for %s: %s", sym_fetch, exc)
             splits = None
         if splits is None or getattr(splits, "empty", True):
             return pd.DataFrame(columns=["ratio"], dtype=float)

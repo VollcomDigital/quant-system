@@ -4,6 +4,7 @@ import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+import _osx_support
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
@@ -12,7 +13,8 @@ from ..reporting.dashboard import DOWNLOAD_FILE_CANDIDATES
 
 
 def create_app(reports_dir: Path) -> FastAPI:
-    root = Path(reports_dir)
+    # Resolve the reports directory to an absolute path to use as a trusted root
+    root = Path(reports_dir).resolve()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -269,8 +271,19 @@ def create_app(reports_dir: Path) -> FastAPI:
             raise HTTPException(status_code=400, detail="Provide at least one run id")
         payload = {}
         for run_id in run_ids:
-            run_dir = root / run_id
-            if not run_dir.exists():
+            candidate_dir = root / run_id
+            try:
+                run_dir = candidate_dir.resolve()
+            except FileNotFoundError:
+                # If the path cannot be resolved, treat it as nonexistent
+                continue
+            # Ensure the resolved run directory is contained within the reports root
+            try:
+                _ = run_dir.relative_to(root)
+            except ValueError:
+                # Attempt to escape the reports root; skip this run_id
+                continue
+            if not run_dir.exists() or not run_dir.is_dir():
                 continue
             payload[run_id] = {
                 "summary": _load_summary(run_dir),

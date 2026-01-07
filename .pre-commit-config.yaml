@@ -29,11 +29,13 @@ repos:
       - id: pytest-coverage
         name: pytest with coverage
         entry: |
-          bash -lc 'if compgen -G "tests/*.py" > /dev/null; then
+          bash -lc 'if ! compgen -G "tests/*.py" > /dev/null; then echo "No tests found; skipping coverage"; exit 0; fi;
           export COVERAGE_FILE=/tmp/.coverage PYTHONPATH=$PWD SKIP_PANDAS_TESTS=1;
+          PYTEST_CMD="poetry run pytest tests -q --maxfail=1 --disable-warnings --cov=src.main --cov-report=term-missing --cov-fail-under=80";
           if command -v arch >/dev/null 2>&1 && [ "$(uname -s)" = "Darwin" ] && sysctl -n sysctl.proc_translated 2>/dev/null | grep -q 1; then
-          arch -arm64 poetry run pytest tests -q --maxfail=1 --disable-warnings --cov=src.main --cov-report=term-missing --cov-fail-under=80;
-          else poetry run pytest tests -q --maxfail=1 --disable-warnings --cov=src.main --cov-report=term-missing --cov-fail-under=80; fi;
-          else echo "No tests found; skipping coverage"; fi'
+            arch -arm64 $PYTEST_CMD;
+          else
+            $PYTEST_CMD;
+          fi'
         language: system
         pass_filenames: false
