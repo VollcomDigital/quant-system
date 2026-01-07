@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from decimal import Decimal
 import math
+from decimal import Decimal
 from math import isfinite
 from types import SimpleNamespace
 
