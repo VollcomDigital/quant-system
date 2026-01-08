@@ -64,7 +64,7 @@ def test_refresh_manifest_creates_dashboard_for_legacy_run(tmp_path: Path):
     assert "highlights" in legacy_dashboard
     assert math.isclose(
         legacy_dashboard["highlights"]["omega"]["value"], 1.8, rel_tol=1e-09, abs_tol=1e-09
-        )
+    )
     assert any(
         status["run_id"] == "20240101-000000" and status["status"] == "created"
         for status in statuses
