@@ -1,12 +1,12 @@
 metric: sortino
-engine: vectorbt
+engine: pybroker
 asset_workers: 4
 param_workers: 2
 max_fetch_concurrency: 2
 cache_dir: .cache/data
 
 collections:
-  - name: crypto_majors
+  - name: crypto
     source: binance
     exchange: binance
     quote: USDT

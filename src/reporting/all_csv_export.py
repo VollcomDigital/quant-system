@@ -33,7 +33,10 @@ class AllCSVExporter:
                     "params",
                     "sharpe",
                     "sortino",
+                    "omega",
+                    "tail_ratio",
                     "profit",
+                    "pain_index",
                     "trades",
                     "max_drawdown",
                 ]
@@ -51,7 +54,10 @@ class AllCSVExporter:
                         r["params"],
                         f"{stats.get('sharpe', float('nan')):.6f}",
                         f"{stats.get('sortino', float('nan')):.6f}",
+                        f"{stats.get('omega', float('nan')):.6f}",
+                        f"{stats.get('tail_ratio', float('nan')):.6f}",
                         f"{stats.get('profit', float('nan')):.6f}",
+                        f"{stats.get('pain_index', float('nan')):.6f}",
                         stats.get("trades", 0),
                         f"{stats.get('max_drawdown', float('nan')):.6f}",
                     ]
@@ -77,7 +83,10 @@ class AllCSVExporter:
                     "params",
                     "sharpe",
                     "sortino",
+                    "omega",
+                    "tail_ratio",
                     "profit",
+                    "pain_index",
                     "trades",
                     "max_drawdown",
                 ]
@@ -97,7 +106,10 @@ class AllCSVExporter:
                             r["params"],
                             f"{stats.get('sharpe', float('nan')):.6f}",
                             f"{stats.get('sortino', float('nan')):.6f}",
+                            f"{stats.get('omega', float('nan')):.6f}",
+                            f"{stats.get('tail_ratio', float('nan')):.6f}",
                             f"{stats.get('profit', float('nan')):.6f}",
+                            f"{stats.get('pain_index', float('nan')):.6f}",
                             stats.get("trades", 0),
                             f"{stats.get('max_drawdown', float('nan')):.6f}",
                         ]
