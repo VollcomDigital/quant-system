@@ -168,8 +168,8 @@ def create_app(reports_dir: Path) -> FastAPI:
         try:
             # Ensure the resolved run directory is within the trusted root
             run_dir.relative_to(root)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid run directory")
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail="Invalid run directory") from None
         if not run_dir.exists():
             raise HTTPException(status_code=404, detail="Run not found")
         summary = _load_summary(run_dir)
