@@ -27,6 +27,15 @@ def create_app(reports_dir: Path) -> FastAPI:
             raise HTTPException(status_code=400, detail="Invalid run id")
         return run_id
 
+    def _resolve_run_dir(run_id: str) -> Path:
+        run_id = _validate_run_id(run_id)
+        run_dir = (root / run_id).resolve()
+        try:
+            run_dir.relative_to(root)
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail="Invalid run id") from err
+        return run_dir
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if not root.exists():
@@ -41,6 +50,10 @@ def create_app(reports_dir: Path) -> FastAPI:
         return sorted([p for p in root.iterdir() if p.is_dir()], key=lambda p: p.name, reverse=True)
 
     def _load_summary(run_dir: Path) -> dict[str, Any]:
+        try:
+            run_dir.resolve().relative_to(root)
+        except Exception:
+            return {}
         summary_path = run_dir / "summary.json"
         if not summary_path.exists():
             return {}
@@ -50,6 +63,10 @@ def create_app(reports_dir: Path) -> FastAPI:
             return {}
 
     def _load_summary_csv(run_dir: Path, limit: int = 5) -> list[dict[str, Any]]:
+        try:
+            run_dir.resolve().relative_to(root)
+        except Exception:
+            return []
         csv_path = run_dir / "summary.csv"
         if not csv_path.exists():
             return []
@@ -87,8 +104,7 @@ def create_app(reports_dir: Path) -> FastAPI:
 
     @app.get("/api/runs/{run_id}")
     async def run_detail(run_id: str) -> dict[str, Any]:
-        run_id = _validate_run_id(run_id)
-        run_dir = root / run_id
+        run_dir = _resolve_run_dir(run_id)
         if not run_dir.exists() or not run_dir.is_dir():
             raise HTTPException(status_code=404, detail="Run not found")
         summary = _load_summary(run_dir)
@@ -163,13 +179,7 @@ def create_app(reports_dir: Path) -> FastAPI:
 
     @app.get("/run/{run_id}", response_class=HTMLResponse)
     async def run_page(run_id: str) -> HTMLResponse:
-        run_id = _validate_run_id(run_id)
-        run_dir = (root / run_id).resolve()
-        try:
-            # Ensure the resolved run directory is within the trusted root
-            run_dir.relative_to(root)
-        except ValueError as err:
-            raise HTTPException(status_code=400, detail="Invalid run directory") from err
+        run_dir = _resolve_run_dir(run_id)
         if not run_dir.exists():
             raise HTTPException(status_code=404, detail="Run not found")
         summary = _load_summary(run_dir)
@@ -275,8 +285,7 @@ def create_app(reports_dir: Path) -> FastAPI:
 
     @app.get("/api/runs/{run_id}/files/{filename}")
     async def download(run_id: str, filename: str):
-        run_id = _validate_run_id(run_id)
-        run_dir = root / run_id
+        run_dir = _resolve_run_dir(run_id)
         if not run_dir.exists() or not run_dir.is_dir():
             raise HTTPException(status_code=404, detail="Run not found")
         allowed = set(DOWNLOAD_FILE_CANDIDATES)
