@@ -29,11 +29,10 @@ def create_app(reports_dir: Path) -> FastAPI:
 
     def _resolve_run_dir(run_id: str) -> Path:
         run_id = _validate_run_id(run_id)
-        run_dir = (root / run_id).resolve()
-        try:
-            run_dir.relative_to(root)
-        except ValueError as err:
-            raise HTTPException(status_code=400, detail="Invalid run id") from err
+        run_map = {run_dir.name: run_dir for run_dir in _runs()}
+        run_dir = run_map.get(run_id)
+        if run_dir is None:
+            raise HTTPException(status_code=404, detail="Run not found")
         return run_dir
 
     @asynccontextmanager
@@ -50,9 +49,7 @@ def create_app(reports_dir: Path) -> FastAPI:
         return sorted([p for p in root.iterdir() if p.is_dir()], key=lambda p: p.name, reverse=True)
 
     def _load_summary(run_dir: Path) -> dict[str, Any]:
-        try:
-            run_dir.resolve().relative_to(root)
-        except Exception:
+        if run_dir.parent != root:
             return {}
         summary_path = run_dir / "summary.json"
         if not summary_path.exists():
@@ -63,9 +60,7 @@ def create_app(reports_dir: Path) -> FastAPI:
             return {}
 
     def _load_summary_csv(run_dir: Path, limit: int = 5) -> list[dict[str, Any]]:
-        try:
-            run_dir.resolve().relative_to(root)
-        except Exception:
+        if run_dir.parent != root:
             return []
         csv_path = run_dir / "summary.csv"
         if not csv_path.exists():
@@ -105,8 +100,6 @@ def create_app(reports_dir: Path) -> FastAPI:
     @app.get("/api/runs/{run_id}")
     async def run_detail(run_id: str) -> dict[str, Any]:
         run_dir = _resolve_run_dir(run_id)
-        if not run_dir.exists() or not run_dir.is_dir():
-            raise HTTPException(status_code=404, detail="Run not found")
         summary = _load_summary(run_dir)
         top_rows = _load_summary_csv(run_dir)
         return {
@@ -180,8 +173,6 @@ def create_app(reports_dir: Path) -> FastAPI:
     @app.get("/run/{run_id}", response_class=HTMLResponse)
     async def run_page(run_id: str) -> HTMLResponse:
         run_dir = _resolve_run_dir(run_id)
-        if not run_dir.exists():
-            raise HTTPException(status_code=404, detail="Run not found")
         summary = _load_summary(run_dir)
         manifest = []
         manifest_path = run_dir / "manifest_status.json"
@@ -286,8 +277,6 @@ def create_app(reports_dir: Path) -> FastAPI:
     @app.get("/api/runs/{run_id}/files/{filename}")
     async def download(run_id: str, filename: str):
         run_dir = _resolve_run_dir(run_id)
-        if not run_dir.exists() or not run_dir.is_dir():
-            raise HTTPException(status_code=404, detail="Run not found")
         allowed = set(DOWNLOAD_FILE_CANDIDATES)
         if filename not in allowed:
             raise HTTPException(status_code=404, detail="File not available")
@@ -303,28 +292,13 @@ def create_app(reports_dir: Path) -> FastAPI:
             raise HTTPException(status_code=400, detail="Provide at least one run id")
         payload = {}
         for run_id in run_ids:
-            if not RUN_ID_RE.fullmatch(run_id):
-                continue
-            candidate_dir = root / run_id
             try:
-                run_dir = candidate_dir.resolve()
-            except FileNotFoundError:
-                # If the path cannot be resolved, treat it as nonexistent
-                continue
-            # Ensure the resolved run directory is contained within the reports root
-            try:
-                # This will raise ValueError if run_dir is not within root
-                _ = run_dir.relative_to(root)
-            except ValueError:
-                # Attempt to escape the reports root; skip this run_id
-                continue
-            # At this point, run_dir is a resolved, validated path under root.
-            safe_run_dir = run_dir
-            if not safe_run_dir.exists() or not safe_run_dir.is_dir():
+                run_dir = _resolve_run_dir(run_id)
+            except HTTPException:
                 continue
             payload[run_id] = {
-                "summary": _load_summary(safe_run_dir),
-                "top": _load_summary_csv(safe_run_dir, limit=10),
+                "summary": _load_summary(run_dir),
+                "top": _load_summary_csv(run_dir, limit=10),
             }
         if not payload:
             raise HTTPException(status_code=404, detail="No runs found")
