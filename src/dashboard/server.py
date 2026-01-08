@@ -164,7 +164,12 @@ def create_app(reports_dir: Path) -> FastAPI:
     @app.get("/run/{run_id}", response_class=HTMLResponse)
     async def run_page(run_id: str) -> HTMLResponse:
         run_id = _validate_run_id(run_id)
-        run_dir = root / run_id
+        run_dir = (root / run_id).resolve()
+        try:
+            # Ensure the resolved run directory is within the trusted root
+            run_dir.relative_to(root)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid run directory")
         if not run_dir.exists():
             raise HTTPException(status_code=404, detail="Run not found")
         summary = _load_summary(run_dir)
