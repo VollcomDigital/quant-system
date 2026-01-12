@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import itertools
 import inspect
 from collections.abc import Iterable
@@ -299,11 +300,11 @@ class BacktestRunner:
             config_kwargs["fee_mode"] = fee_mode_cls.ORDER_PERCENT
             config_kwargs["fee_amount"] = fee_total
 
-        # check if all set params are __init__ params and delete false params
-        allowed = set(inspect.signature(config_cls.__init__).parameters)
-        allowed.discard("self")
-        config_kwargs = {k: v for k, v in config_kwargs.items() if k in allowed}
-        
+            # check if all set params are __init__ params and delete false params
+            allowed = set(inspect.signature(config_cls.__init__).parameters)
+            allowed.discard("self")
+            config_kwargs = {k: v for k, v in config_kwargs.items() if k in allowed}
+
         strategy = strategy_cls(
             data,
             start_date=data[data_col_enum.DATE.value].iloc[0],
@@ -487,7 +488,7 @@ class BacktestRunner:
             fixed_params = dict(static_params)
             search_space: dict[str, list[Any]] = {}
             for name, values in grid.items():
-                if isinstance(values, (set, tuple, list)):
+                if isinstance(values, set | tuple | list):
                     options = list(values)
                 else:
                     options = [values]

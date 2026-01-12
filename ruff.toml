@@ -1,0 +1,10 @@
+line-length = 100
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "B", "I", "UP"]
+ignore = ["E203", "E266", "E501"]
+
+[lint.isort]
+known-first-party = ["src"]
+profile = "black"
