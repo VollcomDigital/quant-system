@@ -1,0 +1,26 @@
+metric: sortino
+engine: pybroker
+asset_workers: 4
+param_workers: 2
+max_fetch_concurrency: 2
+cache_dir: .cache/data
+collections:
+- name: stocks_emerging
+  source: yfinance
+  fees: 0.0005
+  slippage: 0.0005
+  symbols:
+  - EIMI.L
+  - EMIM.L
+  - JD
+  - NIO
+  - TCEHY
+  - INFY
+  - HDB
+  - ITUB
+  - VALE
+  - PBR
+  - NU
+timeframes:
+- 1d
+strategies: []

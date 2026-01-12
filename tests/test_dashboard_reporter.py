@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -102,7 +103,7 @@ def test_dashboard_payload_falls_back_to_best_results(tmp_path: Path):
     assert payload["rows"]
     row = payload["rows"][0]
     assert row["symbol"] == "ETH/USDT"
-    assert row["stats"]["omega"] == 1.9
+    assert math.isclose(row["stats"]["omega"], 1.9, rel_tol=1e-09, abs_tol=1e-09)
 
 
 def test_collect_runs_manifest(tmp_path: Path):

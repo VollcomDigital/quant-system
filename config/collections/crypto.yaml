@@ -6,7 +6,7 @@ max_fetch_concurrency: 2
 cache_dir: .cache/data
 
 collections:
-  - name: crypto_majors
+  - name: crypto
     source: binance
     exchange: binance
     quote: USDT
