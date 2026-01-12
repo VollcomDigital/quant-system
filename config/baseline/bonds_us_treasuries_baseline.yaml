@@ -1,0 +1,20 @@
+metric: sortino
+engine: pybroker
+asset_workers: 4
+param_workers: 1
+max_fetch_concurrency: 2
+cache_dir: .cache/data
+
+collections:
+  - name: bonds_us_treasuries
+    source: yfinance
+    fees: 0.0005
+    slippage: 0.0005
+    symbols:
+      - IBTS.L
+      - IBTM.L
+      - IBTL.L
+
+timeframes: ["1d"]
+
+strategies: []

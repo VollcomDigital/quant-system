@@ -6,25 +6,14 @@ max_fetch_concurrency: 2
 cache_dir: .cache/data
 
 collections:
-  - name: bonds_majors
-    source: tiingo
+  - name: bonds_global
+    source: yfinance
     fees: 0.0005
     slippage: 0.0005
     symbols:
-      - TLT
-      - IEF
-      - IEI
-      - SHY
-      - BIL
-      - BND
-      - AGG
-      - LQD
-      - HYG
-      - JNK
-      - IGSB
-      - TIP
-      - MUB
-      - EMB
+      - AGGH.L
+      - VAGP.L
+      - IGLA.L
 
 timeframes: ["1d"]
 

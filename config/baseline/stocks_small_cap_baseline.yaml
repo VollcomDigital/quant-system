@@ -1,0 +1,21 @@
+metric: sortino
+engine: pybroker
+asset_workers: 4
+param_workers: 2
+max_fetch_concurrency: 2
+cache_dir: .cache/data
+collections:
+- name: stocks_small_cap
+  source: yfinance
+  fees: 0.0005
+  slippage: 0.0005
+  symbols:
+  - IUSN.L
+  - WSML.L
+  - CRSR
+  - GPRO
+  - FVRR
+  - PLUG
+timeframes:
+- 1d
+strategies: []
