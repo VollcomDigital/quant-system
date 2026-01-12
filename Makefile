@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: build build-nc sh run run-stocks-dividend run-stocks-large-cap-value run-stocks-large-cap-growth run-stocks-mid-cap run-stocks-small-cap run-stocks-international run-stocks-emerging run-bonds-global run-bonds-high-yield run-bonds-corporate run-bonds-municipal run-bonds-tips run-bonds-us-treasuries run-crypto run-commodities list-strategies lock lock-update discover-crypto manifest-status dashboard
+.PHONY: build build-nc sh run run-stocks-dividend run-stocks-large-cap-value run-stocks-large-cap-growth run-stocks-mid-cap run-stocks-small-cap run-stocks-international run-stocks-emerging run-bonds-global run-bonds-high-yield run-bonds-corporate run-bonds-municipal run-bonds-tips run-bonds-us-treasuries run-crypto run-commodities baseline-all list-strategies lock lock-update discover-crypto manifest-status dashboard
 
 build:
 	docker-compose build
