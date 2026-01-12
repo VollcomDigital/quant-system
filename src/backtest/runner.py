@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 import inspect
 import itertools
-import inspect
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
