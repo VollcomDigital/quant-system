@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: build build-nc sh run run-stocks-dividend run-stocks-large-cap-value run-stocks-large-cap-growth run-stocks-mid-cap run-stocks-small-cap run-stocks-international run-stocks-emerging run-bonds-global run-bonds-high-yield run-bonds-corporate run-bonds-municipal run-bonds-tips run-bonds-us-treasuries run-crypto run-commodities list-strategies lock lock-update discover-crypto manifest-status dashboard
+.PHONY: build build-nc sh run run-stocks-dividend run-stocks-large-cap-value run-stocks-large-cap-growth run-stocks-mid-cap run-stocks-small-cap run-stocks-international run-stocks-emerging run-bonds-global run-bonds-high-yield run-bonds-corporate run-bonds-municipal run-bonds-tips run-bonds-us-treasuries run-crypto run-commodities baseline-all list-strategies lock lock-update discover-crypto manifest-status dashboard
 
 build:
 	docker-compose build
@@ -58,6 +58,9 @@ run-crypto:
 
 run-commodities:
 	docker-compose run --rm app bash -lc "poetry install && RUN_ID=commodities-$(shell date +%Y%m%d%H%M) poetry run python -m src.main run --config config/collections/commodities.yaml"
+
+baseline-all:
+	docker-compose run --rm app bash -lc "poetry install && ./scripts/run_baselines.sh"
 
 list-strategies:
 	docker-compose run --rm app bash -lc "poetry install && poetry run python -m src.main list-strategies --strategies-path /ext/strategies"
