@@ -63,15 +63,17 @@ class HTMLReporter:
             flat_rows, key=lambda x: x.get("metric_value", float("nan")), reverse=True
         )[:5]
 
-        strategy_best: dict[str, dict[str, Any]] = {}
+        strategy_best: dict[tuple[str, str], dict[str, Any]] = {}
         for row in flat_rows:
+            collection = row.get("collection") or "unknown"
             strategy = row.get("strategy")
             if not strategy:
                 continue
-            if strategy not in strategy_best or row.get(
-                "metric_value", float("nan")
-            ) > strategy_best[strategy].get("metric_value", float("nan")):
-                strategy_best[strategy] = row
+            key = (collection, strategy)
+            if key not in strategy_best or row.get("metric_value", float("nan")) > strategy_best[
+                key
+            ].get("metric_value", float("nan")):
+                strategy_best[key] = row
 
         metrics_highlight: dict[str, dict[str, Any]] = {}
         metrics_to_track = ["sharpe", "sortino", "omega", "tail_ratio", "profit", "pain_index"]
@@ -95,16 +97,16 @@ class HTMLReporter:
             if not strategy_best:
                 return ""
             rows_html = []
-            for name in sorted(strategy_best.keys()):
-                row = strategy_best[name]
+            for key in sorted(strategy_best.keys()):
+                row = strategy_best[key]
                 rows_html.append(
                     "<tr>"
-                    f"<td class='px-3 py-2'>{name}</td>"
+                    f"<td class='px-3 py-2'>{row.get('symbol')}</td>"
+                    f"<td class='px-3 py-2'>{row.get('strategy')}</td>"
+                    f"<td class='px-3 py-2'>{row.get('timeframe')}</td>"
                     f"<td class='px-3 py-2'>{row.get('metric')}</td>"
                     f"<td class='px-3 py-2'>{row.get('metric_value', float('nan')):.4f}</td>"
                     f"<td class='px-3 py-2'>{row.get('collection')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('symbol')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('timeframe')}</td>"
                     "</tr>"
                 )
             body = "\n".join(rows_html)
@@ -115,12 +117,12 @@ class HTMLReporter:
                   <table class='min-w-full text-sm text-left text-slate-200'>
                     <thead class='text-xs uppercase bg-slate-700 text-slate-300'>
                       <tr>
+                        <th class='px-3 py-2'>Symbol</th>
                         <th class='px-3 py-2'>Strategy</th>
+                        <th class='px-3 py-2'>Timeframe</th>
                         <th class='px-3 py-2'>Metric</th>
                         <th class='px-3 py-2'>Value</th>
                         <th class='px-3 py-2'>Collection</th>
-                        <th class='px-3 py-2'>Symbol</th>
-                        <th class='px-3 py-2'>Timeframe</th>
                       </tr>
                     </thead>
                     <tbody>{body}</tbody>

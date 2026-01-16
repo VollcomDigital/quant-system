@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -48,8 +48,8 @@ class PolygonSource(DataSource):
 
         mult, span = self._map_tf(tf)
         # Fetch in yearly chunks to respect response size limits
-        start = datetime(1990, 1, 1, tzinfo=timezone.utc)
-        end = datetime.now(timezone.utc)
+        start = datetime(1990, 1, 1, tzinfo=datetime.UTC)
+        end = datetime.now(tz=datetime.UTC)
 
         rows = []
         session = create_retry_session()

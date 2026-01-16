@@ -11,6 +11,12 @@ class TradingViewExporter:
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
     def export(self, results: list[BestResult]):
+        def is_positive(val) -> bool:
+            try:
+                return float(val) > 0
+            except (TypeError, ValueError):
+                return False
+
         # Keep only the best strategy per (collection, symbol, timeframe)
         best_per_key: dict[tuple[str, str, str], BestResult] = {}
         for r in results:
@@ -26,6 +32,8 @@ class TradingViewExporter:
         # Sort for stable output
         for key in sorted(best_per_key.keys()):
             r = best_per_key[key]
+            if not is_positive(r.metric_value):
+                continue
             sharpe = r.stats.get("sharpe") if isinstance(r.stats, dict) else None
             sortino = r.stats.get("sortino") if isinstance(r.stats, dict) else None
             calmar = r.stats.get("calmar") if isinstance(r.stats, dict) else None

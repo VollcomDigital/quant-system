@@ -17,6 +17,12 @@ class AllCSVExporter:
         self.top_n = top_n
 
     def export(self, best_results: list[BestResult]):
+        def is_positive(val) -> bool:
+            try:
+                return float(val) > 0
+            except (TypeError, ValueError):
+                return False
+
         all_rows = self.cache.list_by_run(self.run_id)
         # All results CSV
         path_all = self.out_dir / "all_results.csv"
@@ -42,6 +48,8 @@ class AllCSVExporter:
                 ]
             )
             for r in all_rows:
+                if not is_positive(r.get("metric_value")):
+                    continue
                 stats = r.get("stats", {})
                 w.writerow(
                     [
@@ -68,6 +76,8 @@ class AllCSVExporter:
         # group
         grouped: dict[tuple, list[dict[str, Any]]] = {}
         for r in all_rows:
+            if not is_positive(r.get("metric_value")):
+                continue
             key = (r["collection"], r["symbol"])
             grouped.setdefault(key, []).append(r)
         with open(path_topn, "w", newline="") as f:

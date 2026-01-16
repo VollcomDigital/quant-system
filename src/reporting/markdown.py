@@ -11,6 +11,12 @@ class MarkdownReporter:
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
     def export(self, results: list[BestResult]):
+        def is_positive(val) -> bool:
+            try:
+                return float(val) > 0
+            except (TypeError, ValueError):
+                return False
+
         # Group by collection -> symbol
         by_key = {}
         for r in results:
@@ -24,6 +30,8 @@ class MarkdownReporter:
             # Sort rows by metric_value desc
             rows = sorted(rows, key=lambda x: x.metric_value, reverse=True)
             best = rows[0]
+            if not is_positive(best.metric_value):
+                continue
             lines.append("- Best Combination:")
             lines.append(f"  - Timeframe: {best.timeframe}")
             lines.append(f"  - Strategy: {best.strategy}")

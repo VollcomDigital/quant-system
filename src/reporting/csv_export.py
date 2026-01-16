@@ -12,6 +12,19 @@ class CSVExporter:
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
     def export(self, results: list[BestResult]):
+        def is_positive(val) -> bool:
+            try:
+                return float(val) > 0
+            except (TypeError, ValueError):
+                return False
+
+        best_by_symbol: dict[tuple[str, str], BestResult] = {}
+        for r in results:
+            key = (r.collection, r.symbol)
+            prev = best_by_symbol.get(key)
+            if prev is None or float(r.metric_value) > float(prev.metric_value):
+                best_by_symbol[key] = r
+
         path = self.out_dir / "summary.csv"
         with open(path, "w", newline="") as f:
             w = csv.writer(f)
@@ -34,7 +47,9 @@ class CSVExporter:
                     "max_drawdown",
                 ]
             )
-            for r in results:
+            for r in sorted(best_by_symbol.values(), key=lambda x: (x.collection, x.symbol)):
+                if not is_positive(r.metric_value):
+                    continue
                 w.writerow(
                     [
                         r.collection,

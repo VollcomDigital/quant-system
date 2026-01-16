@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -58,7 +58,7 @@ class FinnhubSource(DataSource):
         res = self._map_tf(tf)
 
         # Finnhub candles require a from/to Unix time range
-        end = datetime.now(timezone.utc)
+        end = datetime.now(tz=datetime.UTC)
         # Pull a generous lookback window without pagination; adjust by tf
         lookback_days = 365 * 5 if tf == "1d" else 365
         start = end - timedelta(days=lookback_days)
