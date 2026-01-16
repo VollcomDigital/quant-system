@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..backtest.runner import BestResult
+from .utils import is_positive
 
 
 class MarkdownReporter:
@@ -24,6 +25,8 @@ class MarkdownReporter:
             # Sort rows by metric_value desc
             rows = sorted(rows, key=lambda x: x.metric_value, reverse=True)
             best = rows[0]
+            if not is_positive(best.metric_value):
+                continue
             lines.append("- Best Combination:")
             lines.append(f"  - Timeframe: {best.timeframe}")
             lines.append(f"  - Strategy: {best.strategy}")
@@ -32,7 +35,10 @@ class MarkdownReporter:
             lines.append("- Key Metrics:")
             lines.append(f"  - Sharpe: {best.stats.get('sharpe', float('nan')):.6f}")
             lines.append(f"  - Sortino: {best.stats.get('sortino', float('nan')):.6f}")
+            lines.append(f"  - Omega: {best.stats.get('omega', float('nan')):.6f}")
+            lines.append(f"  - Tail Ratio: {best.stats.get('tail_ratio', float('nan')):.6f}")
             lines.append(f"  - Profit: {best.stats.get('profit', float('nan')):.6f}")
+            lines.append(f"  - Pain Index: {best.stats.get('pain_index', float('nan')):.6f}")
             lines.append(f"  - Trades: {best.stats.get('trades', 0)}")
             lines.append(f"  - Max Drawdown: {best.stats.get('max_drawdown', float('nan')):.6f}")
             lines.append("")

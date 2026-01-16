@@ -1,0 +1,402 @@
+from __future__ import annotations
+
+import html
+import json
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote
+
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, HTMLResponse
+
+from ..reporting.dashboard import DOWNLOAD_FILE_CANDIDATES
+
+
+def create_app(reports_dir: Path) -> FastAPI:
+    root = Path(reports_dir)
+    base_root: Path | None = None
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        nonlocal base_root
+        if not root.exists():
+            raise RuntimeError(f"Reports directory not found: {root}")
+        base_root = root.resolve()
+        yield
+
+    app = FastAPI(title="Quant System Dashboard", lifespan=lifespan)
+
+    def _escape(value: Any) -> str:
+        if value is None:
+            return ""
+        return html.escape(str(value), quote=True)
+
+    def _url_segment(value: Any) -> str:
+        return quote(str(value), safe="")
+
+    def _file_url(path: Path) -> str:
+        return f"file://{quote(str(path), safe='/:')}"
+
+    def _base_root() -> Path:
+        return base_root if base_root is not None else root.resolve()
+
+    def _is_relative_to(path: Path, base: Path) -> bool:
+        try:
+            path.relative_to(base)
+        except ValueError:
+            return False
+        return True
+
+    def _safe_filename(filename: str) -> str:
+        if not filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        if "/" in filename or "\\" in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        if filename.startswith(".") or ".." in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        if Path(filename).is_absolute():
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        return filename
+
+    def _runs() -> list[Path]:
+        if not root.exists():
+            return []
+        return sorted([p for p in root.iterdir() if p.is_dir()], key=lambda p: p.name, reverse=True)
+
+    def _runs_by_name() -> dict[str, Path]:
+        return {run_dir.name: run_dir for run_dir in _runs()}
+
+    def _load_summary(run_dir: Path) -> dict[str, Any]:
+        summary_path = (run_dir / "summary.json").resolve()
+        if not _is_relative_to(summary_path, _base_root()):
+            return {}
+        if not summary_path.exists():
+            return {}
+        try:
+            return json.loads(summary_path.read_text())
+        except Exception:
+            return {}
+
+    def _load_summary_csv(run_dir: Path, limit: int = 5) -> list[dict[str, Any]]:
+        csv_path = (run_dir / "summary.csv").resolve()
+        if not _is_relative_to(csv_path, _base_root()):
+            return []
+        if not csv_path.exists():
+            return []
+        try:
+            import csv
+
+            with open(csv_path, newline="") as f:
+                reader = csv.DictReader(f)
+                rows = []
+                for idx, row in enumerate(reader):
+                    if idx >= limit:
+                        break
+                    rows.append(row)
+                return rows
+        except Exception:
+            return []
+
+    @app.get("/api/runs")
+    async def list_runs() -> list[dict[str, Any]]:
+        runs = []
+        for run_dir in _runs():
+            summary = _load_summary(run_dir)
+            runs.append(
+                {
+                    "run_id": run_dir.name,
+                    "metric": summary.get("metric"),
+                    "results_count": summary.get("results_count"),
+                    "started_at": summary.get("started_at"),
+                    "finished_at": summary.get("finished_at"),
+                    "path": str(run_dir),
+                    "summary": summary,
+                }
+            )
+        return runs
+
+    @app.get("/api/runs/{run_id}")
+    async def run_detail(run_id: str) -> dict[str, Any]:
+        run_dir = _runs_by_name().get(run_id)
+        if run_dir is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if not run_dir.exists() or not run_dir.is_dir():
+            raise HTTPException(status_code=404, detail="Run not found")
+        summary = _load_summary(run_dir)
+        top_rows = _load_summary_csv(run_dir)
+        return {
+            "run_id": run_dir.name,
+            "summary": summary,
+            "top": top_rows,
+            "path": str(run_dir),
+        }
+
+    @app.get("/", response_class=HTMLResponse)
+    async def index() -> HTMLResponse:
+        rows = []
+        for run_dir in _runs():
+            summary = _load_summary(run_dir)
+            rows.append(
+                {
+                    "run_id": _escape(run_dir.name),
+                    "metric": _escape(summary.get("metric")),
+                    "results_count": _escape(summary.get("results_count")),
+                    "started_at": _escape(summary.get("started_at")),
+                    "finished_at": _escape(summary.get("finished_at")),
+                    "report_url": _escape(_file_url((run_dir / "report.html").resolve())),
+                }
+            )
+        html_rows = "".join(
+            f"<tr><td class='px-4 py-2 font-semibold'>{r['run_id']}</td>"
+            f"<td class='px-4 py-2'>{r.get('metric', '')}</td>"
+            f"<td class='px-4 py-2'>{r.get('results_count', '')}</td>"
+            f"<td class='px-4 py-2'>{r.get('started_at', '')}</td>"
+            f"<td class='px-4 py-2'><a class='text-sky-400 underline' href='{r['report_url']}'>Open report</a></td></tr>"
+            for r in rows
+        )
+        html = f"""
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8' />
+  <meta name='viewport' content='width=device-width, initial-scale=1' />
+  <title>Quant System Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class='bg-slate-900 text-slate-100'>
+  <div class='max-w-5xl mx-auto py-8 px-4 space-y-6'>
+    <header>
+      <h1 class='text-2xl font-bold'>Quant System Runs</h1>
+      <p class='text-sm text-slate-400'>Browse recent runs, review summaries, and open detailed reports.</p>
+    </header>
+    <section class='bg-slate-800 rounded-lg shadow'>
+      <table class='w-full text-sm'>
+        <thead class='text-xs uppercase bg-slate-700 text-slate-300'>
+          <tr>
+            <th class='px-4 py-2 text-left'>Run ID</th>
+            <th class='px-4 py-2 text-left'>Metric</th>
+            <th class='px-4 py-2 text-left'>Results</th>
+            <th class='px-4 py-2 text-left'>Started</th>
+            <th class='px-4 py-2 text-left'>Detail</th>
+            <th class='px-4 py-2 text-left'>Report</th>
+          </tr>
+        </thead>
+        <tbody>
+          {html_rows if html_rows else "<tr><td class='px-4 py-3 text-slate-400' colspan='6'>No runs available</td></tr>"}
+        </tbody>
+      </table>
+    </section>
+  </div>
+</body>
+</html>
+        """
+        return HTMLResponse(html)
+
+    @app.get("/run/{run_id}", response_class=HTMLResponse)
+    async def run_page(run_id: str) -> HTMLResponse:
+        run_dir = _runs_by_name().get(run_id)
+        if run_dir is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if not run_dir.exists():
+            raise HTTPException(status_code=404, detail="Run not found")
+        summary = _load_summary(run_dir)
+        manifest = []
+        manifest_path = run_dir / "manifest_status.json"
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except Exception:
+                manifest = []
+        notifications = []
+        notifications_path = run_dir / "notifications.json"
+        if notifications_path.exists():
+            try:
+                notifications = json.loads(notifications_path.read_text())
+            except Exception:
+                notifications = []
+
+        summary_rows = "".join(
+            f"<tr><td class='px-3 py-2 font-semibold'>{_escape(k)}</td><td class='px-3 py-2'>{_escape(v)}</td></tr>"
+            for k, v in summary.items()
+            if k in {"metric", "results_count", "started_at", "finished_at", "duration_sec"}
+        )
+
+        manifest_rows = (
+            "".join(
+                f"<tr><td class='px-3 py-2'>{_escape(m.get('run_id'))}</td>"
+                f"<td class='px-3 py-2'>{_escape(m.get('status'))}</td>"
+                f"<td class='px-3 py-2'>{_escape(m.get('message', ''))}</td></tr>"
+                for m in manifest
+            )
+            or "<tr><td class='px-3 py-2 text-slate-400' colspan='3'>No manifest actions</td></tr>"
+        )
+
+        notification_rows = (
+            "".join(
+                f"<tr><td class='px-3 py-2'>{_escape(n.get('channel'))}</td>"
+                f"<td class='px-3 py-2'>{_escape(n.get('metric'))}</td>"
+                f"<td class='px-3 py-2'>{_escape('sent' if n.get('sent') else n.get('reason', 'skipped'))}</td></tr>"
+                for n in notifications
+            )
+            or "<tr><td class='px-3 py-2 text-slate-400' colspan='3'>No notifications</td></tr>"
+        )
+
+        downloads = []
+        for name in DOWNLOAD_FILE_CANDIDATES:
+            if (run_dir / name).exists():
+                run_id_safe = _url_segment(run_dir.name)
+                name_safe = _url_segment(name)
+                href = _escape(f"/api/runs/{run_id_safe}/files/{name_safe}")
+                downloads.append(
+                    f"<li><a class='text-sky-400 underline' href='{href}'>{_escape(name)}</a></li>"
+                )
+        downloads_html = "".join(downloads) or "<li class='text-slate-400'>No files</li>"
+
+        run_id_text = _escape(run_dir.name)
+        html = f"""
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8' />
+  <meta name='viewport' content='width=device-width, initial-scale=1' />
+  <title>Run {run_id_text}</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class='bg-slate-900 text-slate-100'>
+  <div class='max-w-5xl mx-auto py-8 px-4 space-y-6'>
+    <header>
+      <h1 class='text-2xl font-bold'>Run {run_id_text}</h1>
+      <a class='text-sky-400 underline text-sm' href='/'>Back to runs</a>
+    </header>
+    <section class='bg-slate-800 rounded-lg shadow'>
+      <h2 class='px-4 pt-4 text-lg font-semibold'>Summary</h2>
+      <table class='w-full text-sm'>
+        <tbody>{summary_rows}</tbody>
+      </table>
+      <div class='px-4 pb-4'>
+        <h3 class='text-sm font-semibold mt-4 mb-2'>Downloads</h3>
+        <ul class='list-disc list-inside text-sm'>
+          {downloads_html}
+        </ul>
+      </div>
+    </section>
+    <section class='bg-slate-800 rounded-lg shadow'>
+      <h2 class='px-4 pt-4 text-lg font-semibold'>Manifest Actions</h2>
+      <table class='w-full text-sm'>
+        <thead class='text-xs uppercase bg-slate-700 text-slate-300'>
+          <tr><th class='px-3 py-2 text-left'>Run</th><th class='px-3 py-2 text-left'>Status</th><th class='px-3 py-2 text-left'>Message</th></tr>
+        </thead>
+        <tbody>{manifest_rows}</tbody>
+      </table>
+    </section>
+    <section class='bg-slate-800 rounded-lg shadow'>
+      <h2 class='px-4 pt-4 text-lg font-semibold'>Notifications</h2>
+      <table class='w-full text-sm'>
+        <thead class='text-xs uppercase bg-slate-700 text-slate-300'>
+          <tr><th class='px-3 py-2 text-left'>Channel</th><th class='px-3 py-2 text-left'>Metric</th><th class='px-3 py-2 text-left'>Outcome</th></tr>
+        </thead>
+        <tbody>{notification_rows}</tbody>
+      </table>
+    </section>
+  </div>
+</body>
+</html>
+        """
+        return HTMLResponse(html)
+
+    @app.get("/api/runs/{run_id}/files/{filename}")
+    async def download(run_id: str, filename: str):
+        run_dir = _runs_by_name().get(run_id)
+        if run_dir is None:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if not run_dir.exists() or not run_dir.is_dir():
+            raise HTTPException(status_code=404, detail="Run not found")
+        filename = _safe_filename(filename)
+        allowed = set(DOWNLOAD_FILE_CANDIDATES)
+        if filename not in allowed:
+            raise HTTPException(status_code=404, detail="File not available")
+        file_path = (run_dir / filename).resolve()
+        if not _is_relative_to(file_path, run_dir):
+            raise HTTPException(status_code=404, detail="File not found")
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+        return FileResponse(file_path)
+
+    @app.get("/api/compare")
+    async def compare_runs(runs: str) -> dict[str, Any]:
+        run_ids = [r.strip() for r in runs.split(",") if r.strip()]
+        if not run_ids:
+            raise HTTPException(status_code=400, detail="Provide at least one run id")
+        available_runs = _runs_by_name()
+        payload = {}
+        for run_id in run_ids:
+            run_dir = available_runs.get(run_id)
+            if run_dir is None:
+                continue
+            payload[run_dir.name] = {
+                "summary": _load_summary(run_dir),
+                "top": _load_summary_csv(run_dir, limit=10),
+            }
+        if not payload:
+            raise HTTPException(status_code=404, detail="No runs found")
+        return payload
+
+    @app.get("/compare", response_class=HTMLResponse)
+    async def compare_page(runs: str) -> HTMLResponse:
+        api_data = await compare_runs(runs)
+        run_cards = []
+        for run_id, data in api_data.items():
+            rows = data.get("top") or []
+            table_rows = (
+                "".join(
+                    f"<tr><td class='px-3 py-2'>{_escape(row.get('symbol'))}</td>"
+                    f"<td class='px-3 py-2'>{_escape(row.get('strategy'))}</td>"
+                    f"<td class='px-3 py-2'>{_escape(row.get('metric'))}</td>"
+                    f"<td class='px-3 py-2'>{_escape(row.get('metric_value'))}</td></tr>"
+                    for row in rows
+                )
+                or "<tr><td class='px-3 py-2 text-slate-400' colspan='4'>No summary.csv data</td></tr>"
+            )
+            summary_meta = data.get("summary", {})
+            run_id_text = _escape(run_id)
+            run_cards.append(
+                f"""
+                <section class='bg-slate-800 rounded-lg shadow p-4 space-y-3'>
+                  <header>
+                    <h2 class='text-lg font-semibold'>{run_id_text}</h2>
+                    <p class='text-xs text-slate-400'>Metric: {_escape(summary_meta.get("metric", ""))}</p>
+                  </header>
+                  <div class='overflow-x-auto'>
+                    <table class='min-w-full text-sm text-left text-slate-200'>
+                      <thead class='text-xs uppercase bg-slate-700 text-slate-300'>
+                        <tr><th class='px-3 py-2'>Symbol</th><th class='px-3 py-2'>Strategy</th><th class='px-3 py-2'>Metric</th><th class='px-3 py-2'>Value</th></tr>
+                      </thead>
+                      <tbody>{table_rows}</tbody>
+                    </table>
+                  </div>
+                </section>
+                """
+            )
+        html = """<!DOCTYPE html>
+<html lang='en'>
+<head>
+  <meta charset='utf-8'/>
+  <meta name='viewport' content='width=device-width, initial-scale=1'/>
+  <title>Run Comparison</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class='bg-slate-900 text-slate-100'>
+  <div class='max-w-6xl mx-auto py-8 px-4 space-y-4'>
+    <header>
+      <h1 class='text-2xl font-bold'>Run Comparison</h1>
+      <a class='text-sky-400 underline text-sm' href='/'>Back to runs</a>
+    </header>
+    {cards}
+  </div>
+</body>
+</html>
+        """.format(cards="".join(run_cards))
+        return HTMLResponse(html)
+
+    return app

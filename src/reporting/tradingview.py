@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..backtest.runner import BestResult
+from .utils import is_positive
 
 
 class TradingViewExporter:
@@ -26,6 +27,8 @@ class TradingViewExporter:
         # Sort for stable output
         for key in sorted(best_per_key.keys()):
             r = best_per_key[key]
+            if not is_positive(r.metric_value):
+                continue
             sharpe = r.stats.get("sharpe") if isinstance(r.stats, dict) else None
             sortino = r.stats.get("sortino") if isinstance(r.stats, dict) else None
             calmar = r.stats.get("calmar") if isinstance(r.stats, dict) else None

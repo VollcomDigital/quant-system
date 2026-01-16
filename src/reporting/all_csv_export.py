@@ -6,6 +6,7 @@ from typing import Any
 
 from ..backtest.results_cache import ResultsCache
 from ..backtest.runner import BestResult
+from .utils import is_positive
 
 
 class AllCSVExporter:
@@ -18,6 +19,7 @@ class AllCSVExporter:
 
     def export(self, best_results: list[BestResult]):
         all_rows = self.cache.list_by_run(self.run_id)
+        positive_rows = [r for r in all_rows if is_positive(r.get("metric_value"))]
         # All results CSV
         path_all = self.out_dir / "all_results.csv"
         with open(path_all, "w", newline="") as f:
@@ -33,12 +35,15 @@ class AllCSVExporter:
                     "params",
                     "sharpe",
                     "sortino",
+                    "omega",
+                    "tail_ratio",
                     "profit",
+                    "pain_index",
                     "trades",
                     "max_drawdown",
                 ]
             )
-            for r in all_rows:
+            for r in positive_rows:
                 stats = r.get("stats", {})
                 w.writerow(
                     [
@@ -51,7 +56,10 @@ class AllCSVExporter:
                         r["params"],
                         f"{stats.get('sharpe', float('nan')):.6f}",
                         f"{stats.get('sortino', float('nan')):.6f}",
+                        f"{stats.get('omega', float('nan')):.6f}",
+                        f"{stats.get('tail_ratio', float('nan')):.6f}",
                         f"{stats.get('profit', float('nan')):.6f}",
+                        f"{stats.get('pain_index', float('nan')):.6f}",
                         stats.get("trades", 0),
                         f"{stats.get('max_drawdown', float('nan')):.6f}",
                     ]
@@ -61,7 +69,7 @@ class AllCSVExporter:
         path_topn = self.out_dir / f"top{self.top_n}.csv"
         # group
         grouped: dict[tuple, list[dict[str, Any]]] = {}
-        for r in all_rows:
+        for r in positive_rows:
             key = (r["collection"], r["symbol"])
             grouped.setdefault(key, []).append(r)
         with open(path_topn, "w", newline="") as f:
@@ -77,7 +85,10 @@ class AllCSVExporter:
                     "params",
                     "sharpe",
                     "sortino",
+                    "omega",
+                    "tail_ratio",
                     "profit",
+                    "pain_index",
                     "trades",
                     "max_drawdown",
                 ]
@@ -97,7 +108,10 @@ class AllCSVExporter:
                             r["params"],
                             f"{stats.get('sharpe', float('nan')):.6f}",
                             f"{stats.get('sortino', float('nan')):.6f}",
+                            f"{stats.get('omega', float('nan')):.6f}",
+                            f"{stats.get('tail_ratio', float('nan')):.6f}",
                             f"{stats.get('profit', float('nan')):.6f}",
+                            f"{stats.get('pain_index', float('nan')):.6f}",
                             stats.get("trades", 0),
                             f"{stats.get('max_drawdown', float('nan')):.6f}",
                         ]

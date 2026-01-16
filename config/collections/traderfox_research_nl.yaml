@@ -1,0 +1,36 @@
+metric: sortino
+engine: pybroker
+asset_workers: 4
+param_workers: 2
+max_fetch_concurrency: 2
+cache_dir: .cache/data
+collections:
+- name: traderfox_research_nl
+  source: yfinance
+  fees: 0.0005
+  slippage: 0.0005
+  symbols:
+  - ASML.AS
+  - ASM.AS
+  - BESI.AS
+  - ADYEN.AS
+  - PRX.AS
+  - HEIA.AS
+  - ABN.AS
+  - INGA.AS
+  - PHIA.AS
+  - UNA.AS
+  - MT.AS
+  - WKL.AS
+  - RAND.AS
+  - TKWY.AS
+  - FAGR.AS
+  - LIGHT.AS
+  - FLOW.AS
+  - ALFEN.AS
+  - BFIT.AS
+  - AD.AS
+  - KPN.AS
+timeframes:
+- 1d
+strategies: []

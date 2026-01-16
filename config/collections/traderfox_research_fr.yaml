@@ -1,0 +1,28 @@
+metric: sortino
+engine: pybroker
+asset_workers: 4
+param_workers: 2
+max_fetch_concurrency: 2
+cache_dir: .cache/data
+collections:
+- name: traderfox_research_fr
+  source: yfinance
+  fees: 0.0005
+  slippage: 0.0005
+  symbols:
+  - MC.PA
+  - OR.PA
+  - TTE.PA
+  - BNP.PA
+  - ACA.PA
+  - GLE.PA
+  - KER.PA
+  - AI.PA
+  - AIR.PA
+  - SAF.PA
+  - CAP.PA
+  - ENX.PA
+  - RI.PA
+timeframes:
+- 1d
+strategies: []

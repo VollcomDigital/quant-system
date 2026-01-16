@@ -1,0 +1,47 @@
+metric: sortino
+engine: pybroker
+asset_workers: 4
+param_workers: 1
+max_fetch_concurrency: 2
+cache_dir: .cache/data
+
+collections:
+  - name: commodities
+    source: yfinance
+    fees: 0.0005
+    slippage: 0.0005
+    symbols:
+      - CL=F
+      - BZ=F
+      - MCL=F
+      - NG=F
+      - HO=F
+      - RB=F
+      - GC=F
+      - MGC=F
+      - SI=F
+      - SIL=F
+      - PL=F
+      - PA=F
+      - HG=F
+      - ZC=F
+      - ZS=F
+      - ZL=F
+      - ZM=F
+      - ZW=F
+      - ZO=F
+      - ZR=F
+      - LE=F
+      - GF=F
+      - HE=F
+      - DC=F
+      - KC=F
+      - SB=F
+      - CC=F
+      - CT=F
+      - OJ=F
+      - LBR=F
+
+timeframes: ["1d"]
+
+strategies: []
