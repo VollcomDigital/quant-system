@@ -14,23 +14,23 @@ jobs:
       STRATEGIES_DIR: strategies
     steps:
       - name: Checkout quant-system
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
 
       - name: Checkout strategies repo
         if: ${{ secrets.STRATEGIES_REPO != '' && secrets.GH_TOKEN != '' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6.0.2
         with:
           repository: ${{ secrets.STRATEGIES_REPO }}
           token: ${{ secrets.GH_TOKEN }}
           path: strategies
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6.1.0
         with:
           python-version: '3.12'
 
       - name: Install Poetry
-        run: pip install poetry==1.8.3
+        run: pip install poetry==2.2.1
 
       - name: Install deps
         run: poetry install --no-root
@@ -46,7 +46,7 @@ jobs:
           poetry run python -m src.main run --config config/example.yaml --strategies-path "${{ env.STRATEGIES_DIR }}"
 
       - name: Upload reports artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6.0.0
         with:
           name: backtest-reports
           path: reports/**
