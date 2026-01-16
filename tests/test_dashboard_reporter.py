@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from src.reporting.dashboard import (
     DashboardReporter,
     build_dashboard_payload,
@@ -71,7 +73,7 @@ def test_dashboard_reporter_writes_files(tmp_path: Path):
     assert "compare-metric" in html
     assert "Omega" in html
     assert data["available_metrics"][0] == "omega"
-    assert data["highlights"]["omega"]["value"] == rows[0]["stats"]["omega"]
+    assert data["highlights"]["omega"]["value"] == pytest.approx(rows[0]["stats"]["omega"])
     assert data["downloads"] == ["report.html"]
 
 
@@ -102,7 +104,7 @@ def test_dashboard_payload_falls_back_to_best_results(tmp_path: Path):
     assert payload["rows"]
     row = payload["rows"][0]
     assert row["symbol"] == "ETH/USDT"
-    assert row["stats"]["omega"] == 1.9
+    assert row["stats"]["omega"] == pytest.approx(1.9)
 
 
 def test_collect_runs_manifest(tmp_path: Path):

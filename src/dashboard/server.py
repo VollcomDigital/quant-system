@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import html
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse
@@ -21,6 +23,37 @@ def create_app(reports_dir: Path) -> FastAPI:
         yield
 
     app = FastAPI(title="Quant System Dashboard", lifespan=lifespan)
+
+    def _escape(value: Any) -> str:
+        if value is None:
+            return ""
+        return html.escape(str(value), quote=True)
+
+    def _url_segment(value: Any) -> str:
+        return quote(str(value), safe="")
+
+    def _file_url(path: Path) -> str:
+        return f"file://{quote(str(path), safe='/:')}"
+
+    def _is_relative_to(path: Path, base: Path) -> bool:
+        try:
+            path.relative_to(base)
+        except ValueError:
+            return False
+        return True
+
+    def _safe_run_dir(run_id: str) -> Path:
+        if not run_id:
+            raise HTTPException(status_code=400, detail="Invalid run id")
+        if "/" in run_id or "\\" in run_id:
+            raise HTTPException(status_code=400, detail="Invalid run id")
+        if run_id.startswith(".") or ".." in run_id:
+            raise HTTPException(status_code=400, detail="Invalid run id")
+        base_root = root.resolve()
+        run_dir = (base_root / run_id).resolve()
+        if not _is_relative_to(run_dir, base_root):
+            raise HTTPException(status_code=404, detail="Run not found")
+        return run_dir
 
     def _runs() -> list[Path]:
         if not root.exists():
@@ -74,13 +107,13 @@ def create_app(reports_dir: Path) -> FastAPI:
 
     @app.get("/api/runs/{run_id}")
     async def run_detail(run_id: str) -> dict[str, Any]:
-        run_dir = root / run_id
+        run_dir = _safe_run_dir(run_id)
         if not run_dir.exists() or not run_dir.is_dir():
             raise HTTPException(status_code=404, detail="Run not found")
         summary = _load_summary(run_dir)
         top_rows = _load_summary_csv(run_dir)
         return {
-            "run_id": run_id,
+            "run_id": run_dir.name,
             "summary": summary,
             "top": top_rows,
             "path": str(run_dir),
@@ -93,12 +126,12 @@ def create_app(reports_dir: Path) -> FastAPI:
             summary = _load_summary(run_dir)
             rows.append(
                 {
-                    "run_id": run_dir.name,
-                    "metric": summary.get("metric"),
-                    "results_count": summary.get("results_count"),
-                    "started_at": summary.get("started_at"),
-                    "finished_at": summary.get("finished_at"),
-                    "report_path": str((run_dir / "report.html").resolve()),
+                    "run_id": _escape(run_dir.name),
+                    "metric": _escape(summary.get("metric")),
+                    "results_count": _escape(summary.get("results_count")),
+                    "started_at": _escape(summary.get("started_at")),
+                    "finished_at": _escape(summary.get("finished_at")),
+                    "report_url": _escape(_file_url((run_dir / "report.html").resolve())),
                 }
             )
         html_rows = "".join(
@@ -106,7 +139,7 @@ def create_app(reports_dir: Path) -> FastAPI:
             f"<td class='px-4 py-2'>{r.get('metric', '')}</td>"
             f"<td class='px-4 py-2'>{r.get('results_count', '')}</td>"
             f"<td class='px-4 py-2'>{r.get('started_at', '')}</td>"
-            f"<td class='px-4 py-2'><a class='text-sky-400 underline' href='file://{r['report_path']}'>Open report</a></td></tr>"
+            f"<td class='px-4 py-2'><a class='text-sky-400 underline' href='{r['report_url']}'>Open report</a></td></tr>"
             for r in rows
         )
         html = f"""
@@ -149,7 +182,7 @@ def create_app(reports_dir: Path) -> FastAPI:
 
     @app.get("/run/{run_id}", response_class=HTMLResponse)
     async def run_page(run_id: str) -> HTMLResponse:
-        run_dir = root / run_id
+        run_dir = _safe_run_dir(run_id)
         if not run_dir.exists():
             raise HTTPException(status_code=404, detail="Run not found")
         summary = _load_summary(run_dir)
@@ -169,14 +202,16 @@ def create_app(reports_dir: Path) -> FastAPI:
                 notifications = []
 
         summary_rows = "".join(
-            f"<tr><td class='px-3 py-2 font-semibold'>{k}</td><td class='px-3 py-2'>{v}</td></tr>"
+            f"<tr><td class='px-3 py-2 font-semibold'>{_escape(k)}</td><td class='px-3 py-2'>{_escape(v)}</td></tr>"
             for k, v in summary.items()
             if k in {"metric", "results_count", "started_at", "finished_at", "duration_sec"}
         )
 
         manifest_rows = (
             "".join(
-                f"<tr><td class='px-3 py-2'>{m.get('run_id')}</td><td class='px-3 py-2'>{m.get('status')}</td><td class='px-3 py-2'>{m.get('message', '')}</td></tr>"
+                f"<tr><td class='px-3 py-2'>{_escape(m.get('run_id'))}</td>"
+                f"<td class='px-3 py-2'>{_escape(m.get('status'))}</td>"
+                f"<td class='px-3 py-2'>{_escape(m.get('message', ''))}</td></tr>"
                 for m in manifest
             )
             or "<tr><td class='px-3 py-2 text-slate-400' colspan='3'>No manifest actions</td></tr>"
@@ -184,7 +219,9 @@ def create_app(reports_dir: Path) -> FastAPI:
 
         notification_rows = (
             "".join(
-                f"<tr><td class='px-3 py-2'>{n.get('channel')}</td><td class='px-3 py-2'>{n.get('metric')}</td><td class='px-3 py-2'>{'sent' if n.get('sent') else n.get('reason', 'skipped')}</td></tr>"
+                f"<tr><td class='px-3 py-2'>{_escape(n.get('channel'))}</td>"
+                f"<td class='px-3 py-2'>{_escape(n.get('metric'))}</td>"
+                f"<td class='px-3 py-2'>{_escape('sent' if n.get('sent') else n.get('reason', 'skipped'))}</td></tr>"
                 for n in notifications
             )
             or "<tr><td class='px-3 py-2 text-slate-400' colspan='3'>No notifications</td></tr>"
@@ -193,24 +230,27 @@ def create_app(reports_dir: Path) -> FastAPI:
         downloads = []
         for name in DOWNLOAD_FILE_CANDIDATES:
             if (run_dir / name).exists():
+                run_id_safe = _url_segment(run_dir.name)
+                name_safe = _url_segment(name)
                 downloads.append(
-                    f"<li><a class='text-sky-400 underline' href='/api/runs/{run_id}/files/{name}'>{name}</a></li>"
+                    f"<li><a class='text-sky-400 underline' href='/api/runs/{run_id_safe}/files/{name_safe}'>{_escape(name)}</a></li>"
                 )
         downloads_html = "".join(downloads) or "<li class='text-slate-400'>No files</li>"
 
+        run_id_text = _escape(run_dir.name)
         html = f"""
 <!DOCTYPE html>
 <html lang='en'>
 <head>
   <meta charset='utf-8' />
   <meta name='viewport' content='width=device-width, initial-scale=1' />
-  <title>Run {run_id}</title>
+  <title>Run {run_id_text}</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class='bg-slate-900 text-slate-100'>
   <div class='max-w-5xl mx-auto py-8 px-4 space-y-6'>
     <header>
-      <h1 class='text-2xl font-bold'>Run {run_id}</h1>
+      <h1 class='text-2xl font-bold'>Run {run_id_text}</h1>
       <a class='text-sky-400 underline text-sm' href='/'>Back to runs</a>
     </header>
     <section class='bg-slate-800 rounded-lg shadow'>
@@ -251,7 +291,7 @@ def create_app(reports_dir: Path) -> FastAPI:
 
     @app.get("/api/runs/{run_id}/files/{filename}")
     async def download(run_id: str, filename: str):
-        run_dir = root / run_id
+        run_dir = _safe_run_dir(run_id)
         if not run_dir.exists() or not run_dir.is_dir():
             raise HTTPException(status_code=404, detail="Run not found")
         allowed = set(DOWNLOAD_FILE_CANDIDATES)
@@ -269,10 +309,13 @@ def create_app(reports_dir: Path) -> FastAPI:
             raise HTTPException(status_code=400, detail="Provide at least one run id")
         payload = {}
         for run_id in run_ids:
-            run_dir = root / run_id
+            try:
+                run_dir = _safe_run_dir(run_id)
+            except HTTPException:
+                continue
             if not run_dir.exists():
                 continue
-            payload[run_id] = {
+            payload[run_dir.name] = {
                 "summary": _load_summary(run_dir),
                 "top": _load_summary_csv(run_dir, limit=10),
             }
@@ -288,18 +331,22 @@ def create_app(reports_dir: Path) -> FastAPI:
             rows = data.get("top") or []
             table_rows = (
                 "".join(
-                    f"<tr><td class='px-3 py-2'>{row.get('symbol')}</td><td class='px-3 py-2'>{row.get('strategy')}</td><td class='px-3 py-2'>{row.get('metric')}</td><td class='px-3 py-2'>{row.get('metric_value')}</td></tr>"
+                    f"<tr><td class='px-3 py-2'>{_escape(row.get('symbol'))}</td>"
+                    f"<td class='px-3 py-2'>{_escape(row.get('strategy'))}</td>"
+                    f"<td class='px-3 py-2'>{_escape(row.get('metric'))}</td>"
+                    f"<td class='px-3 py-2'>{_escape(row.get('metric_value'))}</td></tr>"
                     for row in rows
                 )
                 or "<tr><td class='px-3 py-2 text-slate-400' colspan='4'>No summary.csv data</td></tr>"
             )
             summary_meta = data.get("summary", {})
+            run_id_text = _escape(run_id)
             run_cards.append(
                 f"""
                 <section class='bg-slate-800 rounded-lg shadow p-4 space-y-3'>
                   <header>
-                    <h2 class='text-lg font-semibold'>{run_id}</h2>
-                    <p class='text-xs text-slate-400'>Metric: {summary_meta.get("metric", "")}</p>
+                    <h2 class='text-lg font-semibold'>{run_id_text}</h2>
+                    <p class='text-xs text-slate-400'>Metric: {_escape(summary_meta.get("metric", ""))}</p>
                   </header>
                   <div class='overflow-x-auto'>
                     <table class='min-w-full text-sm text-left text-slate-200'>

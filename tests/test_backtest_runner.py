@@ -366,8 +366,8 @@ def test_fees_slippage_for_defaults(tmp_path, monkeypatch):
         slippage=0.002,
     )
     fees2, slip2 = runner._fees_slippage_for(custom)
-    assert fees2 == 0.001
-    assert slip2 == 0.002
+    assert fees2 == pytest.approx(0.001)
+    assert slip2 == pytest.approx(0.002)
 
 
 def test_run_all_produces_best_result(tmp_path, monkeypatch):
