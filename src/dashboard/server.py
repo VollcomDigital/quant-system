@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import html
 import json
-import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -49,17 +48,6 @@ def create_app(reports_dir: Path) -> FastAPI:
             return False
         return True
 
-    def _safe_run_dir(run_id: str) -> Path:
-        if not run_id or not re.fullmatch(r"[A-Za-z0-9._-]+", run_id):
-            raise HTTPException(status_code=400, detail="Invalid run id")
-        if run_id.startswith(".") or ".." in run_id:
-            raise HTTPException(status_code=400, detail="Invalid run id")
-        resolved_root = _base_root()
-        run_dir = (resolved_root / run_id).resolve()
-        if not _is_relative_to(run_dir, resolved_root):
-            raise HTTPException(status_code=404, detail="Run not found")
-        return run_dir
-
     def _safe_filename(filename: str) -> str:
         if not filename:
             raise HTTPException(status_code=400, detail="Invalid filename")
@@ -75,6 +63,9 @@ def create_app(reports_dir: Path) -> FastAPI:
         if not root.exists():
             return []
         return sorted([p for p in root.iterdir() if p.is_dir()], key=lambda p: p.name, reverse=True)
+
+    def _runs_by_name() -> dict[str, Path]:
+        return {run_dir.name: run_dir for run_dir in _runs()}
 
     def _load_summary(run_dir: Path) -> dict[str, Any]:
         summary_path = (run_dir / "summary.json").resolve()
@@ -127,7 +118,9 @@ def create_app(reports_dir: Path) -> FastAPI:
 
     @app.get("/api/runs/{run_id}")
     async def run_detail(run_id: str) -> dict[str, Any]:
-        run_dir = _safe_run_dir(run_id)
+        run_dir = _runs_by_name().get(run_id)
+        if run_dir is None:
+            raise HTTPException(status_code=404, detail="Run not found")
         if not run_dir.exists() or not run_dir.is_dir():
             raise HTTPException(status_code=404, detail="Run not found")
         summary = _load_summary(run_dir)
@@ -202,7 +195,9 @@ def create_app(reports_dir: Path) -> FastAPI:
 
     @app.get("/run/{run_id}", response_class=HTMLResponse)
     async def run_page(run_id: str) -> HTMLResponse:
-        run_dir = _safe_run_dir(run_id)
+        run_dir = _runs_by_name().get(run_id)
+        if run_dir is None:
+            raise HTTPException(status_code=404, detail="Run not found")
         if not run_dir.exists():
             raise HTTPException(status_code=404, detail="Run not found")
         summary = _load_summary(run_dir)
@@ -312,7 +307,9 @@ def create_app(reports_dir: Path) -> FastAPI:
 
     @app.get("/api/runs/{run_id}/files/{filename}")
     async def download(run_id: str, filename: str):
-        run_dir = _safe_run_dir(run_id)
+        run_dir = _runs_by_name().get(run_id)
+        if run_dir is None:
+            raise HTTPException(status_code=404, detail="Run not found")
         if not run_dir.exists() or not run_dir.is_dir():
             raise HTTPException(status_code=404, detail="Run not found")
         filename = _safe_filename(filename)
@@ -331,13 +328,11 @@ def create_app(reports_dir: Path) -> FastAPI:
         run_ids = [r.strip() for r in runs.split(",") if r.strip()]
         if not run_ids:
             raise HTTPException(status_code=400, detail="Provide at least one run id")
+        available_runs = _runs_by_name()
         payload = {}
         for run_id in run_ids:
-            try:
-                run_dir = _safe_run_dir(run_id)
-            except HTTPException:
-                continue
-            if not run_dir.exists():
+            run_dir = available_runs.get(run_id)
+            if run_dir is None:
                 continue
             payload[run_dir.name] = {
                 "summary": _load_summary(run_dir),
