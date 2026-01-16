@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -56,7 +56,7 @@ class TwelveDataSource(DataSource):
         sym_fetch = map_symbol("twelvedata", symbol)  # e.g., EURUSD -> EUR/USD
         # TwelveData time_series returns JSON with 'values' and 'datetime' fields
         # We'll fetch a broad range using 'start_date'; TD also supports 'outputsize'
-        start = (datetime.now(tz=datetime.UTC) - timedelta(days=365)).date().isoformat()
+        start = (datetime.now(UTC) - timedelta(days=365)).date().isoformat()
         params = {
             "symbol": sym_fetch,
             "interval": interval,

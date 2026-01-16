@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -73,8 +73,8 @@ class TiingoSource(DataSource):
                 raise ValueError(f"Unsupported intraday timeframe for Tiingo IEX: {tf}")
 
             resample = map_tf(tf)
-            start = datetime(2010, 1, 1, tzinfo=datetime.UTC)
-            end = datetime.now(tz=datetime.UTC)
+            start = datetime(2010, 1, 1, tzinfo=UTC)
+            end = datetime.now(UTC)
             while start < end:
                 chunk_end = min(start + timedelta(days=30), end)
                 url = f"https://api.tiingo.com/iex/{sym_fetch}/prices"

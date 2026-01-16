@@ -22,7 +22,7 @@ This repository provides a Docker-based, cache-aware backtesting system to syste
 
 - Docker and docker-compose
 - Poetry (for local non-Docker runs)
-- Python 3.11 (PyBroker requires >=3.11 and <3.12)
+- Python 3.12 or 3.13
 - External strategies repo mounted at runtime (defaults to /Users/manuelheck/Documents/Websites/Private/quant/quant-strategies/algorithms/python)
 - Optional: pre-commit for local linting hooks
 

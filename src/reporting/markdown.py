@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from ..backtest.runner import BestResult
+from .utils import is_positive
 
 
 class MarkdownReporter:
@@ -11,12 +12,6 @@ class MarkdownReporter:
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
     def export(self, results: list[BestResult]):
-        def is_positive(val) -> bool:
-            try:
-                return float(val) > 0
-            except (TypeError, ValueError):
-                return False
-
         # Group by collection -> symbol
         by_key = {}
         for r in results:

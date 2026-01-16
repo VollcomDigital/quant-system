@@ -6,6 +6,7 @@ from typing import Any
 
 from ..backtest.results_cache import ResultsCache
 from ..backtest.runner import BestResult
+from .utils import is_positive
 
 
 class AllCSVExporter:
@@ -17,13 +18,8 @@ class AllCSVExporter:
         self.top_n = top_n
 
     def export(self, best_results: list[BestResult]):
-        def is_positive(val) -> bool:
-            try:
-                return float(val) > 0
-            except (TypeError, ValueError):
-                return False
-
         all_rows = self.cache.list_by_run(self.run_id)
+        positive_rows = [r for r in all_rows if is_positive(r.get("metric_value"))]
         # All results CSV
         path_all = self.out_dir / "all_results.csv"
         with open(path_all, "w", newline="") as f:
@@ -47,9 +43,7 @@ class AllCSVExporter:
                     "max_drawdown",
                 ]
             )
-            for r in all_rows:
-                if not is_positive(r.get("metric_value")):
-                    continue
+            for r in positive_rows:
                 stats = r.get("stats", {})
                 w.writerow(
                     [
@@ -75,9 +69,7 @@ class AllCSVExporter:
         path_topn = self.out_dir / f"top{self.top_n}.csv"
         # group
         grouped: dict[tuple, list[dict[str, Any]]] = {}
-        for r in all_rows:
-            if not is_positive(r.get("metric_value")):
-                continue
+        for r in positive_rows:
             key = (r["collection"], r["symbol"])
             grouped.setdefault(key, []).append(r)
         with open(path_topn, "w", newline="") as f:
