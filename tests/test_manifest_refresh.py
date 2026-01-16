@@ -9,8 +9,8 @@ from src.reporting.manifest import refresh_manifest
 
 
 class DummyCache(ResultsCache):
-    def __init__(self, rows):
-        super().__init__(Path("/tmp"))
+    def __init__(self, rows, cache_dir: Path):
+        super().__init__(cache_dir)
         self._rows = rows
 
     def list_by_run(self, run_id: str):
@@ -40,7 +40,7 @@ def test_refresh_manifest_creates_dashboard_for_legacy_run(tmp_path: Path):
             },
         }
     ]
-    cache = DummyCache(rows)
+    cache = DummyCache(rows, tmp_path / "cache")
 
     current_dir = tmp_path / "20240201-000000"
     current_dir.mkdir()

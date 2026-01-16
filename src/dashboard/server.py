@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -15,11 +16,14 @@ from ..reporting.dashboard import DOWNLOAD_FILE_CANDIDATES
 
 def create_app(reports_dir: Path) -> FastAPI:
     root = Path(reports_dir)
+    base_root: Path | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        nonlocal base_root
         if not root.exists():
             raise RuntimeError(f"Reports directory not found: {root}")
+        base_root = root.resolve()
         yield
 
     app = FastAPI(title="Quant System Dashboard", lifespan=lifespan)
@@ -35,6 +39,9 @@ def create_app(reports_dir: Path) -> FastAPI:
     def _file_url(path: Path) -> str:
         return f"file://{quote(str(path), safe='/:')}"
 
+    def _base_root() -> Path:
+        return base_root if base_root is not None else root.resolve()
+
     def _is_relative_to(path: Path, base: Path) -> bool:
         try:
             path.relative_to(base)
@@ -43,17 +50,26 @@ def create_app(reports_dir: Path) -> FastAPI:
         return True
 
     def _safe_run_dir(run_id: str) -> Path:
-        if not run_id:
-            raise HTTPException(status_code=400, detail="Invalid run id")
-        if "/" in run_id or "\\" in run_id:
+        if not run_id or not re.fullmatch(r"[A-Za-z0-9._-]+", run_id):
             raise HTTPException(status_code=400, detail="Invalid run id")
         if run_id.startswith(".") or ".." in run_id:
             raise HTTPException(status_code=400, detail="Invalid run id")
-        base_root = root.resolve()
-        run_dir = (base_root / run_id).resolve()
-        if not _is_relative_to(run_dir, base_root):
+        resolved_root = _base_root()
+        run_dir = (resolved_root / run_id).resolve()
+        if not _is_relative_to(run_dir, resolved_root):
             raise HTTPException(status_code=404, detail="Run not found")
         return run_dir
+
+    def _safe_filename(filename: str) -> str:
+        if not filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        if "/" in filename or "\\" in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        if filename.startswith(".") or ".." in filename:
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        if Path(filename).is_absolute():
+            raise HTTPException(status_code=400, detail="Invalid filename")
+        return filename
 
     def _runs() -> list[Path]:
         if not root.exists():
@@ -61,7 +77,9 @@ def create_app(reports_dir: Path) -> FastAPI:
         return sorted([p for p in root.iterdir() if p.is_dir()], key=lambda p: p.name, reverse=True)
 
     def _load_summary(run_dir: Path) -> dict[str, Any]:
-        summary_path = run_dir / "summary.json"
+        summary_path = (run_dir / "summary.json").resolve()
+        if not _is_relative_to(summary_path, _base_root()):
+            return {}
         if not summary_path.exists():
             return {}
         try:
@@ -70,7 +88,9 @@ def create_app(reports_dir: Path) -> FastAPI:
             return {}
 
     def _load_summary_csv(run_dir: Path, limit: int = 5) -> list[dict[str, Any]]:
-        csv_path = run_dir / "summary.csv"
+        csv_path = (run_dir / "summary.csv").resolve()
+        if not _is_relative_to(csv_path, _base_root()):
+            return []
         if not csv_path.exists():
             return []
         try:
@@ -232,8 +252,9 @@ def create_app(reports_dir: Path) -> FastAPI:
             if (run_dir / name).exists():
                 run_id_safe = _url_segment(run_dir.name)
                 name_safe = _url_segment(name)
+                href = _escape(f"/api/runs/{run_id_safe}/files/{name_safe}")
                 downloads.append(
-                    f"<li><a class='text-sky-400 underline' href='/api/runs/{run_id_safe}/files/{name_safe}'>{_escape(name)}</a></li>"
+                    f"<li><a class='text-sky-400 underline' href='{href}'>{_escape(name)}</a></li>"
                 )
         downloads_html = "".join(downloads) or "<li class='text-slate-400'>No files</li>"
 
@@ -294,10 +315,13 @@ def create_app(reports_dir: Path) -> FastAPI:
         run_dir = _safe_run_dir(run_id)
         if not run_dir.exists() or not run_dir.is_dir():
             raise HTTPException(status_code=404, detail="Run not found")
+        filename = _safe_filename(filename)
         allowed = set(DOWNLOAD_FILE_CANDIDATES)
         if filename not in allowed:
             raise HTTPException(status_code=404, detail="File not available")
-        file_path = run_dir / filename
+        file_path = (run_dir / filename).resolve()
+        if not _is_relative_to(file_path, run_dir):
+            raise HTTPException(status_code=404, detail="File not found")
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="File not found")
         return FileResponse(file_path)

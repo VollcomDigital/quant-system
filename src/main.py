@@ -1,6 +1,6 @@
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import typer
@@ -66,7 +66,7 @@ def run(
     if env_cache:
         cfg.cache_dir = env_cache
 
-    ts = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     run_id = os.environ.get("RUN_ID", ts)
     reports_root = Path(output_dir) if output_dir else Path("reports")
     base_out = reports_root if reports_root.name == run_id else reports_root / run_id
@@ -78,7 +78,7 @@ def run(
         else Path(os.environ.get("STRATEGIES_PATH", "/ext/strategies"))
     )
 
-    start_ts = datetime.utcnow()
+    start_ts = datetime.now(UTC)
     runner = BacktestRunner(cfg, strategies_root=strategies_root, run_id=run_id)
     if not getattr(runner, "external_index", {}):
         typer.secho(
@@ -119,7 +119,7 @@ def run(
                 f"notification: {event['channel']} {reason} for {event.get('symbol', '')} {event.get('metric')}"
             )
 
-    end_ts = datetime.utcnow()
+    end_ts = datetime.now(UTC)
 
     # Exports
     CSVExporter(base_out).export(results)
@@ -560,7 +560,7 @@ def clean_cache(
 ):
     """Permanently delete stale cache files beyond the retention window."""
 
-    now = datetime.utcnow()
+    now = datetime.now(UTC)
     threshold = now - timedelta(days=max_age_days)
     targets: list[tuple[str, Path]] = [("data", Path(cache_dir))]
     if include_results:
@@ -582,7 +582,7 @@ def clean_cache(
         typer.echo(f"cache-clean: scanning {len(candidate_files)} files under {root}")
 
         for file_path in candidate_files:
-            mtime = datetime.utcfromtimestamp(file_path.stat().st_mtime)
+            mtime = datetime.fromtimestamp(file_path.stat().st_mtime, UTC)
             if mtime > threshold:
                 continue
 
