@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import itertools
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -297,6 +298,11 @@ class BacktestRunner:
         if fee_total > 0:
             config_kwargs["fee_mode"] = fee_mode_cls.ORDER_PERCENT
             config_kwargs["fee_amount"] = fee_total
+        try:
+            allowed = set(inspect.signature(config_cls).parameters)
+            config_kwargs = {k: v for k, v in config_kwargs.items() if k in allowed}
+        except (TypeError, ValueError):
+            pass
         strategy = strategy_cls(
             data,
             start_date=data[data_col_enum.DATE.value].iloc[0],

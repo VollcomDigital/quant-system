@@ -16,19 +16,103 @@ collections:
       - BTC/USDT
       - ETH/USDT
       - BNB/USDT
-      - SOL/USDT
       - XRP/USDT
-      - ADA/USDT
-      - DOGE/USDT
+      - USDC/USDT
+      - SOL/USDT
       - TRX/USDT
-      - TON/USDT
-      - DOT/USDT
-      - AVAX/USDT
-      - LINK/USDT
-      - MATIC/USDT
-      - LTC/USDT
+      - DOGE/USDT
+      - ADA/USDT
       - BCH/USDT
-
+      - WBTC/USDT
+      - WBETH/USDT
+      - LINK/USDT
+      - XLM/USDT
+      - USDE/USDT
+      - ZEC/USDT
+      - SUI/USDT
+      - AVAX/USDT
+      - LTC/USDT
+      - SHIB/USDT
+      - HBAR/USDT
+      - WLFI/USDT
+      - TON/USDT
+      - USD1/USDT
+      - DOT/USDT
+      - UNI/USDT
+      - AAVE/USDT
+      - TAO/USDT
+      - PEPE/USDT
+      - ICP/USDT
+      - NEAR/USDT
+      - PAXG/USDT
+      - ETC/USDT
+      - ONDO/USDT
+      - PUMP/USDT
+      - SKY/USDT
+      - ENA/USDT
+      - ASTER/USDT
+      - BNSOL/USDT
+      - POL/USDT
+      - BFUSD/USDT
+      - WLD/USDT
+      - APT/USDT
+      - QNT/USDT
+      - ATOM/USDT
+      - ARB/USDT
+      - ALGO/USDT
+      - RENDER/USDT
+      - TRUMP/USDT
+      - FIL/USDT
+      - NEXO/USDT
+      - DASH/USDT
+      - VET/USDT
+      - BONK/USDT
+      - SEI/USDT
+      - CAKE/USDT
+      - MORPHO/USDT
+      - PENGU/USDT
+      - JUP/USDT
+      - XTZ/USDT
+      - OP/USDT
+      - CHZ/USDT
+      - STX/USDT
+      - CRV/USDT
+      - FET/USDT
+      - VIRTUAL/USDT
+      - FDUSD/USDT
+      - TUSD/USDT
+      - INJ/USDT
+      - LDO/USDT
+      - ETHFI/USDT
+      - FLOKI/USDT
+      - 2Z/USDT
+      - TIA/USDT
+      - STRK/USDT
+      - SUN/USDT
+      - GRT/USDT
+      - SYRUP/USDT
+      - JST/USDT
+      - DCR/USDT
+      - SAND/USDT
+      - TWT/USDT
+      - GNO/USDT
+      - ZRO/USDT
+      - CFX/USDT
+      - IOTA/USDT
+      - JASMY/USDT
+      - ENS/USDT
+      - WIF/USDT
+      - AXS/USDT
+      - PYTH/USDT
+      - PENDLE/USDT
+      - GALA/USDT
+      - THETA/USDT
+      - KAIA/USDT
+      - MANA/USDT
+      - BAT/USDT
+      - FRAX/USDT
+      - S/USDT
+      - RAY/USDT
 timeframes: ["1d", "4h", "1h"]
 
 strategies: []

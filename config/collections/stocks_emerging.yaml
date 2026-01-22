@@ -4,6 +4,7 @@ asset_workers: 4
 param_workers: 2
 max_fetch_concurrency: 2
 cache_dir: .cache/data
+
 collections:
 - name: stocks_emerging
   source: yfinance
@@ -12,15 +13,104 @@ collections:
   symbols:
   - EIMI.L
   - EMIM.L
+  - BABA
   - JD
-  - NIO
+  - PDD
   - TCEHY
+  - BIDU
+  - NTES
+  - BILI
+  - LI
+  - NIO
+  - XPEV
+  - BEKE
+  - ZTO
+  - YUMC
+  - TCOM
+  - TAL
   - INFY
   - HDB
   - ITUB
   - VALE
   - PBR
   - NU
+  - ABEV
+  - BBD
+  - GGB
+  - AMX
+  - FMX
+  - CX
+  - NPSNY
+  - PROSY
+  - MTNOY
+  - SSL
+  - GFI
+  - HMY
+  - TSM
+  - UMC
+  - 0700.HK
+  - 9988.HK
+  - 3690.HK
+  - 1810.HK
+  - 9618.HK
+  - 9999.HK
+  - 2318.HK
+  - 1398.HK
+  - 3988.HK
+  - 0939.HK
+  - 2628.HK
+  - 0883.HK
+  - 0857.HK
+  - 0386.HK
+  - 3968.HK
+  - 2328.HK
+  - 0941.HK
+  - 1088.HK
+  - 0762.HK
+  - 0669.HK
+  - 1177.HK
+  - 1211.HK
+  - 0992.HK
+  - 1299.HK
+  - 0175.HK
+  - 2319.HK
+  - 2330.TW
+  - 2303.TW
+  - 2454.TW
+  - 2317.TW
+  - 2881.TW
+  - 2882.TW
+  - 2891.TW
+  - 2308.TW
+  - 3711.TW
+  - 2382.TW
+  - 2412.TW
+  - 2886.TW
+  - 6505.TW
+  - 005930.KS
+  - 000660.KS
+  - 207940.KS
+  - 035420.KS
+  - 035720.KS
+  - 005380.KS
+  - 000270.KS
+  - 051910.KS
+  - 006400.KS
+  - 068270.KS
+  - 105560.KS
+  - 055550.KS
+  - 012330.KS
+  - 066570.KS
+  - 003550.KS
+  - 028260.KS
+  - 086790.KS
+  - RELIANCE.NS
+  - TCS.NS
+  - HDFCBANK.NS
+  - ICICIBANK.NS
+  - INFY.NS
+  - HINDUNILVR.NS
+  - ITC.NS
 timeframes:
 - 1d
 strategies: []
