@@ -4,6 +4,7 @@ asset_workers: 4
 param_workers: 2
 max_fetch_concurrency: 2
 cache_dir: .cache/data
+
 collections:
 - name: stocks_small_cap
   source: yfinance
@@ -16,6 +17,100 @@ collections:
   - GPRO
   - FVRR
   - PLUG
+  - AAMI
+  - AAP
+  - AAT
+  - ABCB
+  - ABG
+  - ABM
+  - ACA
+  - ACHC
+  - ACMR
+  - ACT
+  - ADAM
+  - ADEA
+  - ADNT
+  - AEIS
+  - AEO
+  - AESI
+  - AGO
+  - AGYS
+  - AHH
+  - AIN
+  - AIR
+  - AKR
+  - AL
+  - ALEX
+  - ALKS
+  - ALRM
+  - AMN
+  - AMPH
+  - AMR
+  - AMSF
+  - AMTM
+  - AMWD
+  - ANDE
+  - ANGI
+  - ANIP
+  - AORT
+  - APAM
+  - APLE
+  - ARCB
+  - ARI
+  - ARLO
+  - AROC
+  - ARR
+  - ARWR
+  - ASO
+  - ASTE
+  - ASTH
+  - ATEN
+  - ATGE
+  - AUB
+  - AVA
+  - AVNS
+  - AWR
+  - AX
+  - AXL
+  - AZTA
+  - AZZ
+  - BANC
+  - BANR
+  - BBT
+  - BCC
+  - BCPC
+  - BFH
+  - BFS
+  - BGC
+  - BHE
+  - BJRI
+  - BKE
+  - BL
+  - BLMN
+  - BOH
+  - BOOT
+  - BRC
+  - BTSG
+  - BTU
+  - BXMT
+  - CABO
+  - CAKE
+  - CALM
+  - CARG
+  - CARS
+  - CASH
+  - CATY
+  - CBRL
+  - CBU
+  - CC
+  - CCOI
+  - CCS
+  - CE
+  - CENT
+  - CENTA
+  - CERT
+  - CFFN
+  - CHCO
 timeframes:
 - 1d
 strategies: []

@@ -1,27 +1,114 @@
 metric: sortino
 engine: pybroker
 asset_workers: 4
-param_workers: 2
+param_workers: 1
 max_fetch_concurrency: 2
 cache_dir: .cache/data
+
 collections:
 - name: stocks_dividend
   source: yfinance
   fees: 0.0005
   slippage: 0.0005
   symbols:
-  - VHYL.L
-  - WQDV.L
-  - IDVY.L
-  - IUKD.L
-  - PG
-  - PEP
-  - MCD
-  - XOM
-  - CVX
-  - VZ
-  - ENB
-  - BATS.L
+    - PG
+    - PEP
+    - MCD
+    - JNJ
+    - KO
+    - CL
+    - KMB
+    - TROW
+    - ABBV
+    - BSX
+    - AFL
+    - EMR
+    - ED
+    - WMT
+    - SYY
+    - ADM
+    - NUE
+    - CTAS
+    - APD
+    - GD
+    - ROP
+    - AOS
+    - CB
+    - EXC
+    - MKC
+    - ATO
+    - HRL
+    - NDSN
+    - CINF
+    - GPC
+    - LOW
+    - ABT
+    - BEN
+    - CLX
+    - SWK
+    - PPG
+    - TGT
+    - VZ
+    - MO
+    - O
+    - EPD
+    - MPLX
+    - PFE
+    - CAG
+    - KHC
+    - UPS
+    - EIX
+    - BBXIA
+    - OXSQ
+    - AFCG
+    - PSEC
+    - ORC
+    - ABR
+    - CHMI
+    - LYB
+    - DOW
+    - MNRIF
+    - EC
+    - CIB
+    - MBRFY
+    - TCPC
+    - MERCM
+    - BATS.L
+    - WPP.L
+    - TW.L
+    - LGEN.L
+    - PHNX.L
+    - MNG.L
+    - AV.L
+    - DGE.L
+    - ULVR.L
+    - UU.L
+    - SVT.L
+    - MAN.L
+    - SCH.L
+    - ENB
+    - BP
+    - TOT
+    - RDS.A
+    - SIE.DE
+    - BASF.DE
+    - Allianz.DE
+    - SAP.DE
+    - NOVN.SW
+    - UBSG.SW
+    - RIO.L
+    - SSE.L
+    - ENI.MI
+    - PLD
+    - OHI
+    - NNN
+    - WELL
+    - DLR
+    - KMI
+    - EPD
+    - ET
+    - MPLX
 timeframes:
 - 1d
+
 strategies: []

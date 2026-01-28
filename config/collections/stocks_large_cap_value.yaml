@@ -4,6 +4,7 @@ asset_workers: 4
 param_workers: 2
 max_fetch_concurrency: 2
 cache_dir: .cache/data
+
 collections:
 - name: stocks_large_cap_value
   source: yfinance
@@ -13,6 +14,103 @@ collections:
   - VVAL.L
   - IWVL.L
   - BRK.B
+  - XOM
+  - CVX
+  - COP
+  - EOG
+  - SLB
+  - HAL
+  - MPC
+  - VLO
+  - PSX
+  - OXY
+  - WMB
+  - DVN
+  - PXD
+  - BK
+  - STT
+  - HIG
+  - L
+  - UNM
+  - NTRS
+  - AON
+  - DUK
+  - SO
+  - XEL
+  - SRE
+  - WEC
+  - D
+  - PEG
+  - ETR
+  - PPL
+  - AEE
+  - PM
+  - UL
+  - GIS
+  - K
+  - HSY
+  - CAT
+  - DE
+  - UNP
+  - CSX
+  - NSC
+  - ITW
+  - ROK
+  - ELV
+  - RY.TO
+  - NA.TO
+  - MFC.TO
+  - SLF.TO
+  - POW.TO
+  - IAG.TO
+  - GWO.TO
+  - PPL.TO
+  - IMO.TO
+  - CVE.TO
+  - SJR-B.TO
+  - ATD.TO
+  - L.TO
+  - MRU.TO
+  - EMP.A.TO
+  - BIP.UN.TO
+  - NG.L
+  - BT.A.L
+  - IMB.L
+  - PRU.L
+  - GLEN.L
+  - AAL.L
+  - IAG.L
+  - CNA.L
+  - SBRY.L
+  - TSCO.L
+  - SAN.PA
+  - ORA.PA
+  - ENGI.PA
+  - VIE.PA
+  - VIV.PA
+  - EDF.PA
+  - ML.PA
+  - ASRNL.AS
+  - NN.AS
+  - AGN.AS
+  - CSGN.SW
+  - TEF.MC
+  - REP.MC
+  - IBE.MC
+  - CABK.MC
+  - ELE.MC
+  - ACS.MC
+  - MAP.MC
+  - TIT.MI
+  - CNHI.MI
+  - SRG.MI
+  - TEN.MI
+  - BAMI.MI
+  - SWED-A.ST
+  - SHB-A.ST
+  - SEB-A.ST
+  - TELIA.ST
+  - KINV-B.ST
 timeframes:
 - 1d
 strategies: []

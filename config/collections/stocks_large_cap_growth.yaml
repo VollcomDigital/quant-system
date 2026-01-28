@@ -4,6 +4,7 @@ asset_workers: 4
 param_workers: 2
 max_fetch_concurrency: 2
 cache_dir: .cache/data
+
 collections:
 - name: stocks_large_cap_growth
   source: yfinance
@@ -12,6 +13,104 @@ collections:
   symbols:
   - CNDX.L
   - EQQQ.L
+  - ASML
+  - ANET
+  - SE
+  - MTCH
+  - EA
+  - U
+  - GFS
+  - NXPI
+  - ON
+  - GTLB
+  - S
+  - PAYC
+  - SSNC
+  - CDW
+  - EPAM
+  - FICO
+  - KEYS
+  - MANH
+  - ZBRA
+  - NVO
+  - BIO
+  - EXAS
+  - IQV
+  - SBUX
+  - NKE
+  - LULU
+  - HD
+  - YUM
+  - DPZ
+  - HLT
+  - ROST
+  - TJX
+  - DIS
+  - LIN
+  - ETN
+  - HON
+  - FANUY
+  - BX
+  - KKR
+  - APO
+  - CSU.TO
+  - GIB.A.TO
+  - LSPD.TO
+  - NVEI.TO
+  - OTEX.TO
+  - WSP.TO
+  - NTR.TO
+  - DND.TO
+  - XRO.AX
+  - WTC.AX
+  - ALU.AX
+  - CAR.AX
+  - REA.AX
+  - SEK.AX
+  - NEA.AX
+  - PME.AX
+  - COH.AX
+  - SHL.AX
+  - PROS.AS
+  - SU.PA
+  - BN.PA
+  - DSY.PA
+  - STM.PA
+  - RMS.PA
+  - FER.MC
+  - ITX.MC
+  - AMS.SW
+  - ZURN.SW
+  - SIKA.SW
+  - LSEG.L
+  - REL.L
+  - AHT.L
+  - BA.L
+  - INF.L
+  - SN.L
+  - WEIR.L
+  - SGE.L
+  - RR.L
+  - SPOT.ST
+  - EMBRAC-B.ST
+  - SINCH.ST
+  - PNDORA.CO
+  - SAND.ST
+  - 6758.T
+  - 7203.T
+  - 7201.T
+  - 8035.T
+  - 4063.T
+  - 9020.T
+  - 9022.T
+  - 4519.T
+  - 4507.T
+  - 6098.T
+  - 4689.T
+  - 2413.TW
+  - 3034.TW
+  - 4904.TW
+  - 1303.TW
 timeframes:
 - 1d
 strategies: []
