@@ -4,6 +4,7 @@ asset_workers: 4
 param_workers: 2
 max_fetch_concurrency: 2
 cache_dir: .cache/data
+
 collections:
 - name: stocks_mid_cap
   source: yfinance
@@ -15,6 +16,101 @@ collections:
   - ETSY
   - HUBS
   - WIX
+  - AAL
+  - AAON
+  - ACI
+  - ACM
+  - ADC
+  - AFG
+  - AGCO
+  - ALK
+  - ALV
+  - AM
+  - AMG
+  - AMH
+  - AMKR
+  - AN
+  - ANF
+  - APG
+  - AR
+  - ARMK
+  - ARW
+  - ASB
+  - ASGN
+  - ASH
+  - ATI
+  - AVAV
+  - AVNT
+  - AVT
+  - AVTR
+  - AXTA
+  - AYI
+  - BBWI
+  - BC
+  - BCO
+  - BDC
+  - BHF
+  - BKH
+  - BLD
+  - BLKB
+  - BRBR
+  - BRKR
+  - BRX
+  - BSY
+  - BURL
+  - BWA
+  - BWXT
+  - BYD
+  - CADE
+  - CAR
+  - CART
+  - CAVA
+  - CBSH
+  - CBT
+  - CCK
+  - CDP
+  - CFR
+  - CG
+  - CHE
+  - CHH
+  - CHRD
+  - CHWY
+  - CIEN
+  - CIVI
+  - CLF
+  - CLH
+  - CMC
+  - CNH
+  - CNM
+  - CNX
+  - CNXC
+  - COHR
+  - COLM
+  - COTY
+  - CPRI
+  - CR
+  - CRBG
+  - CRS
+  - CSL
+  - CUBE
+  - CUZ
+  - CVLT
+  - CW
+  - CXT
+  - CYTK
+  - DAR
+  - DINO
+  - DKS
+  - DLB
+  - DTM
+  - DUOL
+  - DY
+  - EEFT
+  - EGP
+  - EHC
+  - ELAN
+  - ELS
+  - ENS
 timeframes:
 - 1d
 strategies: []
