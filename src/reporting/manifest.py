@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ..backtest.results_cache import ResultsCache
+from ..utils.json_utils import safe_json_dumps
 from .dashboard import (
     _build_summary,
     _extract_highlights,
@@ -41,7 +42,7 @@ def refresh_manifest(
         summary = _load_json(summary_path)
         if run_dir == current_run_dir:
             dash_path.write_text(
-                json.dumps(current_payload, indent=2, default=_json_default),
+                safe_json_dumps(current_payload, indent=2),
             )
             actions.append(
                 {
@@ -64,7 +65,7 @@ def refresh_manifest(
         run_id = run_dir.name
         payload = _build_payload_from_summary(summary, run_id, cache)
         if payload is not None:
-            dash_path.write_text(json.dumps(payload, indent=2, default=_json_default))
+            dash_path.write_text(safe_json_dumps(payload, indent=2))
             actions.append(
                 {
                     "run_id": run_id,
@@ -169,7 +170,7 @@ def _ensure_highlights(dash_path: Path) -> bool:
         return False
     summary = payload.get("summary")
     payload["highlights"] = _extract_highlights(summary)
-    dash_path.write_text(json.dumps(payload, indent=2, default=_json_default))
+    dash_path.write_text(safe_json_dumps(payload, indent=2))
     return True
 
 
@@ -198,11 +199,3 @@ def _float(val: Any) -> float | None:
     except (TypeError, ValueError):
         return None
     return fval
-
-
-def _json_default(obj: Any) -> Any:
-    if isinstance(obj, set):
-        return list(obj)
-    if isinstance(obj, Path):
-        return str(obj)
-    raise TypeError(f"Object of type {type(obj)} is not JSON serializable")

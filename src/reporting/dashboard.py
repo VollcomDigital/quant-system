@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..backtest.results_cache import ResultsCache
+from ..utils.json_utils import safe_json_dumps
 
 if TYPE_CHECKING:  # pragma: no cover
     pass
@@ -293,12 +294,10 @@ class DashboardReporter:
         payload.setdefault("downloads", _detect_downloads(self.out_dir))
         html_content = self._render_html(payload)
         (self.out_dir / "dashboard.html").write_text(html_content)
-        (self.out_dir / "dashboard.json").write_text(
-            json.dumps(payload, indent=2, default=self._default_json)
-        )
+        (self.out_dir / "dashboard.json").write_text(safe_json_dumps(payload, indent=2))
 
     def _render_html(self, payload: dict[str, Any]) -> str:
-        payload_json = json.dumps(payload, default=self._default_json)
+        payload_json = safe_json_dumps(payload)
 
         return f"""
 <!DOCTYPE html>
@@ -541,11 +540,20 @@ class DashboardReporter:
           .replace(/'/g, '&#39;');
       }}
 
+      function toNumber(value) {{
+        if (value === null || value === undefined) {{
+          return NaN;
+        }}
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? numeric : NaN;
+      }}
+
       function formatNumber(value, decimals = 4) {{
-        if (value === null || value === undefined || Number.isNaN(Number(value))) {{
+        const numeric = toNumber(value);
+        if (!Number.isFinite(numeric)) {{
           return 'NA';
         }}
-        return Number(value).toFixed(decimals);
+        return numeric.toFixed(decimals);
       }}
 
       function toTitleCase(value) {{
@@ -670,25 +678,31 @@ class DashboardReporter:
         const highlights = entry.highlights || {{}};
         const highlight = highlights[metric];
         if (highlight && typeof highlight === 'object') {{
-          const val = Number(highlight.value);
+          const val = toNumber(highlight.value);
           if (Number.isFinite(val)) {{
             return {{ value: val, direction: highlight.direction || 'max' }};
           }}
-        }} else if (Number.isFinite(Number(highlight))) {{
-          return {{ value: Number(highlight), direction: 'max' }};
+        }} else {{
+          const val = toNumber(highlight);
+          if (Number.isFinite(val)) {{
+            return {{ value: val, direction: 'max' }};
+          }}
         }}
         const summaryMetrics = entry.summary && entry.summary.metrics;
         const meta = summaryMetrics && summaryMetrics[metric];
         if (meta && typeof meta === 'object') {{
           const best = meta.best || {{}};
-          if (Number.isFinite(Number(best.value))) {{
-            return {{ value: Number(best.value), direction: meta.direction || 'max' }};
+          const bestVal = toNumber(best.value);
+          if (Number.isFinite(bestVal)) {{
+            return {{ value: bestVal, direction: meta.direction || 'max' }};
           }}
-          if (Number.isFinite(Number(meta.max))) {{
-            return {{ value: Number(meta.max), direction: meta.direction || 'max' }};
+          const maxVal = toNumber(meta.max);
+          if (Number.isFinite(maxVal)) {{
+            return {{ value: maxVal, direction: meta.direction || 'max' }};
           }}
-          if (Number.isFinite(Number(meta.mean))) {{
-            return {{ value: Number(meta.mean), direction: meta.direction || 'max' }};
+          const meanVal = toNumber(meta.mean);
+          if (Number.isFinite(meanVal)) {{
+            return {{ value: meanVal, direction: meta.direction || 'max' }};
           }}
         }}
         return {{ value: NaN, direction: 'max' }};
@@ -887,9 +901,9 @@ class DashboardReporter:
           return;
         }}
         const fragments = entries.map(([metric, data]) => {{
-          const value = typeof data === 'object' && data !== null && Number.isFinite(data.value)
-            ? data.value
-            : Number.isFinite(Number(data)) ? Number(data) : NaN;
+          const value = typeof data === 'object' && data !== null
+            ? toNumber(data.value)
+            : toNumber(data);
           const formatted = formatNumber(value);
           const metaParts = [];
           if (data && typeof data === 'object') {{
@@ -949,14 +963,14 @@ class DashboardReporter:
         const colorMetric = resolveMetric(histMetricSelect, 'pain_index');
         const scatterRows = rows.filter(r => {{
           const stats = r.stats || {{}};
-          const xVal = Number(stats[xMetric]);
-          const yVal = Number(stats[yMetric]);
+          const xVal = toNumber(stats[xMetric]);
+          const yVal = toNumber(stats[yMetric]);
           return Number.isFinite(xVal) && Number.isFinite(yVal);
         }});
-        const xValues = scatterRows.map(r => Number(r.stats[xMetric]));
-        const yValues = scatterRows.map(r => Number(r.stats[yMetric]));
+        const xValues = scatterRows.map(r => toNumber(r.stats[xMetric]));
+        const yValues = scatterRows.map(r => toNumber(r.stats[yMetric]));
         const colorValues = scatterRows.map(r => {{
-          const val = Number(r.stats[colorMetric]);
+          const val = toNumber(r.stats[colorMetric]);
           return Number.isFinite(val) ? val : 0;
         }});
         const textValues = scatterRows.map(r => {{
@@ -990,7 +1004,7 @@ class DashboardReporter:
       function renderHistogram(rows) {{
         const metric = resolveMetric(histMetricSelect, 'pain_index');
         const values = rows
-          .map(r => Number(r.stats && r.stats[metric]))
+          .map(r => toNumber(r.stats && r.stats[metric]))
           .filter(val => Number.isFinite(val));
         const trace = {{
           x: values,
@@ -1153,11 +1167,3 @@ class DashboardReporter:
 </body>
 </html>
         """
-
-    @staticmethod
-    def _default_json(obj: Any) -> Any:
-        if isinstance(obj, set):
-            return list(obj)
-        if isinstance(obj, Path):
-            return str(obj)
-        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")

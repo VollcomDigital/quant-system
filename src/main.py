@@ -2,6 +2,7 @@ import logging
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import typer
 
@@ -23,6 +24,7 @@ from .reporting.markdown import MarkdownReporter
 from .reporting.notifications import notify_all
 from .reporting.tradingview import TradingViewExporter
 from .strategies.registry import discover_external_strategies
+from .utils.json_utils import safe_json_dumps
 from .utils.symbols import DiscoverOptions, discover_ccxt_symbols
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
@@ -182,8 +184,6 @@ def run(
 
     # Emit run summary JSON
     try:
-        import json
-
         summary = {
             "started_at": start_ts.isoformat() + "Z",
             "finished_at": end_ts.isoformat() + "Z",
@@ -198,11 +198,15 @@ def run(
             "manifest_refresh": manifest_status,
             "notifications": notification_events,
         }
-        (base_out / "summary.json").write_text(json.dumps(summary, indent=2))
+        (base_out / "summary.json").write_text(safe_json_dumps(summary, indent=2))
         if manifest_status:
-            (base_out / "manifest_status.json").write_text(json.dumps(manifest_status, indent=2))
+            (base_out / "manifest_status.json").write_text(
+                safe_json_dumps(manifest_status, indent=2)
+            )
         if notification_events:
-            (base_out / "notifications.json").write_text(json.dumps(notification_events, indent=2))
+            (base_out / "notifications.json").write_text(
+                safe_json_dumps(notification_events, indent=2)
+            )
     except Exception:
         pass
 
@@ -332,6 +336,115 @@ def manifest_status(
         if message:
             line += f" — {message}"
         typer.echo(line)
+
+
+@app.command()
+def rebuild_dashboard(
+    reports_dir: str = typer.Option("reports", help="Reports root directory"),
+    run_id: str = typer.Option(None, help="Specific run id"),
+    latest: bool = typer.Option(False, help="Use most recent run"),
+    results_cache_dir: str = typer.Option(".cache/results", help="Results cache directory"),
+):
+    import json
+
+    from .backtest.results_cache import ResultsCache
+    from .reporting.dashboard import (
+        METRIC_KEYS,
+        DashboardReporter,
+        _build_summary,
+        _extract_highlights,
+        collect_runs_manifest,
+    )
+    from .reporting.manifest import _build_payload_from_summary, _rows_from_csv
+
+    root = Path(reports_dir)
+    if not root.exists():
+        typer.secho(f"Reports directory not found: {root}", fg=typer.colors.RED)
+        raise typer.Exit(code=1)
+
+    if run_id and latest:
+        typer.secho("Use either --run-id or --latest, not both", fg=typer.colors.RED)
+        raise typer.Exit(code=2)
+
+    candidate_dirs = [p for p in root.iterdir() if p.is_dir()]
+    run_id_value = run_id
+    if latest:
+        run_id_value = None
+
+    if run_id_value:
+        run_dir = root / run_id_value
+        if not run_dir.exists():
+            typer.secho(f"Run directory not found: {run_dir}", fg=typer.colors.RED)
+            raise typer.Exit(code=1)
+    else:
+        if not candidate_dirs:
+            typer.secho("No run directories found", fg=typer.colors.YELLOW)
+            raise typer.Exit(code=1)
+        run_dir = max(candidate_dirs, key=lambda p: p.name)
+
+    summary_path = run_dir / "summary.json"
+    summary: dict[str, Any] | None = None
+    if summary_path.exists():
+        try:
+            summary = json.loads(summary_path.read_text())
+            summary.setdefault("base_dir", str(run_dir))
+        except Exception as exc:
+            typer.secho(f"Unable to read summary.json: {exc}", fg=typer.colors.RED)
+            raise typer.Exit(code=1) from exc
+
+    cache = ResultsCache(Path(results_cache_dir))
+    payload: dict[str, Any] | None = None
+    if summary:
+        payload = _build_payload_from_summary(summary, run_dir.name, cache)
+
+    rows: list[dict[str, Any]] = []
+    if payload is None:
+        rows = cache.list_by_run(run_dir.name)
+        if not rows:
+            results_csv = run_dir / "all_results.csv"
+            if results_csv.exists():
+                rows = _rows_from_csv(results_csv)
+        if not rows:
+            typer.secho(
+                "Unable to rebuild dashboard; no cached rows or all_results.csv found.",
+                fg=typer.colors.RED,
+            )
+            raise typer.Exit(code=1)
+        summary_data = _build_summary(rows)
+        payload = {
+            "run_id": run_dir.name,
+            "rows": rows,
+            "summary": summary_data,
+            "available_metrics": list(summary_data.get("metrics", {}).keys()) or list(METRIC_KEYS),
+            "highlights": _extract_highlights(summary_data),
+        }
+
+    if summary:
+        payload.setdefault("metric", summary.get("metric"))
+        payload.setdefault(
+            "results_count", summary.get("results_count", len(payload.get("rows", [])))
+        )
+        payload.setdefault("started_at", summary.get("started_at"))
+        payload.setdefault("finished_at", summary.get("finished_at"))
+        payload.setdefault("duration_sec", summary.get("duration_sec"))
+    else:
+        payload.setdefault("results_count", len(rows))
+
+    runs_manifest = collect_runs_manifest(
+        run_dir.parent,
+        run_dir.name,
+        payload.get("summary"),
+        {
+            "metric": payload.get("metric"),
+            "results_count": payload.get("results_count"),
+            "started_at": payload.get("started_at"),
+            "duration_sec": payload.get("duration_sec"),
+        },
+    )
+    payload["runs"] = runs_manifest
+
+    DashboardReporter(run_dir).export(payload)
+    typer.echo(f"Rebuilt dashboard for run {run_dir.name}")
 
 
 @app.command()
