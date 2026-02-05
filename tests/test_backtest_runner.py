@@ -11,8 +11,6 @@ from src.backtest.runner import BacktestRunner, BestResult
 from src.config import CollectionConfig, Config, StrategyConfig
 from src.strategies.base import BaseStrategy
 
-import numpy as np
-
 
 @pytest.fixture(autouse=True)
 def _skip_if_numpy_reload_detected():

@@ -1,6 +1,8 @@
 import pandas as pd
 import pytest
 
+from src.backtest.metrics import omega_ratio, pain_index, tail_ratio
+
 
 def _pandas_ok() -> bool:
     try:
@@ -15,8 +17,6 @@ if not _pandas_ok():  # pragma: no cover - guard for numpy reload under coverage
         "NumPy reload detected under coverage; skipping pandas-heavy tests",
         allow_module_level=True,
     )
-
-from src.backtest.metrics import omega_ratio, pain_index, tail_ratio
 
 
 def test_omega_ratio_basic():

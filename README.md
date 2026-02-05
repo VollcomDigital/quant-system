@@ -135,9 +135,9 @@ See new collection examples under `config/collections/` for FX intraday via Finn
 
 ## Support & Requests
 
-- Report bugs via: https://vollcom-digital.atlassian.net/jira/software/c/form/014e93fe-22c4-4211-a93e-1803d8788ab3
-- Request new features via: https://vollcom-digital.atlassian.net/jira/software/c/form/35d2a798-bc62-4bbf-aed5-c6149bc3a5a5
-- The future roadmap is available to internal team members only: https://vollcom-digital.atlassian.net/wiki/spaces/VD/folder/3096117251?atlOrigin=eyJpIjoiN2FmODYwYWQxNWI5NDUyOWJiODU3ZDBkNmYxZGI4Y2IiLCJwIjoiYyJ9
+- Report bugs via: [Jira bug form](https://vollcom-digital.atlassian.net/jira/software/c/form/014e93fe-22c4-4211-a93e-1803d8788ab3)
+- Request new features via: [Jira feature request form](https://vollcom-digital.atlassian.net/jira/software/c/form/35d2a798-bc62-4bbf-aed5-c6149bc3a5a5)
+- The future roadmap is available to internal team members only: [Confluence roadmap](https://vollcom-digital.atlassian.net/wiki/spaces/VD/folder/3096117251?atlOrigin=eyJpIjoiN2FmODYwYWQxNWI5NDUyOWJiODU3ZDBkNmYxZGI4Y2IiLCJwIjoiYyJ9)
 
 ## Symbol Discovery (Crypto)
 

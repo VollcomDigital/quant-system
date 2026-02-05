@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 from src.backtest.runner import BestResult
 from src.reporting.html import HTMLReporter

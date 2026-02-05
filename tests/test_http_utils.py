@@ -23,7 +23,7 @@ def test_logging_http_adapter_logs_success(monkeypatch, caplog):
     logger = logging.getLogger("quant.http.test")
     adapter = LoggingHTTPAdapter(logger=logger, log_level=logging.INFO)
     with caplog.at_level(logging.INFO, logger=logger.name):
-        req = SimpleNamespace(method="GET", url="http://example.com")
+        req = SimpleNamespace(method="GET", url="https://example.com")
         got = adapter.send(req)
 
     assert got is response
@@ -41,7 +41,7 @@ def test_logging_http_adapter_logs_error(monkeypatch, caplog):
     adapter = LoggingHTTPAdapter(logger=logger, log_level=logging.WARNING)
     with caplog.at_level(logging.WARNING, logger=logger.name):
         with pytest.raises(requests.RequestException):
-            adapter.send(SimpleNamespace(method="POST", url="http://example.com"))
+            adapter.send(SimpleNamespace(method="POST", url="https://example.com"))
 
     assert "http-error" in caplog.text
 
