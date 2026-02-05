@@ -52,7 +52,6 @@ def run(
         load_dotenv()
     except Exception as exc:
         logging.getLogger("quant.main").debug("dotenv load failed", exc_info=exc)
-        pass
     # Basic logging
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     logger = logging.getLogger("quant.main")
@@ -64,7 +63,6 @@ def run(
         requests_cache.install_cache("http_cache", expire_after=43200)  # 12 hours
     except Exception as exc:
         logger.debug("requests_cache unavailable", exc_info=exc)
-        pass
 
     cfg = load_config(config)
     env_cache = os.environ.get("DATA_CACHE_DIR")

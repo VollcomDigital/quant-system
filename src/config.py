@@ -66,9 +66,12 @@ def load_config(path: str | Path) -> Config:
         raw = yaml.safe_load(f)
 
     strategies_raw = raw.get("strategies")
-    if not isinstance(strategies_raw, list) or not strategies_raw:
+    # `strategies` is an optional override. Missing/empty means "discover all external strategies".
+    if strategies_raw is None:
+        strategies_raw = []
+    elif not isinstance(strategies_raw, list):
         example = (
-            "Missing required `strategies` in config.\n"
+            "Invalid `strategies` in config; expected a list.\n"
             "Example:\n"
             "strategies:\n"
             "  - name: ExampleStrategy\n"

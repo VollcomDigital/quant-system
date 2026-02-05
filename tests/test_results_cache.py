@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from src.backtest.results_cache import ResultsCache
 
 
@@ -35,7 +37,7 @@ def test_results_cache_set_get_and_list(tmp_path: Path):
         run_id="run-1",
     )
     assert hit is not None
-    assert hit["metric_value"] == 1.25
+    assert hit["metric_value"] == pytest.approx(1.25)
     assert hit["stats"]["trades"] == 2
 
     miss = cache.get(
@@ -55,4 +57,4 @@ def test_results_cache_set_get_and_list(tmp_path: Path):
     rows = cache.list_by_run("run-1")
     assert len(rows) == 1
     assert rows[0]["params"]["x"] == 1
-    assert rows[0]["metric_value"] == 1.25
+    assert rows[0]["metric_value"] == pytest.approx(1.25)
