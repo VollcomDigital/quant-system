@@ -229,7 +229,7 @@ class BacktestRunner:
         if missing_cols:
             raise ValueError(f"Missing required columns after normalization: {missing_cols}")
         ordered = pd.DataFrame({col: working[col].to_numpy() for col in ordered_cols})
-        return ordered.reset_index(drop=True), dates
+        return ordered, dates
 
     def _compute_cagr(
         self,
