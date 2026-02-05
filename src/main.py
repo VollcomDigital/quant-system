@@ -50,17 +50,20 @@ def run(
         from dotenv import load_dotenv
 
         load_dotenv()
-    except Exception:
+    except Exception as exc:
+        logging.getLogger("quant.main").debug("dotenv load failed", exc_info=exc)
         pass
     # Basic logging
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
+    logger = logging.getLogger("quant.main")
 
     # Cache HTTP where possible to reduce provider calls
     try:
         import requests_cache
 
         requests_cache.install_cache("http_cache", expire_after=43200)  # 12 hours
-    except Exception:
+    except Exception as exc:
+        logger.debug("requests_cache unavailable", exc_info=exc)
         pass
 
     cfg = load_config(config)
@@ -128,8 +131,8 @@ def run(
     # Consolidated CSVs from results cache
     try:
         AllCSVExporter(base_out, runner.results_cache, run_id, top_n=top_n).export(results)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("all_results export failed", exc_info=exc)
     MarkdownReporter(base_out).export(results)
     TradingViewExporter(base_out).export(results)
     # HTML report with Tailwind (dark mode)
@@ -137,8 +140,8 @@ def run(
         HTMLReporter(
             base_out, runner.results_cache, run_id, top_n=top_n, inline_css=inline_css
         ).export(results)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("HTML report export failed", exc_info=exc)
 
     duration = (end_ts - start_ts).total_seconds()
     dashboard_payload = build_dashboard_payload(runner.results_cache, run_id, results)
@@ -168,7 +171,8 @@ def run(
         manifest_status = refresh_manifest(
             Path(base_out).parent, base_out, runner.results_cache, dashboard_payload
         )
-    except Exception:
+    except Exception as exc:
+        logger.warning("manifest refresh failed", exc_info=exc)
         manifest_status = []
 
     warning_lines: list[str] = []
@@ -179,8 +183,8 @@ def run(
 
     try:
         DashboardReporter(base_out).export(dashboard_payload)
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("dashboard export failed", exc_info=exc)
 
     # Emit run summary JSON
     try:
@@ -207,8 +211,8 @@ def run(
             (base_out / "notifications.json").write_text(
                 safe_json_dumps(notification_events, indent=2)
             )
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("summary emit failed", exc_info=exc)
 
     # Emit Prometheus-style metrics
     try:
@@ -231,8 +235,8 @@ def run(
             if k in rm:
                 line(k, rm[k])
         (base_out / "metrics.prom").write_text("\n".join(m) + "\n")
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("metrics emit failed", exc_info=exc)
 
     typer.echo(f"Done. Reports in: {base_out}")
     for line in warning_lines:
@@ -241,8 +245,8 @@ def run(
     # Health report
     try:
         HealthReporter(base_out).export(getattr(runner, "failures", []))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("health report export failed", exc_info=exc)
 
 
 @app.command()

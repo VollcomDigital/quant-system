@@ -58,6 +58,7 @@ class BacktestRunner:
         self.run_id = run_id
         self.logger = get_logger()
         self._pybroker_components: tuple[Any, ...] | None = None
+        self._cache_write_failures = 0
 
     def _ensure_pybroker(self) -> tuple[Any, ...]:
         if self._pybroker_components is None:
@@ -87,6 +88,18 @@ class BacktestRunner:
             except Exception as exc:  # pragma: no cover - sanity guard
                 raise RuntimeError("PyBroker must be installed to run backtests.") from exc
         return self._pybroker_components
+
+    def _cache_set(self, **kwargs: Any) -> None:
+        try:
+            self.results_cache.set(**kwargs)
+        except Exception as exc:
+            self._cache_write_failures += 1
+            if self._cache_write_failures <= 3:
+                self.logger.warning("results cache write failed", exc_info=exc)
+            elif self._cache_write_failures == 4:
+                self.logger.warning(
+                    "results cache write failures continuing; suppressing further warnings"
+                )
 
     def _make_source(self, col: CollectionConfig) -> DataSource:
         cache_dir = Path(self.cfg.cache_dir)
@@ -212,7 +225,11 @@ class BacktestRunner:
             data_col_enum.CLOSE.value,
             data_col_enum.VOLUME.value,
         ]
-        return working[ordered_cols].reset_index(drop=True), dates
+        missing_cols = [col for col in ordered_cols if col not in working.columns]
+        if missing_cols:
+            raise ValueError(f"Missing required columns after normalization: {missing_cols}")
+        ordered = pd.DataFrame({col: working[col].to_numpy() for col in ordered_cols})
+        return ordered.reset_index(drop=True), dates
 
     def _compute_cagr(
         self,
@@ -423,6 +440,7 @@ class BacktestRunner:
             "strategies_used": set(),
         }
         self.failures: list[dict[str, Any]] = []
+        self._cache_write_failures = 0
 
         overrides = {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
 
@@ -568,23 +586,20 @@ class BacktestRunner:
                 if cached is not None:
                     self.metrics["result_cache_hits"] += 1
                     val_cached = float(cached["metric_value"])
-                    try:
-                        self.results_cache.set(
-                            collection=collection_key,
-                            symbol=symbol_key,
-                            timeframe=timeframe_key,
-                            strategy=strategy_key,
-                            params=full_params,
-                            metric_name=self.cfg.metric,
-                            metric_value=val_cached,
-                            stats=cached["stats"],
-                            data_fingerprint=fingerprint_key,
-                            fees=fee_key,
-                            slippage=slippage_key,
-                            run_id=self.run_id,
-                        )
-                    except Exception:
-                        pass
+                    self._cache_set(
+                        collection=collection_key,
+                        symbol=symbol_key,
+                        timeframe=timeframe_key,
+                        strategy=strategy_key,
+                        params=full_params,
+                        metric_name=self.cfg.metric,
+                        metric_value=val_cached,
+                        stats=cached["stats"],
+                        data_fingerprint=fingerprint_key,
+                        fees=fee_key,
+                        slippage=slippage_key,
+                        run_id=self.run_id,
+                    )
                     if val_cached > best_val:
                         best_val = val_cached
                         best_params = full_params.copy()
@@ -614,24 +629,24 @@ class BacktestRunner:
                 )
                 if not np.isfinite(metric_val):
                     return float("-inf")
+                self._cache_set(
+                    collection=collection_key,
+                    symbol=symbol_key,
+                    timeframe=timeframe_key,
+                    strategy=strategy_key,
+                    params=full_params,
+                    metric_name=self.cfg.metric,
+                    metric_value=float(metric_val),
+                    stats=stats,
+                    data_fingerprint=fingerprint_key,
+                    fees=fee_key,
+                    slippage=slippage_key,
+                    run_id=self.run_id,
+                )
                 if metric_val > best_val:
                     best_val = metric_val
                     best_params = full_params.copy()
                     best_stats = stats
-                    self.results_cache.set(
-                        collection=collection_key,
-                        symbol=symbol_key,
-                        timeframe=timeframe_key,
-                        strategy=strategy_key,
-                        params=full_params,
-                        metric_name=self.cfg.metric,
-                        metric_value=float(best_val),
-                        stats=stats,
-                        data_fingerprint=fingerprint_key,
-                        fees=fee_key,
-                        slippage=slippage_key,
-                        run_id=self.run_id,
-                    )
                 return float(metric_val)
 
             space_items = list(search_space.items())
