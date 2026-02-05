@@ -65,6 +65,20 @@ def load_config(path: str | Path) -> Config:
     with open(path) as f:
         raw = yaml.safe_load(f)
 
+    strategies_raw = raw.get("strategies")
+    # `strategies` is an optional override. Missing/empty means "discover all external strategies".
+    if strategies_raw is None:
+        strategies_raw = []
+    elif not isinstance(strategies_raw, list):
+        example = (
+            "Invalid `strategies` in config; expected a list.\n"
+            "Example:\n"
+            "strategies:\n"
+            "  - name: ExampleStrategy\n"
+            "    params: {}\n"
+        )
+        raise ValueError(example)
+
     collections = [
         CollectionConfig(
             name=c["name"],
@@ -86,7 +100,7 @@ def load_config(path: str | Path) -> Config:
             cls=s.get("class") or s.get("cls"),
             params=s.get("params", {}),
         )
-        for s in raw["strategies"]
+        for s in strategies_raw
     ]
 
     notifications_cfg = None

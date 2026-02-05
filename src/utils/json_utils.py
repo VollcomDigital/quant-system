@@ -22,7 +22,7 @@ def sanitize_for_json(data: Any) -> Any:
         data = asdict(data)
     if isinstance(data, dict):
         return {key: sanitize_for_json(value) for key, value in data.items()}
-    if isinstance(data, (list, tuple, set)):
+    if isinstance(data, list | tuple | set):
         return [sanitize_for_json(value) for value in data]
     if isinstance(data, float):
         if math.isnan(data) or math.isinf(data):

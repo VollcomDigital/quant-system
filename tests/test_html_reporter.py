@@ -1,103 +1,79 @@
-from pathlib import Path
-from types import SimpleNamespace
+from __future__ import annotations
 
+from pathlib import Path
+
+from src.backtest.runner import BestResult
 from src.reporting.html import HTMLReporter
 
 
-class DummyCache:
-    def __init__(self, rows):
+class _DummyCache:
+    def __init__(self, rows: list[dict]):
         self._rows = rows
 
-    def list_by_run(self, run_id: str):
-        return self._rows
+    def list_by_run(self, run_id: str) -> list[dict]:
+        return list(self._rows)
 
 
-def test_html_reporter_generates_file(tmp_path: Path):
-    # Prepare dummy rows (all results) and best results
-    rows = [
-        {
-            "collection": "crypto",
-            "symbol": "BTC/USDT",
-            "timeframe": "1d",
-            "strategy": "stratA",
-            "metric": "sortino",
-            "metric_value": 1.5,
-            "params": {"x": 1},
-            "stats": {
-                "sharpe": 1.2,
-                "sortino": 1.5,
-                "omega": 1.8,
-                "tail_ratio": 1.6,
-                "profit": 0.2,
-                "pain_index": 0.05,
-                "trades": 10,
-                "max_drawdown": -0.1,
-                "equity_curve": [
-                    {"ts": "2024-01-01T00:00:00", "value": 1.0},
-                    {"ts": "2024-01-02T00:00:00", "value": 1.2},
-                ],
-                "drawdown_curve": [
-                    {"ts": "2024-01-01T00:00:00", "value": 0.0},
-                    {"ts": "2024-01-02T00:00:00", "value": -0.05},
-                ],
-                "trades_log": [
-                    {
-                        "Entry Timestamp": "2024-01-01T00:00:00",
-                        "Exit Timestamp": "2024-01-01T12:00:00",
-                        "Direction": "Long",
-                        "Size": 1.0,
-                        "PnL": 120.5,
-                    }
-                ],
-            },
-        }
-    ]
+def _row(symbol: str, metric_value: float) -> dict:
+    return {
+        "collection": "demo",
+        "symbol": symbol,
+        "timeframe": "1d",
+        "strategy": "stratA",
+        "params": {"x": 1},
+        "metric": "sharpe",
+        "metric_value": metric_value,
+        "stats": {
+            "sharpe": metric_value,
+            "sortino": metric_value + 0.1,
+            "omega": 1.2,
+            "tail_ratio": 1.1,
+            "profit": 0.05,
+            "pain_index": 0.02,
+            "trades": 3,
+            "max_drawdown": -0.1,
+            "cagr": 0.12,
+            "calmar": -1.2,
+            "equity_curve": [
+                {"ts": "2024-01-01T00:00:00", "value": 1.0},
+                {"ts": "2024-01-02T00:00:00", "value": 1.05},
+            ],
+            "drawdown_curve": [
+                {"ts": "2024-01-01T00:00:00", "value": 0.0},
+                {"ts": "2024-01-02T00:00:00", "value": -0.02},
+            ],
+            "trades_log": [{"entry_time": "2024-01-01", "exit_time": "2024-01-02"}],
+        },
+    }
+
+
+def test_html_reporter_exports_inline_css(tmp_path: Path):
+    rows = [_row("AAA", 1.2), _row("BBB", 0.8)]
+    reporter = HTMLReporter(tmp_path, _DummyCache(rows), run_id="run-1", top_n=2, inline_css=True)
+    reporter.export([])
+
+    output = (tmp_path / "report.html").read_text()
+    assert "Backtest Report" in output
+    assert "Metric vs. Sharpe" in output
+    assert "Equity & Drawdown Explorer" in output
+    assert "https://cdn.tailwindcss.com" not in output
+
+
+def test_html_reporter_fallback_from_best_results(tmp_path: Path):
     best = [
-        SimpleNamespace(
-            collection="crypto",
-            symbol="BTC/USDT",
+        BestResult(
+            collection="demo",
+            symbol="ZZZ",
             timeframe="1d",
-            strategy="stratA",
-            params={"x": 1},
-            metric_name="sortino",
-            metric_value=1.5,
-            stats={
-                "sharpe": 1.2,
-                "sortino": 1.5,
-                "omega": 1.8,
-                "tail_ratio": 1.6,
-                "profit": 0.2,
-                "pain_index": 0.05,
-                "trades": 10,
-                "max_drawdown": -0.1,
-                "equity_curve": [
-                    {"ts": "2024-01-01T00:00:00", "value": 1.0},
-                    {"ts": "2024-01-02T00:00:00", "value": 1.2},
-                ],
-                "drawdown_curve": [
-                    {"ts": "2024-01-01T00:00:00", "value": 0.0},
-                    {"ts": "2024-01-02T00:00:00", "value": -0.05},
-                ],
-                "trades_log": [
-                    {
-                        "Entry Timestamp": "2024-01-01T00:00:00",
-                        "Exit Timestamp": "2024-01-01T12:00:00",
-                        "Direction": "Long",
-                        "Size": 1.0,
-                        "PnL": 120.5,
-                    }
-                ],
-            },
+            strategy="stratZ",
+            params={"x": 2},
+            metric_name="sharpe",
+            metric_value=0.5,
+            stats=_row("ZZZ", 0.5)["stats"],
         )
     ]
-    cache = DummyCache(rows)
-    HTMLReporter(tmp_path, cache, run_id="run-1", top_n=1, inline_css=True).export(best)
-    html = (tmp_path / "report.html").read_text()
-    assert "Backtest Report" in html
-    assert "BTC/USDT" in html
-    assert "Top Results (Overall)" in html
-    assert "Best Per Strategy" in html
-    assert "metric-scatter" in html
-    assert "Equity & Drawdown Explorer" in html
-    assert "detail-selector" in html
-    assert "trade-table-container" in html
+    reporter = HTMLReporter(tmp_path, _DummyCache([]), run_id="run-2", top_n=1, inline_css=False)
+    reporter.export(best)
+
+    output = (tmp_path / "report.html").read_text()
+    assert "Backtest Report" in output

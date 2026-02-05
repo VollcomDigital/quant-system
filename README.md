@@ -1,4 +1,4 @@
-# Quant System (Dockerized)
+# Quant System
 
 ## Overview
 
@@ -23,7 +23,7 @@ This repository provides a Docker-based, cache-aware backtesting system to syste
 - Docker and docker-compose
 - Poetry (for local non-Docker runs)
 - Python 3.12 or 3.13
-- External strategies repo mounted at runtime (defaults to /Users/manuelheck/Documents/Websites/Private/quant/quant-strategies/algorithms/python)
+- External strategies repo mounted at runtime
 - Optional: pre-commit for local linting hooks
 
 ## Project Structure
@@ -132,6 +132,12 @@ See new collection examples under `config/collections/` for FX intraday via Finn
 
 - Branch protection and required status checks recommendations are in `GOVERNANCE.md`.
 - CODEOWNERS is set under `.github/CODEOWNERS`.
+
+## Support & Requests
+
+- Report bugs via: [Jira bug form](https://vollcom-digital.atlassian.net/jira/software/c/form/014e93fe-22c4-4211-a93e-1803d8788ab3)
+- Request new features via: [Jira feature request form](https://vollcom-digital.atlassian.net/jira/software/c/form/35d2a798-bc62-4bbf-aed5-c6149bc3a5a5)
+- The future roadmap is available to internal team members only: [Confluence roadmap](https://vollcom-digital.atlassian.net/wiki/spaces/VD/folder/3096117251?atlOrigin=eyJpIjoiN2FmODYwYWQxNWI5NDUyOWJiODU3ZDBkNmYxZGI4Y2IiLCJwIjoiYyJ9)
 
 ## Symbol Discovery (Crypto)
 
