@@ -42,9 +42,7 @@ def main() -> int:
     env.setdefault("SKIP_PANDAS_TESTS", "1")
     existing_pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = (
-        str(root)
-        if not existing_pythonpath
-        else f"{root}{os.pathsep}{existing_pythonpath}"
+        str(root) if not existing_pythonpath else f"{root}{os.pathsep}{existing_pythonpath}"
     )
 
     cmd = [
