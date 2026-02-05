@@ -166,26 +166,25 @@ files = [
 
 [[package]]
 name = "akshare"
-version = "1.17.62"
+version = "1.18.21"
 description = "AKShare is an elegant and simple financial data interface library for Python, built for human beings!"
 optional = false
 python-versions = ">=3.8"
 groups = ["main"]
 files = [
-    {file = "akshare-1.17.62-py3-none-any.whl", hash = "sha256:dbc18ef820f3a050e26f9194a58f4610980cc4b2146317a59f571c14fca7df73"},
-    {file = "akshare-1.17.62.tar.gz", hash = "sha256:3ca86e2f62ad943b10e9d9ca29f35c2fea8729164d0b357ef7ac33a45c5e0fa3"},
+    {file = "akshare-1.18.21-py3-none-any.whl", hash = "sha256:41b1759115d499232f67d484f8ea568cbd95c2bb20d2b7b2585a1d16b1e428a3"},
+    {file = "akshare-1.18.21.tar.gz", hash = "sha256:c2642844931034a46e51cf434c7ffd068df825301de7fe959886997821c08469"},
 ]
 
 [package.dependencies]
-aiohttp = ">=3.11.13"
 akracer = {version = ">=0.0.13", markers = "platform_system == \"Linux\""}
 beautifulsoup4 = ">=4.9.1"
+curl_cffi = ">=0.13.0"
 decorator = ">=4.4.2"
 html5lib = ">=1.0.1"
 jsonpath = ">=0.82"
 lxml = ">=4.2.1"
 mini-racer = {version = ">=0.12.4", markers = "platform_system != \"Linux\""}
-nest_asyncio = ">=1.6.0"
 openpyxl = ">=3.0.3"
 pandas = ">=0.25"
 py-mini-racer = {version = ">=0.6.0", markers = "platform_system == \"Linux\""}
@@ -196,6 +195,7 @@ urllib3 = ">=1.25.8"
 xlrd = ">=1.2.0"
 
 [package.extras]
+dev = ["akqmt (>=0.1.0)", "commitizen (>=4.12.0)", "mplfinance (>=0.12.10b0)", "pre-commit (>=3.6.2)", "recommonmark (>=0.7.1)", "ruff (>=0.14.13)", "ruff-lsp (>=0.0.53)", "sphinx (>=7.4.3)", "sphinx_markdown_tables (>=0.0.17)", "sphinx_rtd_theme (>=1.0.0)"]
 full = ["akqmt"]
 qmt = ["akqmt"]
 
@@ -1974,18 +1974,6 @@ python-versions = "*"
 groups = ["main"]
 files = [
     {file = "multitasking-0.0.12.tar.gz", hash = "sha256:2fba2fa8ed8c4b85e227c5dd7dc41c7d658de3b6f247927316175a57349b84d1"},
-]
-
-[[package]]
-name = "nest-asyncio"
-version = "1.6.0"
-description = "Patch asyncio to allow nested event loops"
-optional = false
-python-versions = ">=3.5"
-groups = ["main"]
-files = [
-    {file = "nest_asyncio-1.6.0-py3-none-any.whl", hash = "sha256:87af6efd6b5e897c81050477ef65c62e2b2f35d51703cae01aff2905b1852e1c"},
-    {file = "nest_asyncio-1.6.0.tar.gz", hash = "sha256:6f172d5449aca15afd6c646851f4e31e02c598d553a667e38cafa997cfec55fe"},
 ]
 
 [[package]]
