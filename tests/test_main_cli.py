@@ -443,6 +443,24 @@ def test_package_run_invokes_make_archive(tmp_path: Path, monkeypatch: pytest.Mo
     assert "Packaged run" in result.stdout
 
 
+def test_package_run_rejects_path_traversal(tmp_path: Path):
+    reports_dir = tmp_path / "reports"
+    (reports_dir / "latest").mkdir(parents=True)
+
+    result = runner.invoke(
+        app,
+        [
+            "package-run",
+            "../outside",
+            "--reports-dir",
+            str(reports_dir),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "run_id must be a simple name" in result.stdout or "Invalid run_id" in result.stdout
+
+
 def test_clean_cache_removes_old_files(tmp_path: Path):
     cache_dir = tmp_path / "cache" / "data"
     results_dir = tmp_path / "cache" / "results"
@@ -493,3 +511,38 @@ def test_clean_cache_dry_run(tmp_path: Path):
     assert result.exit_code == 0
     assert "DRY-RUN" in result.stdout
     assert target.exists()
+
+
+def test_clean_cache_does_not_follow_symlink_dirs(tmp_path: Path):
+    cache_dir = tmp_path / "cache" / "data"
+    cache_dir.mkdir(parents=True)
+
+    # File that should be deleted (old + inside cache root).
+    stale = cache_dir / "stale.parquet"
+    _make_cache_file(stale, age_days=20)
+
+    # File that must NOT be deleted (outside cache root).
+    outside_dir = tmp_path / "outside"
+    outside_dir.mkdir()
+    outside_file = outside_dir / "keep.txt"
+    _make_cache_file(outside_file, age_days=20)
+
+    # Symlink inside cache root pointing outside.
+    link_dir = cache_dir / "link-outside"
+    os.symlink(outside_dir, link_dir)
+
+    result = runner.invoke(
+        app,
+        [
+            "clean-cache",
+            "--cache-dir",
+            str(cache_dir),
+            "--max-age-days",
+            "7",
+            "--no-include-results",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert not stale.exists()
+    assert outside_file.exists()

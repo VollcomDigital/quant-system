@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html as html_stdlib
 import json
 import math
 from pathlib import Path
@@ -27,6 +28,25 @@ class HTMLReporter:
         self.inline_css = inline_css
 
     def export(self, best: list[object]):
+        def _esc(value: Any) -> str:
+            if value is None:
+                return ""
+            return html_stdlib.escape(str(value), quote=True)
+
+        def _json_for_inline_script(value: Any) -> str:
+            """JSON-safe for embedding directly in a <script> tag.
+
+            This prevents `</script>` breakouts by escaping `<` and also guards common HTML parser
+            edge cases (`>`, `&`). Values come from configs/strategies and may be user-controlled.
+            """
+
+            text = json.dumps(value, ensure_ascii=True)
+            return (
+                text.replace("<", "\\u003c")
+                .replace(">", "\\u003e")
+                .replace("&", "\\u0026")
+            )
+
         # Load all rows for top-N sections from results cache
         all_rows = self.cache.list_by_run(self.run_id)
         # Fallback: if the current run reused cached results and didn't write
@@ -101,12 +121,12 @@ class HTMLReporter:
                 row = strategy_best[key]
                 rows_html.append(
                     "<tr>"
-                    f"<td class='px-3 py-2'>{row.get('symbol')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('strategy')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('timeframe')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('metric')}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('symbol'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('strategy'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('timeframe'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('metric'))}</td>"
                     f"<td class='px-3 py-2'>{row.get('metric_value', float('nan')):.4f}</td>"
-                    f"<td class='px-3 py-2'>{row.get('collection')}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('collection'))}</td>"
                     "</tr>"
                 )
             body = "\n".join(rows_html)
@@ -142,12 +162,12 @@ class HTMLReporter:
                 row = entry["row"]
                 rows_html.append(
                     "<tr>"
-                    f"<td class='px-3 py-2'>{metric_name.title()}</td>"
+                    f"<td class='px-3 py-2'>{_esc(metric_name.title())}</td>"
                     f"<td class='px-3 py-2'>{entry['value']:.4f}</td>"
-                    f"<td class='px-3 py-2'>{row.get('strategy')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('collection')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('symbol')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('timeframe')}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('strategy'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('collection'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('symbol'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('timeframe'))}</td>"
                     "</tr>"
                 )
             if not rows_html:
@@ -182,11 +202,11 @@ class HTMLReporter:
                 rows_html.append(
                     "<tr>"
                     f"<td class='px-3 py-2'>{idx}</td>"
-                    f"<td class='px-3 py-2'>{row.get('collection')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('symbol')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('strategy')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('timeframe')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('metric')}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('collection'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('symbol'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('strategy'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('timeframe'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('metric'))}</td>"
                     f"<td class='px-3 py-2'>{row.get('metric_value', float('nan')):.4f}</td>"
                     "</tr>"
                 )
@@ -245,7 +265,7 @@ class HTMLReporter:
             )
 
         scatter_section = ""
-        chart_json = json.dumps(chart_data)
+        chart_json = _json_for_inline_script(chart_data)
         if chart_data:
             scatter_section = """
             <section class='p-4 rounded-lg bg-slate-800 text-slate-100 shadow'>
@@ -273,7 +293,7 @@ class HTMLReporter:
                 }
             )
 
-        detail_json = json.dumps(detail_records)
+        detail_json = _json_for_inline_script(detail_records)
 
         detail_section = ""
         if detail_records:
@@ -309,13 +329,13 @@ class HTMLReporter:
             return f"""
             <div class='p-4 rounded-lg bg-slate-800 text-slate-100 shadow'>
                 <div class='flex justify-between items-baseline'>
-                    <h3 class='text-lg font-semibold'>{row.get("collection", "")} / {row.get("symbol", "")}</h3>
-                    <span class='text-xs px-2 py-1 rounded bg-slate-700'>{row.get("timeframe", "")}</span>
+                    <h3 class='text-lg font-semibold'>{_esc(row.get("collection", ""))} / {_esc(row.get("symbol", ""))}</h3>
+                    <span class='text-xs px-2 py-1 rounded bg-slate-700'>{_esc(row.get("timeframe", ""))}</span>
                 </div>
                 <div class='mt-2 text-sm'>
-                    <div><span class='font-semibold'>Strategy:</span> {row.get("strategy", "")}</div>
-                    <div><span class='font-semibold'>Metric:</span> {row.get("metric", "")} = {float(row.get("metric_value", float("nan"))):.6f}</div>
-                    <div><span class='font-semibold'>Params:</span> <code class='text-xs'>{row.get("params", {})}</code></div>
+                    <div><span class='font-semibold'>Strategy:</span> {_esc(row.get("strategy", ""))}</div>
+                    <div><span class='font-semibold'>Metric:</span> {_esc(row.get("metric", ""))} = {float(row.get("metric_value", float("nan"))):.6f}</div>
+                    <div><span class='font-semibold'>Params:</span> <code class='text-xs'>{_esc(row.get("params", {}))}</code></div>
                 </div>
                 <div class='mt-3 grid grid-cols-2 gap-2 text-sm'>
                     <div>Sharpe: {float(stats.get("sharpe", float("nan"))):.4f}</div>
@@ -333,8 +353,8 @@ class HTMLReporter:
         def table_for_topn(rows: list[dict[str, Any]]) -> str:
             rows = sorted(rows, key=lambda x: x["metric_value"], reverse=True)[: self.top_n]
             body = "\n".join(
-                f"<tr><td>{r['timeframe']}</td><td>{r['strategy']}</td><td>{r['metric']}</td><td>{r['metric_value']:.6f}</td>"
-                f"<td><code class='text-xs'>{r['params']}</code></td>"
+                f"<tr><td>{_esc(r['timeframe'])}</td><td>{_esc(r['strategy'])}</td><td>{_esc(r['metric'])}</td><td>{r['metric_value']:.6f}</td>"
+                f"<td><code class='text-xs'>{_esc(r['params'])}</code></td>"
                 f"<td>{r['stats'].get('sharpe', float('nan')):.4f}</td>"
                 f"<td>{r['stats'].get('sortino', float('nan')):.4f}</td>"
                 f"<td>{r['stats'].get('omega', float('nan')):.4f}</td>"
@@ -431,7 +451,7 @@ class HTMLReporter:
       const trace = {{
         x: scatterData.map(r => r.metric_value),
         y: scatterData.map(r => r.sharpe),
-        text: scatterData.map(r => `${{r.collection}}/${{r.symbol}} • ${{r.strategy}} (${{r.timeframe}})`),
+        text: scatterData.map(r => `${{escapeHtml(r.collection)}}/${{escapeHtml(r.symbol)}} • ${{escapeHtml(r.strategy)}} (${{escapeHtml(r.timeframe)}})`),
         mode: 'markers',
         hovertemplate: '%{{text}}<br>Metric: %{{x:.4f}}<br>Sharpe: %{{y:.4f}}<extra></extra>',
         marker: {{
@@ -457,6 +477,15 @@ class HTMLReporter:
     const detailEmpty = document.getElementById('detail-empty');
     const detailCharts = document.getElementById('detail-charts');
     const tradeTableContainer = document.getElementById('trade-table-container');
+
+    function escapeHtml(value) {{
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }}
 
     function detailLabel(entry) {{
       if (!entry) return '—';
@@ -484,10 +513,10 @@ class HTMLReporter:
         tradeTableContainer.innerHTML = '<p class="text-slate-400 text-sm">No trades captured for this result.</p>';
         return;
       }}
-      const headCells = headers.map(h => `<th>${{h}}</th>`).join('');
+      const headCells = headers.map(h => `<th>${{escapeHtml(h)}}</th>`).join('');
       const limit = Math.min(trades.length, 50);
       const bodyRows = trades.slice(0, 50).map(row => {{
-        const cells = headers.map(h => `<td>${{row[h] ?? ''}}</td>`).join('');
+        const cells = headers.map(h => `<td>${{escapeHtml(row[h] ?? '')}}</td>`).join('');
         return `<tr>${{cells}}</tr>`;
       }}).join('');
       tradeTableContainer.innerHTML = `
@@ -564,7 +593,7 @@ class HTMLReporter:
       const options = detailData.map((entry, idx) => {{
         const label = detailLabel(entry) || `Result ${idx + 1}`;
         const selected = idx === 0 ? ' selected' : '';
-        return `<option value="${{entry.id}}"${{selected}}>${{label}}</option>`;
+        return `<option value="${{escapeHtml(entry.id)}}"${{selected}}>${{escapeHtml(label)}}</option>`;
       }}).join('');
       detailSelector.innerHTML = options;
       detailSelector.disabled = false;

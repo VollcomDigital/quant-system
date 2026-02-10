@@ -77,3 +77,16 @@ def test_html_reporter_fallback_from_best_results(tmp_path: Path):
 
     output = (tmp_path / "report.html").read_text()
     assert "Backtest Report" in output
+
+
+def test_html_reporter_escapes_user_content(tmp_path: Path):
+    # Symbols/strategy names can come from user configs and external strategy repos.
+    # The HTML reporter should escape content to avoid XSS when opening report.html.
+    xss = "<img src=x onerror=alert(1)>"
+    rows = [_row(xss, 1.2)]
+    reporter = HTMLReporter(tmp_path, _DummyCache(rows), run_id="run-xss", top_n=1, inline_css=False)
+    reporter.export([])
+
+    output = (tmp_path / "report.html").read_text()
+    assert xss not in output
+    assert "&lt;img src=x onerror=alert(1)&gt;" in output
