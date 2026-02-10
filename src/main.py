@@ -712,7 +712,7 @@ def clean_cache(
         root = root.resolve()
         candidate_files: list[Path] = []
         # Avoid following symlinked directories (which could escape the cache root).
-        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
             dir_path = Path(dirpath)
             for name in filenames:
                 file_path = dir_path / name
@@ -753,7 +753,7 @@ def clean_cache(
 
         if not dry_run:
             # Remove emptied directories bottom-up (do not follow symlink dirs).
-            for dirpath, dirnames, filenames in os.walk(root, topdown=False, followlinks=False):
+            for dirpath, _dirnames, _filenames in os.walk(root, topdown=False, followlinks=False):
                 dir_path = Path(dirpath)
                 if dir_path == root:
                     continue
