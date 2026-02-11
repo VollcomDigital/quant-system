@@ -11,7 +11,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/usr/local/bin:${PATH}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential git \
+    adduser build-essential git \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python -m pip install --no-cache-dir --upgrade "pip==26.0.1" \
@@ -20,8 +20,8 @@ RUN python -m pip install --no-cache-dir --upgrade "pip==26.0.1" \
 ARG APP_UID=1000
 ARG APP_GID=1000
 RUN set -eux; \
-    groupadd -g "${APP_GID}" app || groupadd app; \
-    useradd -m -u "${APP_UID}" -g "${APP_GID}" -s /bin/bash app
+    addgroup --gid "${APP_GID}" app; \
+    adduser --disabled-password --gecos "" --uid "${APP_UID}" --ingroup app app
 
 WORKDIR /app
 
