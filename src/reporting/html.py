@@ -31,7 +31,7 @@ class HTMLReporter:
         def _esc(value: Any) -> str:
             if value is None:
                 return ""
-            return html_stdlib.escape(str(value), quote=True)
+            return html_stdlib.escape(json.dumps(value) if isinstance(value, dict) else str(value), quote=True)
 
         def _json_for_inline_script(value: Any) -> str:
             """JSON-safe for embedding directly in a <script> tag.
