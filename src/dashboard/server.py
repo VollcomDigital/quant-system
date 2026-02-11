@@ -485,7 +485,7 @@ def create_app(reports_dir: Path) -> FastAPI:
   </div>
 </body>
 </html>
-        """.format(cards="".join(run_cards))
+        """.format(cards="".join(run_cards), base_css=base_css)
         return HTMLResponse(html)
 
     return app
