@@ -33,7 +33,16 @@ class HTMLReporter:
         def _esc(value: Any) -> str:
             if value is None:
                 return ""
-            return html_stdlib.escape(json.dumps(value) if isinstance(value, dict) else str(value), quote=True)
+            text: str
+            # `params` can be a dict; JSON is more readable than Python's repr.
+            if isinstance(value, dict):
+                try:
+                    text = json.dumps(value, sort_keys=True, ensure_ascii=True, default=str)
+                except Exception:
+                    text = str(value)
+            else:
+                text = str(value)
+            return html_stdlib.escape(text, quote=True)
 
         def _json_for_inline_script(value: Any) -> str:
             """JSON-safe for embedding directly in a <script> tag.
