@@ -1,10 +1,40 @@
 from __future__ import annotations
 
-import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 from src.backtest.runner import BestResult
 from src.reporting.html import HTMLReporter
+
+
+class _ScriptTagParser(HTMLParser):
+    """Collect <script> tag attributes in a single HTML document."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.script_attrs: list[dict[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag != "script":
+            return
+        d: dict[str, str] = {}
+        for k, v in attrs:
+            if v is None:
+                continue
+            d[k] = v
+        self.script_attrs.append(d)
+
+
+def _find_script_attrs_by_src_prefix(html_text: str, src_prefix: str) -> dict[str, str] | None:
+    """Return the first <script> attrs whose src starts with `src_prefix`."""
+
+    parser = _ScriptTagParser()
+    parser.feed(html_text)
+    for attrs in parser.script_attrs:
+        src = attrs.get("src", "")
+        if src.startswith(src_prefix):
+            return attrs
+    return None
 
 
 class _DummyCache:
@@ -83,10 +113,10 @@ def test_html_reporter_fallback_from_best_results(tmp_path: Path):
     assert "Backtest Report" in output
     # SRI on a cross-origin <script> requires crossorigin="anonymous" (otherwise some browsers
     # fetch in no-cors mode and block integrity validation, breaking Tailwind styling).
-    tailwind_match = re.search(r'<script[^>]+src="https://cdn\\.tailwindcss\\.com[^"]*"[^>]*>', output)
-    assert tailwind_match, "Expected Tailwind CDN <script> tag in non-inline HTML report"
-    assert 'integrity="' in tailwind_match.group(0)
-    assert 'crossorigin="anonymous"' in tailwind_match.group(0)
+    tailwind_attrs = _find_script_attrs_by_src_prefix(output, "https://cdn.tailwindcss.com")
+    assert tailwind_attrs, "Expected Tailwind CDN <script> tag in non-inline HTML report"
+    assert "integrity" in tailwind_attrs
+    assert tailwind_attrs.get("crossorigin") == "anonymous"
 
 
 def test_html_reporter_escapes_user_content(tmp_path: Path):
