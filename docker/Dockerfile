@@ -2,26 +2,32 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    POETRY_VERSION=1.8.3 \
     POETRY_VIRTUALENVS_CREATE=false \
+    POETRY_NO_INTERACTION=1 \
+    POETRY_CACHE_DIR=/tmp/poetry-cache \
     PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_DEFAULT_TIMEOUT=120 \
-    PATH="/root/.local/bin:${PATH}"
+    PATH="/usr/local/bin:${PATH}"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential curl git \
+    adduser build-essential git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN curl -sSL https://install.python-poetry.org | python - --version ${POETRY_VERSION}
+RUN python -m pip install --no-cache-dir --upgrade "pip==26.0.1" \
+    && python -m pip install --no-cache-dir "poetry==2.2.1"
 
-# Ensure poetry is on a standard PATH location
-RUN ln -s /root/.local/bin/poetry /usr/local/bin/poetry || true
+ARG APP_UID=1000
+ARG APP_GID=1000
+RUN set -eux; \
+    addgroup --gid "${APP_GID}" app; \
+    adduser --disabled-password --gecos "" --uid "${APP_UID}" --ingroup app app
 
 WORKDIR /app
 
-COPY pyproject.toml ./
+COPY pyproject.toml poetry.lock ./
 # Retry install to mitigate transient PyPI timeouts in CI/builders
-RUN set -euo pipefail; \
+RUN set -eu; \
     poetry --version; \
     for i in 1 2 3; do \
       if poetry install --no-root --no-interaction --no-ansi; then \
@@ -37,4 +43,9 @@ RUN set -euo pipefail; \
 
 COPY . /app
 
-CMD ["bash", "-lc", "poetry run python -m src.main --help"]
+RUN mkdir -p /app/.cache /app/reports /tmp/poetry-cache \
+    && chown -R app:app /app /tmp/poetry-cache
+
+USER app
+
+CMD ["python", "-m", "src.main", "--help"]

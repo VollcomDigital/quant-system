@@ -651,12 +651,30 @@ def package_run(
 ):
     import shutil
 
-    run_dir = Path(reports_dir) / run_id
+    def _safe_segment(value: str, label: str) -> str:
+        """Validate a user-supplied path segment (no traversal)."""
+
+        if not value:
+            raise typer.BadParameter(f"{label} must not be empty")
+        if "/" in value or "\\" in value:
+            raise typer.BadParameter(f"{label} must be a simple name (no path separators)")
+        if value.startswith(".") or ".." in value:
+            raise typer.BadParameter(f"Invalid {label}")
+        if Path(value).is_absolute():
+            raise typer.BadParameter(f"Invalid {label}")
+        return value
+
+    run_id = _safe_segment(run_id, "run_id")
+
+    reports_root = Path(reports_dir).resolve()
+    run_dir = (reports_root / run_id).resolve()
+    if not run_dir.is_relative_to(reports_root):
+        raise typer.BadParameter("Invalid run_id")
     if not run_dir.exists() or not run_dir.is_dir():
         typer.secho(f"Run directory not found: {run_dir}", fg=typer.colors.RED)
         raise typer.Exit(code=1)
 
-    out_path = Path(output) if output else Path(reports_dir) / f"{run_id}.zip"
+    out_path = Path(output) if output else reports_root / f"{run_id}.zip"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     base_name = out_path.with_suffix("")
     archive = shutil.make_archive(str(base_name), "zip", run_dir)
@@ -675,6 +693,8 @@ def clean_cache(
 ):
     """Permanently delete stale cache files beyond the retention window."""
 
+    import os
+
     now = datetime.now(UTC)
     threshold = now - timedelta(days=max_age_days)
     targets: list[tuple[str, Path]] = [("data", Path(cache_dir))]
@@ -689,7 +709,23 @@ def clean_cache(
             typer.echo(f"cache-clean: {label} cache not found at {root}, skipping")
             continue
 
-        candidate_files = [file for file in root.rglob("*") if file.is_file()]
+        root = root.resolve()
+        candidate_files: list[Path] = []
+        # Avoid following symlinked directories (which could escape the cache root).
+        for dirpath, _dirnames, filenames in os.walk(root, followlinks=False):
+            dir_path = Path(dirpath)
+            for name in filenames:
+                file_path = dir_path / name
+                # Skip symlinks to avoid acting on files outside cache roots.
+                if file_path.is_symlink():
+                    continue
+                try:
+                    if not file_path.resolve().is_relative_to(root):
+                        continue
+                except OSError:
+                    continue
+                if file_path.is_file():
+                    candidate_files.append(file_path)
         if not candidate_files:
             typer.echo(f"cache-clean: {label} cache at {root} has no files")
             continue
@@ -716,8 +752,11 @@ def clean_cache(
                 typer.echo(f"cache-clean: failed to remove {file_path}: {exc}", err=True)
 
         if not dry_run:
-            # Remove emptied directories bottom-up.
-            for dir_path in sorted({p.parent for p in candidate_files}, reverse=True):
+            # Remove emptied directories bottom-up (do not follow symlink dirs).
+            for dirpath, _dirnames, _filenames in os.walk(root, topdown=False, followlinks=False):
+                dir_path = Path(dirpath)
+                if dir_path == root:
+                    continue
                 try:
                     if dir_path.exists() and not any(dir_path.iterdir()):
                         dir_path.rmdir()

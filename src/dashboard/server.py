@@ -17,6 +17,73 @@ def create_app(reports_dir: Path) -> FastAPI:
     root = Path(reports_dir)
     base_root: Path | None = None
 
+    base_css = """
+    :root {
+      --bg: #020617;
+      --panel: #0f172a;
+      --panel-2: #111c33;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --border: rgba(148, 163, 184, 0.22);
+      --link: #38bdf8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell,
+        Noto Sans, Arial, "Apple Color Emoji", "Segoe UI Emoji";
+    }
+    a { color: var(--link); text-decoration: underline; }
+    a:hover { opacity: 0.9; }
+    code { font-family: ui-monospace, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    .container { max-width: 72rem; margin: 0 auto; padding: 2rem 1rem; }
+    .stack > * + * { margin-top: 1rem; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+      padding: 1rem;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+    }
+    .row { display: flex; gap: 1rem; align-items: baseline; justify-content: space-between; flex-wrap: wrap; }
+    .muted { color: var(--muted); font-size: 0.9rem; }
+    .title { font-size: 1.25rem; font-weight: 700; margin: 0; }
+    .subtitle { margin: 0.25rem 0 0; }
+    .btn {
+      display: inline-block;
+      padding: 0.35rem 0.6rem;
+      border-radius: 0.5rem;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      text-decoration: none;
+      color: var(--text);
+      font-size: 0.9rem;
+    }
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      text-align: left;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      background: rgba(148, 163, 184, 0.08);
+      border-bottom: 1px solid var(--border);
+      padding: 0.6rem 0.75rem;
+      white-space: nowrap;
+    }
+    tbody td {
+      border-bottom: 1px solid var(--border);
+      padding: 0.55rem 0.75rem;
+      vertical-align: top;
+    }
+    tbody tr:hover td { background: rgba(148, 163, 184, 0.05); }
+    ul { margin: 0.25rem 0 0.25rem 1.2rem; padding: 0; }
+    li { margin: 0.2rem 0; }
+    .table-wrap { overflow-x: auto; }
+    """.strip()
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         nonlocal base_root
@@ -34,9 +101,6 @@ def create_app(reports_dir: Path) -> FastAPI:
 
     def _url_segment(value: Any) -> str:
         return quote(str(value), safe="")
-
-    def _file_url(path: Path) -> str:
-        return f"file://{quote(str(path), safe='/:')}"
 
     def _base_root() -> Path:
         return base_root if base_root is not None else root.resolve()
@@ -144,15 +208,21 @@ def create_app(reports_dir: Path) -> FastAPI:
                     "results_count": _escape(summary.get("results_count")),
                     "started_at": _escape(summary.get("started_at")),
                     "finished_at": _escape(summary.get("finished_at")),
-                    "report_url": _escape(_file_url((run_dir / "report.html").resolve())),
+                    "detail_url": _escape(f"/run/{_url_segment(run_dir.name)}"),
+                    "report_url": _escape(
+                        f"/api/runs/{_url_segment(run_dir.name)}/files/report.html"
+                    ),
                 }
             )
         html_rows = "".join(
-            f"<tr><td class='px-4 py-2 font-semibold'>{r['run_id']}</td>"
-            f"<td class='px-4 py-2'>{r.get('metric', '')}</td>"
-            f"<td class='px-4 py-2'>{r.get('results_count', '')}</td>"
-            f"<td class='px-4 py-2'>{r.get('started_at', '')}</td>"
-            f"<td class='px-4 py-2'><a class='text-sky-400 underline' href='{r['report_url']}'>Open report</a></td></tr>"
+            "<tr>"
+            f"<td>{r['run_id']}</td>"
+            f"<td>{r.get('metric', '')}</td>"
+            f"<td>{r.get('results_count', '')}</td>"
+            f"<td>{r.get('started_at', '')}</td>"
+            f"<td><a href='{r['detail_url']}'>View</a></td>"
+            f"<td><a href='{r['report_url']}'>Open</a></td>"
+            "</tr>"
             for r in rows
         )
         html = f"""
@@ -162,30 +232,32 @@ def create_app(reports_dir: Path) -> FastAPI:
   <meta charset='utf-8' />
   <meta name='viewport' content='width=device-width, initial-scale=1' />
   <title>Quant System Dashboard</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <style>{base_css}</style>
 </head>
-<body class='bg-slate-900 text-slate-100'>
-  <div class='max-w-5xl mx-auto py-8 px-4 space-y-6'>
+<body>
+  <div class='container stack'>
     <header>
-      <h1 class='text-2xl font-bold'>Quant System Runs</h1>
-      <p class='text-sm text-slate-400'>Browse recent runs, review summaries, and open detailed reports.</p>
+      <h1 class='title'>Quant System Runs</h1>
+      <p class='muted subtitle'>Browse recent runs, review summaries, and open detailed reports.</p>
     </header>
-    <section class='bg-slate-800 rounded-lg shadow'>
-      <table class='w-full text-sm'>
-        <thead class='text-xs uppercase bg-slate-700 text-slate-300'>
-          <tr>
-            <th class='px-4 py-2 text-left'>Run ID</th>
-            <th class='px-4 py-2 text-left'>Metric</th>
-            <th class='px-4 py-2 text-left'>Results</th>
-            <th class='px-4 py-2 text-left'>Started</th>
-            <th class='px-4 py-2 text-left'>Detail</th>
-            <th class='px-4 py-2 text-left'>Report</th>
-          </tr>
-        </thead>
-        <tbody>
-          {html_rows if html_rows else "<tr><td class='px-4 py-3 text-slate-400' colspan='6'>No runs available</td></tr>"}
-        </tbody>
-      </table>
+    <section class='card'>
+      <div class='table-wrap'>
+        <table>
+          <thead>
+            <tr>
+              <th>Run ID</th>
+              <th>Metric</th>
+              <th>Results</th>
+              <th>Started</th>
+              <th>Detail</th>
+              <th>Report</th>
+            </tr>
+          </thead>
+          <tbody>
+            {html_rows if html_rows else "<tr><td class='muted' colspan='6'>No runs available</td></tr>"}
+          </tbody>
+        </table>
+      </div>
     </section>
   </div>
 </body>
@@ -217,29 +289,33 @@ def create_app(reports_dir: Path) -> FastAPI:
                 notifications = []
 
         summary_rows = "".join(
-            f"<tr><td class='px-3 py-2 font-semibold'>{_escape(k)}</td><td class='px-3 py-2'>{_escape(v)}</td></tr>"
+            f"<tr><td><strong>{_escape(k)}</strong></td><td>{_escape(v)}</td></tr>"
             for k, v in summary.items()
             if k in {"metric", "results_count", "started_at", "finished_at", "duration_sec"}
         )
 
         manifest_rows = (
             "".join(
-                f"<tr><td class='px-3 py-2'>{_escape(m.get('run_id'))}</td>"
-                f"<td class='px-3 py-2'>{_escape(m.get('status'))}</td>"
-                f"<td class='px-3 py-2'>{_escape(m.get('message', ''))}</td></tr>"
+                "<tr>"
+                f"<td>{_escape(m.get('run_id'))}</td>"
+                f"<td>{_escape(m.get('status'))}</td>"
+                f"<td>{_escape(m.get('message', ''))}</td>"
+                "</tr>"
                 for m in manifest
             )
-            or "<tr><td class='px-3 py-2 text-slate-400' colspan='3'>No manifest actions</td></tr>"
+            or "<tr><td class='muted' colspan='3'>No manifest actions</td></tr>"
         )
 
         notification_rows = (
             "".join(
-                f"<tr><td class='px-3 py-2'>{_escape(n.get('channel'))}</td>"
-                f"<td class='px-3 py-2'>{_escape(n.get('metric'))}</td>"
-                f"<td class='px-3 py-2'>{_escape('sent' if n.get('sent') else n.get('reason', 'skipped'))}</td></tr>"
+                "<tr>"
+                f"<td>{_escape(n.get('channel'))}</td>"
+                f"<td>{_escape(n.get('metric'))}</td>"
+                f"<td>{_escape('sent' if n.get('sent') else n.get('reason', 'skipped'))}</td>"
+                "</tr>"
                 for n in notifications
             )
-            or "<tr><td class='px-3 py-2 text-slate-400' colspan='3'>No notifications</td></tr>"
+            or "<tr><td class='muted' colspan='3'>No notifications</td></tr>"
         )
 
         downloads = []
@@ -251,7 +327,7 @@ def create_app(reports_dir: Path) -> FastAPI:
                 downloads.append(
                     f"<li><a class='text-sky-400 underline' href='{href}'>{_escape(name)}</a></li>"
                 )
-        downloads_html = "".join(downloads) or "<li class='text-slate-400'>No files</li>"
+        downloads_html = "".join(downloads) or "<li class='muted'>No files</li>"
 
         run_id_text = _escape(run_dir.name)
         html = f"""
@@ -261,43 +337,49 @@ def create_app(reports_dir: Path) -> FastAPI:
   <meta charset='utf-8' />
   <meta name='viewport' content='width=device-width, initial-scale=1' />
   <title>Run {run_id_text}</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <style>{base_css}</style>
 </head>
-<body class='bg-slate-900 text-slate-100'>
-  <div class='max-w-5xl mx-auto py-8 px-4 space-y-6'>
+<body>
+  <div class='container stack'>
     <header>
-      <h1 class='text-2xl font-bold'>Run {run_id_text}</h1>
-      <a class='text-sky-400 underline text-sm' href='/'>Back to runs</a>
+      <div class='row'>
+        <h1 class='title'>Run {run_id_text}</h1>
+        <a class='btn' href='/'>Back to runs</a>
+      </div>
     </header>
-    <section class='bg-slate-800 rounded-lg shadow'>
-      <h2 class='px-4 pt-4 text-lg font-semibold'>Summary</h2>
-      <table class='w-full text-sm'>
-        <tbody>{summary_rows}</tbody>
-      </table>
-      <div class='px-4 pb-4'>
-        <h3 class='text-sm font-semibold mt-4 mb-2'>Downloads</h3>
-        <ul class='list-disc list-inside text-sm'>
-          {downloads_html}
-        </ul>
+    <section class='card'>
+      <h2 class='title'>Summary</h2>
+      <div class='table-wrap'>
+        <table>
+          <tbody>{summary_rows}</tbody>
+        </table>
+      </div>
+      <div>
+        <h3 class='title' style='font-size: 1rem;'>Downloads</h3>
+        <ul>{downloads_html}</ul>
       </div>
     </section>
-    <section class='bg-slate-800 rounded-lg shadow'>
-      <h2 class='px-4 pt-4 text-lg font-semibold'>Manifest Actions</h2>
-      <table class='w-full text-sm'>
-        <thead class='text-xs uppercase bg-slate-700 text-slate-300'>
-          <tr><th class='px-3 py-2 text-left'>Run</th><th class='px-3 py-2 text-left'>Status</th><th class='px-3 py-2 text-left'>Message</th></tr>
-        </thead>
-        <tbody>{manifest_rows}</tbody>
-      </table>
+    <section class='card'>
+      <h2 class='title'>Manifest Actions</h2>
+      <div class='table-wrap'>
+        <table>
+          <thead>
+            <tr><th>Run</th><th>Status</th><th>Message</th></tr>
+          </thead>
+          <tbody>{manifest_rows}</tbody>
+        </table>
+      </div>
     </section>
-    <section class='bg-slate-800 rounded-lg shadow'>
-      <h2 class='px-4 pt-4 text-lg font-semibold'>Notifications</h2>
-      <table class='w-full text-sm'>
-        <thead class='text-xs uppercase bg-slate-700 text-slate-300'>
-          <tr><th class='px-3 py-2 text-left'>Channel</th><th class='px-3 py-2 text-left'>Metric</th><th class='px-3 py-2 text-left'>Outcome</th></tr>
-        </thead>
-        <tbody>{notification_rows}</tbody>
-      </table>
+    <section class='card'>
+      <h2 class='title'>Notifications</h2>
+      <div class='table-wrap'>
+        <table>
+          <thead>
+            <tr><th>Channel</th><th>Metric</th><th>Outcome</th></tr>
+          </thead>
+          <tbody>{notification_rows}</tbody>
+        </table>
+      </div>
     </section>
   </div>
 </body>
@@ -350,27 +432,29 @@ def create_app(reports_dir: Path) -> FastAPI:
             rows = data.get("top") or []
             table_rows = (
                 "".join(
-                    f"<tr><td class='px-3 py-2'>{_escape(row.get('symbol'))}</td>"
-                    f"<td class='px-3 py-2'>{_escape(row.get('strategy'))}</td>"
-                    f"<td class='px-3 py-2'>{_escape(row.get('metric'))}</td>"
-                    f"<td class='px-3 py-2'>{_escape(row.get('metric_value'))}</td></tr>"
+                    "<tr>"
+                    f"<td>{_escape(row.get('symbol'))}</td>"
+                    f"<td>{_escape(row.get('strategy'))}</td>"
+                    f"<td>{_escape(row.get('metric'))}</td>"
+                    f"<td>{_escape(row.get('metric_value'))}</td>"
+                    "</tr>"
                     for row in rows
                 )
-                or "<tr><td class='px-3 py-2 text-slate-400' colspan='4'>No summary.csv data</td></tr>"
+                or "<tr><td class='muted' colspan='4'>No summary.csv data</td></tr>"
             )
             summary_meta = data.get("summary", {})
             run_id_text = _escape(run_id)
             run_cards.append(
                 f"""
-                <section class='bg-slate-800 rounded-lg shadow p-4 space-y-3'>
-                  <header>
-                    <h2 class='text-lg font-semibold'>{run_id_text}</h2>
-                    <p class='text-xs text-slate-400'>Metric: {_escape(summary_meta.get("metric", ""))}</p>
+                <section class='card'>
+                  <header class='row'>
+                    <h2 class='title' style='font-size: 1.05rem; margin: 0;'>{run_id_text}</h2>
+                    <p class='muted' style='margin: 0;'>Metric: {_escape(summary_meta.get("metric", ""))}</p>
                   </header>
-                  <div class='overflow-x-auto'>
-                    <table class='min-w-full text-sm text-left text-slate-200'>
-                      <thead class='text-xs uppercase bg-slate-700 text-slate-300'>
-                        <tr><th class='px-3 py-2'>Symbol</th><th class='px-3 py-2'>Strategy</th><th class='px-3 py-2'>Metric</th><th class='px-3 py-2'>Value</th></tr>
+                  <div class='table-wrap'>
+                    <table>
+                      <thead>
+                        <tr><th>Symbol</th><th>Strategy</th><th>Metric</th><th>Value</th></tr>
                       </thead>
                       <tbody>{table_rows}</tbody>
                     </table>
@@ -384,19 +468,21 @@ def create_app(reports_dir: Path) -> FastAPI:
   <meta charset='utf-8'/>
   <meta name='viewport' content='width=device-width, initial-scale=1'/>
   <title>Run Comparison</title>
-  <script src="https://cdn.tailwindcss.com"></script>
+  <style>{base_css}</style>
 </head>
-<body class='bg-slate-900 text-slate-100'>
-  <div class='max-w-6xl mx-auto py-8 px-4 space-y-4'>
+<body>
+  <div class='container stack'>
     <header>
-      <h1 class='text-2xl font-bold'>Run Comparison</h1>
-      <a class='text-sky-400 underline text-sm' href='/'>Back to runs</a>
+      <div class='row'>
+        <h1 class='title'>Run Comparison</h1>
+        <a class='btn' href='/'>Back to runs</a>
+      </div>
     </header>
     {cards}
   </div>
 </body>
 </html>
-        """.format(cards="".join(run_cards))
+        """.format(cards="".join(run_cards), base_css=base_css)
         return HTMLResponse(html)
 
     return app

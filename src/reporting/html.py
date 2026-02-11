@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html as html_stdlib
 import json
 import math
 from pathlib import Path
@@ -9,6 +10,8 @@ from ..backtest.results_cache import ResultsCache
 
 if TYPE_CHECKING:
     pass
+
+PLOTLY_MIN_JS_FILENAME: str = "plotly.min.js"
 
 
 class HTMLReporter:
@@ -27,6 +30,57 @@ class HTMLReporter:
         self.inline_css = inline_css
 
     def export(self, best: list[object]):
+        def _esc(value: Any) -> str:
+            if value is None:
+                return ""
+            text: str
+            # `params` can be a dict; JSON is more readable than Python's repr.
+            if isinstance(value, dict):
+                try:
+                    text = json.dumps(value, sort_keys=True, ensure_ascii=True, default=str)
+                except Exception:
+                    text = str(value)
+            else:
+                text = str(value)
+            return html_stdlib.escape(text, quote=True)
+
+        def _json_for_inline_script(value: Any) -> str:
+            """JSON-safe for embedding directly in a <script> tag.
+
+            This prevents `</script>` breakouts by escaping `<` and also guards common HTML parser
+            edge cases (`>`, `&`). Values come from configs/strategies and may be user-controlled.
+            """
+
+            text = json.dumps(value, ensure_ascii=True)
+            return (
+                text.replace("<", "\\u003c")
+                .replace(">", "\\u003e")
+                .replace("&", "\\u0026")
+            )
+
+        def _write_plotly_asset() -> str:
+            """Write Plotly JS to disk and return relative script src.
+
+            Plotly is loaded from a CDN by default, but the offline HTML mode uses a local copy
+            written alongside the report so opening `report.html` works without internet access.
+            """
+
+            dest = self.out_dir / PLOTLY_MIN_JS_FILENAME
+            if dest.exists() and dest.stat().st_size > 0:
+                return PLOTLY_MIN_JS_FILENAME
+
+            try:
+                import importlib.resources as resources
+
+                src = resources.files("plotly").joinpath("package_data/plotly.min.js")
+                dest.write_bytes(src.read_bytes())
+            except Exception:
+                # Fallback: keep report functional without charts if we cannot materialize the asset.
+                # (The rest of the HTML is still useful.)
+                return "https://cdn.plot.ly/plotly-2.32.0.min.js"
+
+            return PLOTLY_MIN_JS_FILENAME
+
         # Load all rows for top-N sections from results cache
         all_rows = self.cache.list_by_run(self.run_id)
         # Fallback: if the current run reused cached results and didn't write
@@ -101,12 +155,12 @@ class HTMLReporter:
                 row = strategy_best[key]
                 rows_html.append(
                     "<tr>"
-                    f"<td class='px-3 py-2'>{row.get('symbol')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('strategy')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('timeframe')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('metric')}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('symbol'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('strategy'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('timeframe'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('metric'))}</td>"
                     f"<td class='px-3 py-2'>{row.get('metric_value', float('nan')):.4f}</td>"
-                    f"<td class='px-3 py-2'>{row.get('collection')}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('collection'))}</td>"
                     "</tr>"
                 )
             body = "\n".join(rows_html)
@@ -142,12 +196,12 @@ class HTMLReporter:
                 row = entry["row"]
                 rows_html.append(
                     "<tr>"
-                    f"<td class='px-3 py-2'>{metric_name.title()}</td>"
+                    f"<td class='px-3 py-2'>{_esc(metric_name.title())}</td>"
                     f"<td class='px-3 py-2'>{entry['value']:.4f}</td>"
-                    f"<td class='px-3 py-2'>{row.get('strategy')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('collection')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('symbol')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('timeframe')}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('strategy'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('collection'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('symbol'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('timeframe'))}</td>"
                     "</tr>"
                 )
             if not rows_html:
@@ -182,11 +236,11 @@ class HTMLReporter:
                 rows_html.append(
                     "<tr>"
                     f"<td class='px-3 py-2'>{idx}</td>"
-                    f"<td class='px-3 py-2'>{row.get('collection')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('symbol')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('strategy')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('timeframe')}</td>"
-                    f"<td class='px-3 py-2'>{row.get('metric')}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('collection'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('symbol'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('strategy'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('timeframe'))}</td>"
+                    f"<td class='px-3 py-2'>{_esc(row.get('metric'))}</td>"
                     f"<td class='px-3 py-2'>{row.get('metric_value', float('nan')):.4f}</td>"
                     "</tr>"
                 )
@@ -245,7 +299,7 @@ class HTMLReporter:
             )
 
         scatter_section = ""
-        chart_json = json.dumps(chart_data)
+        chart_json = _json_for_inline_script(chart_data)
         if chart_data:
             scatter_section = """
             <section class='p-4 rounded-lg bg-slate-800 text-slate-100 shadow'>
@@ -273,7 +327,7 @@ class HTMLReporter:
                 }
             )
 
-        detail_json = json.dumps(detail_records)
+        detail_json = _json_for_inline_script(detail_records)
 
         detail_section = ""
         if detail_records:
@@ -309,13 +363,13 @@ class HTMLReporter:
             return f"""
             <div class='p-4 rounded-lg bg-slate-800 text-slate-100 shadow'>
                 <div class='flex justify-between items-baseline'>
-                    <h3 class='text-lg font-semibold'>{row.get("collection", "")} / {row.get("symbol", "")}</h3>
-                    <span class='text-xs px-2 py-1 rounded bg-slate-700'>{row.get("timeframe", "")}</span>
+                    <h3 class='text-lg font-semibold'>{_esc(row.get("collection", ""))} / {_esc(row.get("symbol", ""))}</h3>
+                    <span class='text-xs px-2 py-1 rounded bg-slate-700'>{_esc(row.get("timeframe", ""))}</span>
                 </div>
                 <div class='mt-2 text-sm'>
-                    <div><span class='font-semibold'>Strategy:</span> {row.get("strategy", "")}</div>
-                    <div><span class='font-semibold'>Metric:</span> {row.get("metric", "")} = {float(row.get("metric_value", float("nan"))):.6f}</div>
-                    <div><span class='font-semibold'>Params:</span> <code class='text-xs'>{row.get("params", {})}</code></div>
+                    <div><span class='font-semibold'>Strategy:</span> {_esc(row.get("strategy", ""))}</div>
+                    <div><span class='font-semibold'>Metric:</span> {_esc(row.get("metric", ""))} = {float(row.get("metric_value", float("nan"))):.6f}</div>
+                    <div><span class='font-semibold'>Params:</span> <code class='text-xs'>{_esc(row.get("params", {}))}</code></div>
                 </div>
                 <div class='mt-3 grid grid-cols-2 gap-2 text-sm'>
                     <div>Sharpe: {float(stats.get("sharpe", float("nan"))):.4f}</div>
@@ -333,8 +387,8 @@ class HTMLReporter:
         def table_for_topn(rows: list[dict[str, Any]]) -> str:
             rows = sorted(rows, key=lambda x: x["metric_value"], reverse=True)[: self.top_n]
             body = "\n".join(
-                f"<tr><td>{r['timeframe']}</td><td>{r['strategy']}</td><td>{r['metric']}</td><td>{r['metric_value']:.6f}</td>"
-                f"<td><code class='text-xs'>{r['params']}</code></td>"
+                f"<tr><td>{_esc(r['timeframe'])}</td><td>{_esc(r['strategy'])}</td><td>{_esc(r['metric'])}</td><td>{r['metric_value']:.6f}</td>"
+                f"<td><code class='text-xs'>{_esc(r['params'])}</code></td>"
                 f"<td>{r['stats'].get('sharpe', float('nan')):.4f}</td>"
                 f"<td>{r['stats'].get('sortino', float('nan')):.4f}</td>"
                 f"<td>{r['stats'].get('omega', float('nan')):.4f}</td>"
@@ -382,6 +436,56 @@ class HTMLReporter:
                 "<section class='mb-6'>" + card_for_row(top) + table_for_topn(rows) + "</section>"
             )
 
+        plotly_cdn_sri = (
+            "sha384-7TVmlZWH60iKX5Uk7lSvQhjtcgw2tkFjuwLcXoRSR4zXTyWFJRm9aPAguMh7CIra"
+        )
+        plotly_src = _write_plotly_asset() if self.inline_css else "https://cdn.plot.ly/plotly-2.32.0.min.js"
+        if plotly_src.startswith("http"):
+            plotly_tag = (
+                f'<script src="{plotly_src}" integrity="{plotly_cdn_sri}" '
+                'crossorigin="anonymous" referrerpolicy="no-referrer"></script>'
+            )
+        else:
+            plotly_tag = f'<script src="{plotly_src}"></script>'
+
+        head_assets = ""
+        if self.inline_css:
+            css_inline = (
+                ":root{--bg:#020617;--panel:#0f172a;--text:#e2e8f0;--muted:#94a3b8} "
+                "body{background:var(--bg);color:var(--text);} "
+                ".container{max-width:72rem;margin:0 auto;padding:1.5rem} "
+                ".btn{padding:.25rem .75rem;border-radius:.375rem;background:#1e293b;color:#e2e8f0} "
+                ".grid{display:grid;gap:1rem} "
+                ".card{padding:1rem;border-radius:.75rem;background:var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.3)} "
+                ".badge{font-size:.75rem;padding:.1rem .5rem;border-radius:.25rem;background:#1e293b} "
+                ".space-y-6>*+*{margin-top:1.5rem} "
+                ".summary-section{margin-bottom:1.5rem} "
+                ".hidden{display:none} "
+                ".detail-header{display:flex;justify-content:space-between;align-items:flex-end;gap:1.5rem;flex-wrap:wrap} "
+                ".detail-control{display:flex;flex-direction:column;gap:.4rem;min-width:220px} "
+                ".detail-control label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8} "
+                ".detail-control select{background:#1e293b;border:1px solid rgba(148,163,184,.35);border-radius:.5rem;padding:.5rem .75rem;color:#e2e8f0} "
+                ".detail-charts{margin-top:1.5rem} "
+                ".trade-table{overflow-x:auto} "
+                ".trade-table table{width:100%;border-collapse:collapse;font-size:.8rem} "
+                ".trade-table thead{background:rgba(148,163,184,.1);text-transform:uppercase;letter-spacing:.06em;color:#94a3b8} "
+                ".trade-table th,.trade-table td{padding:.4rem .55rem;text-align:left;border-bottom:1px solid rgba(148,163,184,.2)} "
+                "table{width:100%;font-size:.875rem} thead{background:#334155;color:#cbd5e1} "
+                "th,td{padding:.5rem .75rem;text-align:left} code{font-family:ui-monospace,Menlo,Monaco,Consolas,monospace}"
+            )
+            head_assets = f"<style>{css_inline}</style>"
+        else:
+            # Tailwind is convenient for rich reports, but requires internet. Users who want a fully
+            # offline report can pass `--inline-css`.
+            head_assets = (
+                '<script src="https://cdn.tailwindcss.com/3.4.17" '
+                'integrity="sha384-igm5BeiBt36UU4gqwWS7imYmelpTsZlQ45FZf+XBn9MuJbn4nQr7yx1yFydocC/K" '
+                'crossorigin="anonymous" referrerpolicy="no-referrer"></script>\n'
+                "  <script>\n"
+                "    tailwind.config = { darkMode: 'class' };\n"
+                "  </script>"
+            )
+
         html = f"""
 <!DOCTYPE html>
 <html lang="en" class="dark">
@@ -389,10 +493,7 @@ class HTMLReporter:
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Backtest Report</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {{ darkMode: 'class' }};
-  </script>
+  {head_assets}
   <style>
     body {{ background-color: rgb(2 6 23); }}
     .hidden {{ display: none; }}
@@ -423,7 +524,7 @@ class HTMLReporter:
     </div>
   </div>
 </body>
-<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+{plotly_tag}
 <script>
   (function() {{
     const scatterData = {chart_json};
@@ -431,7 +532,7 @@ class HTMLReporter:
       const trace = {{
         x: scatterData.map(r => r.metric_value),
         y: scatterData.map(r => r.sharpe),
-        text: scatterData.map(r => `${{r.collection}}/${{r.symbol}} • ${{r.strategy}} (${{r.timeframe}})`),
+        text: scatterData.map(r => `${{escapeHtml(r.collection)}}/${{escapeHtml(r.symbol)}} • ${{escapeHtml(r.strategy)}} (${{escapeHtml(r.timeframe)}})`),
         mode: 'markers',
         hovertemplate: '%{{text}}<br>Metric: %{{x:.4f}}<br>Sharpe: %{{y:.4f}}<extra></extra>',
         marker: {{
@@ -457,6 +558,15 @@ class HTMLReporter:
     const detailEmpty = document.getElementById('detail-empty');
     const detailCharts = document.getElementById('detail-charts');
     const tradeTableContainer = document.getElementById('trade-table-container');
+
+    function escapeHtml(value) {{
+      return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }}
 
     function detailLabel(entry) {{
       if (!entry) return '—';
@@ -484,10 +594,10 @@ class HTMLReporter:
         tradeTableContainer.innerHTML = '<p class="text-slate-400 text-sm">No trades captured for this result.</p>';
         return;
       }}
-      const headCells = headers.map(h => `<th>${{h}}</th>`).join('');
+      const headCells = headers.map(h => `<th>${{escapeHtml(h)}}</th>`).join('');
       const limit = Math.min(trades.length, 50);
       const bodyRows = trades.slice(0, 50).map(row => {{
-        const cells = headers.map(h => `<td>${{row[h] ?? ''}}</td>`).join('');
+        const cells = headers.map(h => `<td>${{escapeHtml(row[h] ?? '')}}</td>`).join('');
         return `<tr>${{cells}}</tr>`;
       }}).join('');
       tradeTableContainer.innerHTML = `
@@ -564,7 +674,7 @@ class HTMLReporter:
       const options = detailData.map((entry, idx) => {{
         const label = detailLabel(entry) || `Result ${idx + 1}`;
         const selected = idx === 0 ? ' selected' : '';
-        return `<option value="${{entry.id}}"${{selected}}>${{label}}</option>`;
+        return `<option value="${{escapeHtml(entry.id)}}"${{selected}}>${{escapeHtml(label)}}</option>`;
       }}).join('');
       detailSelector.innerHTML = options;
       detailSelector.disabled = false;
@@ -588,34 +698,6 @@ class HTMLReporter:
         """
 
         if self.inline_css:
-            css_inline = (
-                ":root{--bg:#020617;--panel:#0f172a;--text:#e2e8f0;--muted:#94a3b8} "
-                "body{background:var(--bg);color:var(--text);} "
-                ".container{max-width:72rem;margin:0 auto;padding:1.5rem} "
-                ".btn{padding:.25rem .75rem;border-radius:.375rem;background:#1e293b;color:#e2e8f0} "
-                ".grid{display:grid;gap:1rem} "
-                ".card{padding:1rem;border-radius:.75rem;background:var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.3)} "
-                ".badge{font-size:.75rem;padding:.1rem .5rem;border-radius:.25rem;background:#1e293b} "
-                ".space-y-6>*+*{margin-top:1.5rem} "
-                ".summary-section{margin-bottom:1.5rem} "
-                ".hidden{display:none} "
-                ".detail-header{display:flex;justify-content:space-between;align-items:flex-end;gap:1.5rem;flex-wrap:wrap} "
-                ".detail-control{display:flex;flex-direction:column;gap:.4rem;min-width:220px} "
-                ".detail-control label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8} "
-                ".detail-control select{background:#1e293b;border:1px solid rgba(148,163,184,.35);border-radius:.5rem;padding:.5rem .75rem;color:#e2e8f0} "
-                ".detail-charts{margin-top:1.5rem} "
-                ".trade-table{overflow-x:auto} "
-                ".trade-table table{width:100%;border-collapse:collapse;font-size:.8rem} "
-                ".trade-table thead{background:rgba(148,163,184,.1);text-transform:uppercase;letter-spacing:.06em;color:#94a3b8} "
-                ".trade-table th,.trade-table td{padding:.4rem .55rem;text-align:left;border-bottom:1px solid rgba(148,163,184,.2)} "
-                "table{width:100%;font-size:.875rem} thead{background:#334155;color:#cbd5e1} "
-                "th,td{padding:.5rem .75rem;text-align:left} code{font-family:ui-monospace,Menlo,Monaco,Consolas,monospace}"
-            )
-            html = html.replace(
-                '<script src="https://cdn.tailwindcss.com"></script>',
-                f"<style>{css_inline}</style>",
-            )
-            html = html.replace("tailwind.config = { darkMode: 'class' };", "")
             html = html.replace("max-w-6xl mx-auto p-6", "container")
             html = html.replace(
                 "px-3 py-1 rounded bg-slate-800 text-slate-200 hover:bg-slate-700", "btn"

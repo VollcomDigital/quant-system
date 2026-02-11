@@ -42,6 +42,7 @@ HIGHLIGHT_METRICS: tuple[str, ...] = (
 
 DOWNLOAD_FILE_CANDIDATES: tuple[str, ...] = (
     "report.html",
+    "plotly.min.js",
     "summary.json",
     "summary.csv",
     "all_results.csv",
