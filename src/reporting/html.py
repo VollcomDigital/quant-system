@@ -467,7 +467,9 @@ class HTMLReporter:
             # Tailwind is convenient for rich reports, but requires internet. Users who want a fully
             # offline report can pass `--inline-css`.
             head_assets = (
-                '<script src="https://cdn.tailwindcss.com" referrerpolicy="no-referrer"></script>\n'
+                '<script src="https://cdn.tailwindcss.com" '
+                'integrity="sha384-igm5BeiBt36UU4gqwWS7imYmelpTsZlQ45FZf+XBn9MuJbn4nQr7yx1yFydocC/K" '
+                'crossorigin="anonymous" referrerpolicy="no-referrer"></script>\n'
                 "  <script>\n"
                 "    tailwind.config = { darkMode: 'class' };\n"
                 "  </script>"
