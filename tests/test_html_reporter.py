@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from src.backtest.runner import BestResult
@@ -80,6 +81,12 @@ def test_html_reporter_fallback_from_best_results(tmp_path: Path):
 
     output = (tmp_path / "report.html").read_text()
     assert "Backtest Report" in output
+    # SRI on a cross-origin <script> requires crossorigin="anonymous" (otherwise some browsers
+    # fetch in no-cors mode and block integrity validation, breaking Tailwind styling).
+    tailwind_match = re.search(r'<script[^>]+src="https://cdn\\.tailwindcss\\.com[^"]*"[^>]*>', output)
+    assert tailwind_match, "Expected Tailwind CDN <script> tag in non-inline HTML report"
+    assert 'integrity="' in tailwind_match.group(0)
+    assert 'crossorigin="anonymous"' in tailwind_match.group(0)
 
 
 def test_html_reporter_escapes_user_content(tmp_path: Path):

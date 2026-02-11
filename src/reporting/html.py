@@ -471,7 +471,7 @@ class HTMLReporter:
             head_assets = (
                 '<script src="https://cdn.tailwindcss.com/3.4.17" '
                 'integrity="sha384-igm5BeiBt36UU4gqwWS7imYmelpTsZlQ45FZf+XBn9MuJbn4nQr7yx1yFydocC/K" '
-                'referrerpolicy="no-referrer"></script>\n'
+                'crossorigin="anonymous" referrerpolicy="no-referrer"></script>\n'
                 "  <script>\n"
                 "    tailwind.config = { darkMode: 'class' };\n"
                 "  </script>"
