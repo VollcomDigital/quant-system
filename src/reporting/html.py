@@ -54,11 +54,9 @@ class HTMLReporter:
             written alongside the report so opening `report.html` works without internet access.
             """
 
-            assets_dir = self.out_dir / "assets"
-            assets_dir.mkdir(parents=True, exist_ok=True)
-            dest = assets_dir / "plotly.min.js"
+            dest = self.out_dir / "plotly.min.js"
             if dest.exists() and dest.stat().st_size > 0:
-                return "assets/plotly.min.js"
+                return "plotly.min.js"
 
             try:
                 import importlib.resources as resources
@@ -70,7 +68,7 @@ class HTMLReporter:
                 # (The rest of the HTML is still useful.)
                 return "https://cdn.plot.ly/plotly-2.32.0.min.js"
 
-            return "assets/plotly.min.js"
+            return "plotly.min.js"
 
         # Load all rows for top-N sections from results cache
         all_rows = self.cache.list_by_run(self.run_id)
