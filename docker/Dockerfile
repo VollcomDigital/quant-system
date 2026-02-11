@@ -27,7 +27,7 @@ WORKDIR /app
 
 COPY pyproject.toml poetry.lock ./
 # Retry install to mitigate transient PyPI timeouts in CI/builders
-RUN set -euo pipefail; \
+RUN set -eu; \
     poetry --version; \
     for i in 1 2 3; do \
       if poetry install --no-root --no-interaction --no-ansi; then \
@@ -48,4 +48,4 @@ RUN mkdir -p /app/.cache /app/reports /tmp/poetry-cache \
 
 USER app
 
-CMD ["bash", "-lc", "poetry run python -m src.main --help"]
+CMD ["python", "-m", "src.main", "--help"]
