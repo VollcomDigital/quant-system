@@ -10,7 +10,6 @@ services:
       # Override STRATEGIES_PATH or DATA_CACHE_DIR via env if needed
       - STRATEGIES_PATH=/ext/strategies
       - DATA_CACHE_DIR=/app/.cache/data
-      - PATH=/root/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
     env_file:
       - .env
     volumes:

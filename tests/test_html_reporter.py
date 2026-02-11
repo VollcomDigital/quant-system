@@ -57,6 +57,9 @@ def test_html_reporter_exports_inline_css(tmp_path: Path):
     assert "Metric vs. Sharpe" in output
     assert "Equity & Drawdown Explorer" in output
     assert "https://cdn.tailwindcss.com" not in output
+    assert "https://cdn.plot.ly/plotly-2.32.0.min.js" not in output
+    assert 'src="assets/plotly.min.js"' in output
+    assert (tmp_path / "assets" / "plotly.min.js").exists()
 
 
 def test_html_reporter_fallback_from_best_results(tmp_path: Path):

@@ -47,6 +47,31 @@ class HTMLReporter:
                 .replace("&", "\\u0026")
             )
 
+        def _write_plotly_asset() -> str:
+            """Write Plotly JS to disk and return relative script src.
+
+            Plotly is loaded from a CDN by default, but the offline HTML mode uses a local copy
+            written alongside the report so opening `report.html` works without internet access.
+            """
+
+            assets_dir = self.out_dir / "assets"
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            dest = assets_dir / "plotly.min.js"
+            if dest.exists() and dest.stat().st_size > 0:
+                return "assets/plotly.min.js"
+
+            try:
+                import importlib.resources as resources
+
+                src = resources.files("plotly").joinpath("package_data/plotly.min.js")
+                dest.write_bytes(src.read_bytes())
+            except Exception:
+                # Fallback: keep report functional without charts if we cannot materialize the asset.
+                # (The rest of the HTML is still useful.)
+                return "https://cdn.plot.ly/plotly-2.32.0.min.js"
+
+            return "assets/plotly.min.js"
+
         # Load all rows for top-N sections from results cache
         all_rows = self.cache.list_by_run(self.run_id)
         # Fallback: if the current run reused cached results and didn't write
@@ -402,6 +427,54 @@ class HTMLReporter:
                 "<section class='mb-6'>" + card_for_row(top) + table_for_topn(rows) + "</section>"
             )
 
+        plotly_cdn_sri = (
+            "sha384-7TVmlZWH60iKX5Uk7lSvQhjtcgw2tkFjuwLcXoRSR4zXTyWFJRm9aPAguMh7CIra"
+        )
+        plotly_src = _write_plotly_asset() if self.inline_css else "https://cdn.plot.ly/plotly-2.32.0.min.js"
+        if plotly_src.startswith("http"):
+            plotly_tag = (
+                f'<script src="{plotly_src}" integrity="{plotly_cdn_sri}" '
+                'crossorigin="anonymous" referrerpolicy="no-referrer"></script>'
+            )
+        else:
+            plotly_tag = f'<script src="{plotly_src}"></script>'
+
+        head_assets = ""
+        if self.inline_css:
+            css_inline = (
+                ":root{--bg:#020617;--panel:#0f172a;--text:#e2e8f0;--muted:#94a3b8} "
+                "body{background:var(--bg);color:var(--text);} "
+                ".container{max-width:72rem;margin:0 auto;padding:1.5rem} "
+                ".btn{padding:.25rem .75rem;border-radius:.375rem;background:#1e293b;color:#e2e8f0} "
+                ".grid{display:grid;gap:1rem} "
+                ".card{padding:1rem;border-radius:.75rem;background:var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.3)} "
+                ".badge{font-size:.75rem;padding:.1rem .5rem;border-radius:.25rem;background:#1e293b} "
+                ".space-y-6>*+*{margin-top:1.5rem} "
+                ".summary-section{margin-bottom:1.5rem} "
+                ".hidden{display:none} "
+                ".detail-header{display:flex;justify-content:space-between;align-items:flex-end;gap:1.5rem;flex-wrap:wrap} "
+                ".detail-control{display:flex;flex-direction:column;gap:.4rem;min-width:220px} "
+                ".detail-control label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8} "
+                ".detail-control select{background:#1e293b;border:1px solid rgba(148,163,184,.35);border-radius:.5rem;padding:.5rem .75rem;color:#e2e8f0} "
+                ".detail-charts{margin-top:1.5rem} "
+                ".trade-table{overflow-x:auto} "
+                ".trade-table table{width:100%;border-collapse:collapse;font-size:.8rem} "
+                ".trade-table thead{background:rgba(148,163,184,.1);text-transform:uppercase;letter-spacing:.06em;color:#94a3b8} "
+                ".trade-table th,.trade-table td{padding:.4rem .55rem;text-align:left;border-bottom:1px solid rgba(148,163,184,.2)} "
+                "table{width:100%;font-size:.875rem} thead{background:#334155;color:#cbd5e1} "
+                "th,td{padding:.5rem .75rem;text-align:left} code{font-family:ui-monospace,Menlo,Monaco,Consolas,monospace}"
+            )
+            head_assets = f"<style>{css_inline}</style>"
+        else:
+            # Tailwind is convenient for rich reports, but requires internet. Users who want a fully
+            # offline report can pass `--inline-css`.
+            head_assets = (
+                '<script src="https://cdn.tailwindcss.com" referrerpolicy="no-referrer"></script>\n'
+                "  <script>\n"
+                "    tailwind.config = { darkMode: 'class' };\n"
+                "  </script>"
+            )
+
         html = f"""
 <!DOCTYPE html>
 <html lang="en" class="dark">
@@ -409,10 +482,7 @@ class HTMLReporter:
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Backtest Report</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {{ darkMode: 'class' }};
-  </script>
+  {head_assets}
   <style>
     body {{ background-color: rgb(2 6 23); }}
     .hidden {{ display: none; }}
@@ -443,7 +513,7 @@ class HTMLReporter:
     </div>
   </div>
 </body>
-<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+{plotly_tag}
 <script>
   (function() {{
     const scatterData = {chart_json};
@@ -617,34 +687,6 @@ class HTMLReporter:
         """
 
         if self.inline_css:
-            css_inline = (
-                ":root{--bg:#020617;--panel:#0f172a;--text:#e2e8f0;--muted:#94a3b8} "
-                "body{background:var(--bg);color:var(--text);} "
-                ".container{max-width:72rem;margin:0 auto;padding:1.5rem} "
-                ".btn{padding:.25rem .75rem;border-radius:.375rem;background:#1e293b;color:#e2e8f0} "
-                ".grid{display:grid;gap:1rem} "
-                ".card{padding:1rem;border-radius:.75rem;background:var(--panel);box-shadow:0 1px 2px rgba(0,0,0,.3)} "
-                ".badge{font-size:.75rem;padding:.1rem .5rem;border-radius:.25rem;background:#1e293b} "
-                ".space-y-6>*+*{margin-top:1.5rem} "
-                ".summary-section{margin-bottom:1.5rem} "
-                ".hidden{display:none} "
-                ".detail-header{display:flex;justify-content:space-between;align-items:flex-end;gap:1.5rem;flex-wrap:wrap} "
-                ".detail-control{display:flex;flex-direction:column;gap:.4rem;min-width:220px} "
-                ".detail-control label{font-size:.75rem;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8} "
-                ".detail-control select{background:#1e293b;border:1px solid rgba(148,163,184,.35);border-radius:.5rem;padding:.5rem .75rem;color:#e2e8f0} "
-                ".detail-charts{margin-top:1.5rem} "
-                ".trade-table{overflow-x:auto} "
-                ".trade-table table{width:100%;border-collapse:collapse;font-size:.8rem} "
-                ".trade-table thead{background:rgba(148,163,184,.1);text-transform:uppercase;letter-spacing:.06em;color:#94a3b8} "
-                ".trade-table th,.trade-table td{padding:.4rem .55rem;text-align:left;border-bottom:1px solid rgba(148,163,184,.2)} "
-                "table{width:100%;font-size:.875rem} thead{background:#334155;color:#cbd5e1} "
-                "th,td{padding:.5rem .75rem;text-align:left} code{font-family:ui-monospace,Menlo,Monaco,Consolas,monospace}"
-            )
-            html = html.replace(
-                '<script src="https://cdn.tailwindcss.com"></script>',
-                f"<style>{css_inline}</style>",
-            )
-            html = html.replace("tailwind.config = { darkMode: 'class' };", "")
             html = html.replace("max-w-6xl mx-auto p-6", "container")
             html = html.replace(
                 "px-3 py-1 rounded bg-slate-800 text-slate-200 hover:bg-slate-700", "btn"
