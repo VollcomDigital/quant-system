@@ -722,7 +722,7 @@ def clean_cache(
                 try:
                     if not file_path.resolve().is_relative_to(root):
                         continue
-                except Exception:
+                except OSError:
                     continue
                 if file_path.is_file():
                     candidate_files.append(file_path)
