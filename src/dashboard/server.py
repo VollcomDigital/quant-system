@@ -102,9 +102,6 @@ def create_app(reports_dir: Path) -> FastAPI:
     def _url_segment(value: Any) -> str:
         return quote(str(value), safe="")
 
-    def _file_url(path: Path) -> str:
-        return f"file://{quote(str(path), safe='/:')}"
-
     def _base_root() -> Path:
         return base_root if base_root is not None else root.resolve()
 

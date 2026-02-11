@@ -11,6 +11,8 @@ from ..backtest.results_cache import ResultsCache
 if TYPE_CHECKING:
     pass
 
+PLOTLY_MIN_JS_FILENAME: str = "plotly.min.js"
+
 
 class HTMLReporter:
     def __init__(
@@ -54,9 +56,9 @@ class HTMLReporter:
             written alongside the report so opening `report.html` works without internet access.
             """
 
-            dest = self.out_dir / "plotly.min.js"
+            dest = self.out_dir / PLOTLY_MIN_JS_FILENAME
             if dest.exists() and dest.stat().st_size > 0:
-                return "plotly.min.js"
+                return PLOTLY_MIN_JS_FILENAME
 
             try:
                 import importlib.resources as resources
@@ -68,7 +70,7 @@ class HTMLReporter:
                 # (The rest of the HTML is still useful.)
                 return "https://cdn.plot.ly/plotly-2.32.0.min.js"
 
-            return "plotly.min.js"
+            return PLOTLY_MIN_JS_FILENAME
 
         # Load all rows for top-N sections from results cache
         all_rows = self.cache.list_by_run(self.run_id)
