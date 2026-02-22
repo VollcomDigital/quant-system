@@ -50,6 +50,7 @@ class Config:
     engine: str = "pybroker"  # pybroker engine
     param_search: str = "grid"  # grid | optuna
     param_trials: int = 25
+    param_dof_multiplier: int = 100
     max_workers: int = 1
     asset_workers: int = 1
     param_workers: int = 1
@@ -127,6 +128,7 @@ def load_config(path: str | Path) -> Config:
         engine=str(raw.get("engine", "pybroker")).lower(),
         param_search=str(raw.get("param_search", raw.get("param_optimizer", "grid"))).lower(),
         param_trials=int(raw.get("param_trials", raw.get("opt_trials", 25))),
+        param_dof_multiplier=int(raw.get("param_dof_multiplier", 100)),
         max_workers=int(raw.get("max_workers", raw.get("asset_workers", 1))),
         asset_workers=int(raw.get("asset_workers", raw.get("max_workers", 1))),
         param_workers=int(raw.get("param_workers", 1)),

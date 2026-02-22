@@ -514,6 +514,24 @@ class BacktestRunner:
                 else:
                     search_space[name] = options
 
+            n_params = len(search_space)
+            dof_multiplier = self.cfg.param_dof_multiplier
+            min_bars_for_optimization = max(2000, dof_multiplier * n_params)
+            if search_space and len(df) < min_bars_for_optimization:
+                self.logger.info(
+                    "skipping optimization due to insufficient bars",
+                    collection=col.name,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    bars=len(df),
+                    min_bars=min_bars_for_optimization,
+                    n_params=n_params,
+                    dof_multiplier=dof_multiplier,
+                    strategy=strat.name,
+                    search_method=search_method,
+                )
+                search_space = {}
+
             best_val = -np.inf
             best_params: dict[str, Any] | None = None
             best_stats: dict[str, Any] | None = None
