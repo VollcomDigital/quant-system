@@ -516,7 +516,8 @@ class BacktestRunner:
 
             n_params = len(search_space)
             dof_multiplier = self.cfg.param_dof_multiplier
-            min_bars_for_optimization = max(2000, dof_multiplier * n_params)
+            min_bars_floor = self.cfg.param_min_bars
+            min_bars_for_optimization = max(min_bars_floor, dof_multiplier * n_params)
             if search_space and len(df) < min_bars_for_optimization:
                 self.logger.info(
                     "skipping optimization due to insufficient bars",
@@ -527,6 +528,7 @@ class BacktestRunner:
                     min_bars=min_bars_for_optimization,
                     n_params=n_params,
                     dof_multiplier=dof_multiplier,
+                    min_bars_floor=min_bars_floor,
                     strategy=strat.name,
                     search_method=search_method,
                 )
