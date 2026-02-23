@@ -597,3 +597,116 @@ def test_run_all_skips_empty_frames(tmp_path, monkeypatch):
     results = runner.run_all()
     assert results == []
     assert not runner.results_cache.saved
+
+
+def test_run_all_skips_optimization_when_bars_below_min(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.param_dof_multiplier = 100
+    runner.cfg.param_min_bars = 2000
+    runner.cfg.param_search = "grid"
+
+    class _ShortSource:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            dates = pd.date_range("2024-01-01", periods=50, freq="D")
+            data = pd.DataFrame(
+                {
+                    "Open": [10] * len(dates),
+                    "High": [11] * len(dates),
+                    "Low": [9] * len(dates),
+                    "Close": [10.5] * len(dates),
+                    "Volume": [100] * len(dates),
+                },
+                index=dates,
+            )
+            return data
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _ShortSource())
+
+    eval_calls = {"count": 0}
+
+    def _fake_sim(self, *args, **kwargs):
+        eval_calls["count"] += 1
+        returns = pd.Series(
+            [0.01, -0.005, 0.02],
+            index=pd.date_range("2024-01-01", periods=3, freq="D"),
+        )
+        equity = (1 + returns.fillna(0.0)).cumprod()
+        stats = {
+            "sharpe": 1.0,
+            "sortino": 0.8,
+            "omega": 1.2,
+            "tail_ratio": 1.1,
+            "profit": 0.1,
+            "pain_index": 0.02,
+            "trades": 2,
+            "max_drawdown": -0.05,
+            "cagr": 0.12,
+            "calmar": -2.4,
+            "equity_curve": [],
+            "drawdown_curve": [],
+            "trades_log": [],
+        }
+        return returns, equity, stats
+
+    monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _fake_sim)
+
+    results = runner.run_all()
+    assert results
+    # Optimization should be skipped; only one evaluation should run.
+    assert eval_calls["count"] == 1
+
+
+def test_run_all_optimization_runs_when_min_bars_lowered(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.param_dof_multiplier = 1
+    runner.cfg.param_min_bars = 1
+    runner.cfg.param_search = "grid"
+
+    class _ShortSource:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            dates = pd.date_range("2024-01-01", periods=50, freq="D")
+            data = pd.DataFrame(
+                {
+                    "Open": [10] * len(dates),
+                    "High": [11] * len(dates),
+                    "Low": [9] * len(dates),
+                    "Close": [10.5] * len(dates),
+                    "Volume": [100] * len(dates),
+                },
+                index=dates,
+            )
+            return data
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _ShortSource())
+
+    eval_calls = {"count": 0}
+
+    def _fake_sim(self, *args, **kwargs):
+        eval_calls["count"] += 1
+        returns = pd.Series(
+            [0.01, -0.005, 0.02],
+            index=pd.date_range("2024-01-01", periods=3, freq="D"),
+        )
+        equity = (1 + returns.fillna(0.0)).cumprod()
+        stats = {
+            "sharpe": 1.0,
+            "sortino": 0.8,
+            "omega": 1.2,
+            "tail_ratio": 1.1,
+            "profit": 0.1,
+            "pain_index": 0.02,
+            "trades": 2,
+            "max_drawdown": -0.05,
+            "cagr": 0.12,
+            "calmar": -2.4,
+            "equity_curve": [],
+            "drawdown_curve": [],
+            "trades_log": [],
+        }
+        return returns, equity, stats
+
+    monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _fake_sim)
+
+    results = runner.run_all()
+    assert results
+    assert eval_calls["count"] >= 2

@@ -25,7 +25,7 @@ from ..data.twelvedata_source import TwelveDataSource
 from ..data.yfinance_source import YFinanceSource
 from ..strategies.base import BaseStrategy
 from ..strategies.registry import discover_external_strategies
-from ..utils.telemetry import get_logger, time_block
+from ..utils.telemetry import get_logger, log_json, time_block
 from .metrics import (
     omega_ratio,
     pain_index,
@@ -520,8 +520,11 @@ class BacktestRunner:
             min_bars_for_optimization = max(min_bars_floor, dof_multiplier * n_params)
             optimization_skip_reason = None
             if search_space and len(df) < min_bars_for_optimization:
-                self.logger.info(
-                    "skipping optimization due to insufficient bars",
+                optimization_skip_reason = "insufficient_bars_for_optimization"
+                log_json(
+                    self.logger,
+                    "optimization_skipped",
+                    reason=optimization_skip_reason,
                     collection=col.name,
                     symbol=symbol,
                     timeframe=timeframe,
@@ -533,7 +536,6 @@ class BacktestRunner:
                     strategy=strat.name,
                     search_method=search_method,
                 )
-                optimization_skip_reason = "insufficient_bars_for_optimization"
 
             best_val = -np.inf
             best_params: dict[str, Any] | None = None
