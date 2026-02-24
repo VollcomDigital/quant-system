@@ -597,3 +597,100 @@ def test_run_all_skips_empty_frames(tmp_path, monkeypatch):
     results = runner.run_all()
     assert results == []
     assert not runner.results_cache.saved
+
+
+def _make_ohlcv(periods: int) -> pd.DataFrame:
+    dates = pd.date_range("2024-01-01", periods=periods, freq="D")
+    return pd.DataFrame(
+        {
+            "Open": [10] * len(dates),
+            "High": [11] * len(dates),
+            "Low": [9] * len(dates),
+            "Close": [10.5] * len(dates),
+            "Volume": [100] * len(dates),
+        },
+        index=dates,
+    )
+
+
+def _patch_source_with_bars(monkeypatch, bars: int) -> None:
+    class _Source:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            return _make_ohlcv(bars)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
+
+
+def _patch_pybroker_simulation(monkeypatch) -> dict[str, int]:
+    eval_calls = {"count": 0}
+
+    def _fake_sim(self, *args, **kwargs):
+        eval_calls["count"] += 1
+        returns = pd.Series(
+            [0.01, -0.005, 0.02],
+            index=pd.date_range("2024-01-01", periods=3, freq="D"),
+        )
+        equity = (1 + returns.fillna(0.0)).cumprod()
+        stats = {
+            "sharpe": 1.0,
+            "sortino": 0.8,
+            "omega": 1.2,
+            "tail_ratio": 1.1,
+            "profit": 0.1,
+            "pain_index": 0.02,
+            "trades": 2,
+            "max_drawdown": -0.05,
+            "cagr": 0.12,
+            "calmar": -2.4,
+            "equity_curve": [],
+            "drawdown_curve": [],
+            "trades_log": [],
+        }
+        return returns, equity, stats
+
+    monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _fake_sim)
+    return eval_calls
+
+
+@pytest.mark.parametrize(
+    ("param_dof_multiplier", "param_min_bars", "bars", "expected_eval_calls", "expect_skip"),
+    [
+        (100, 2000, 50, 1, True),  # skip via min-bars floor
+        (60, 1, 50, 1, True),  # skip via DoF threshold
+        (1, 1, 50, 2, False),  # no guard, full grid evals
+        (50, 1, 50, 2, False),  # boundary: len(df) == required => no skip
+    ],
+    ids=["min_bars_floor_skip", "dof_skip", "no_guard", "dof_boundary_no_skip"],
+)
+def test_run_all_min_bars_and_dof_guard_behavior(
+    tmp_path,
+    monkeypatch,
+    param_dof_multiplier,
+    param_min_bars,
+    bars,
+    expected_eval_calls,
+    expect_skip,
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.param_dof_multiplier = param_dof_multiplier
+    runner.cfg.param_min_bars = param_min_bars
+    runner.cfg.param_search = "grid"
+
+    _patch_source_with_bars(monkeypatch, bars)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results
+    assert eval_calls["count"] == expected_eval_calls
+
+    optimization = results[0].stats.get("optimization")
+    if expect_skip:
+        assert optimization is not None
+        assert optimization["skipped"] is True
+        assert optimization["reason"] == "insufficient_bars_for_optimization"
+        # search_space has one dimension (`window`) in _make_runner, so n_params=1.
+        expected_min_bars = max(runner.cfg.param_min_bars, runner.cfg.param_dof_multiplier * 1)
+        assert optimization["min_bars_required"] == expected_min_bars
+        assert optimization["bars_available"] == bars
+    else:
+        assert optimization is None
