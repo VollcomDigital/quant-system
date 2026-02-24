@@ -17,6 +17,7 @@ This repository provides a Docker-based, cache-aware backtesting system to syste
 - Dockerized runtime for reproducibility
 - Results cache (SQLite) to resume and skip already-computed grids
 - Structured logging and timing metrics per data fetch and grid search
+- Reliability guardrails: optimization auto-skips when bar history is insufficient (min-bars/DoF thresholds)
 
 ## Requirements
 
