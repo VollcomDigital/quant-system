@@ -25,7 +25,7 @@ from ..data.twelvedata_source import TwelveDataSource
 from ..data.yfinance_source import YFinanceSource
 from ..strategies.base import BaseStrategy
 from ..strategies.registry import discover_external_strategies
-from ..utils.telemetry import get_logger, time_block
+from ..utils.telemetry import get_logger, log_json, time_block
 from .metrics import (
     omega_ratio,
     pain_index,
@@ -514,6 +514,29 @@ class BacktestRunner:
                 else:
                     search_space[name] = options
 
+            n_params = len(search_space)
+            dof_multiplier = self.cfg.param_dof_multiplier
+            min_bars_floor = self.cfg.param_min_bars
+            min_bars_for_optimization = max(min_bars_floor, dof_multiplier * n_params)
+            optimization_skip_reason = None
+            if search_space and len(df) < min_bars_for_optimization:
+                optimization_skip_reason = "insufficient_bars_for_optimization"
+                log_json(
+                    self.logger,
+                    "optimization_skipped",
+                    reason=optimization_skip_reason,
+                    collection=col.name,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    bars=len(df),
+                    min_bars=min_bars_for_optimization,
+                    n_params=n_params,
+                    dof_multiplier=dof_multiplier,
+                    min_bars_floor=min_bars_floor,
+                    strategy=strat.name,
+                    search_method=search_method,
+                )
+
             best_val = -np.inf
             best_params: dict[str, Any] | None = None
             best_stats: dict[str, Any] | None = None
@@ -623,6 +646,14 @@ class BacktestRunner:
                 if sim_result is None:
                     return float("-inf")
                 returns, equity_curve, stats = sim_result
+                if optimization_skip_reason:
+                    stats = dict(stats)
+                    stats["optimization"] = {
+                        "skipped": True,
+                        "reason": optimization_skip_reason,
+                        "min_bars_required": min_bars_for_optimization,
+                        "bars_available": len(df_local),
+                    }
                 self.metrics["param_evals"] += 1
                 metric_val = self._evaluate_metric(
                     self.cfg.metric, returns, equity_curve, bars_per_year_local
@@ -651,7 +682,7 @@ class BacktestRunner:
 
             space_items = list(search_space.items())
 
-            if search_space:
+            if search_space and not optimization_skip_reason:
                 if search_method == "optuna":
                     try:
                         import optuna
