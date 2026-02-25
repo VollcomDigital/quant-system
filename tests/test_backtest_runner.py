@@ -428,6 +428,8 @@ def test_run_all_uses_cached_results(tmp_path, monkeypatch):
 
 def test_run_all_handles_failed_and_nan_metrics(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.param_min_bars = 1
+    runner.cfg.param_dof_multiplier = 1
     call_state = {"count": 0}
 
     def _sim_with_none(self, *args, **kwargs):
