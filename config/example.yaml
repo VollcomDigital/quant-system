@@ -10,6 +10,18 @@ slippage: 0.0005
 risk_free_rate: 0.0
 cache_dir: .cache/data
 
+# ---------------------------------------------------------------------------
+# Reliability thresholds (global defaults, overridable per collection).
+# These gate execution: collections or symbols that fail a check are skipped
+# with a structured log message.  See VD-3919 / VD-4344.
+# ---------------------------------------------------------------------------
+reliability:
+  min_data_points: 2000         # minimum OHLC bars per symbol before any backtest
+  min_continuity_score: 0.999   # 0.0–1.0; 0.999 ≈ max 0.1 % missing bars
+  max_gap_percentage: 0.001     # fraction; 0.001 = 0.1 %
+  max_kurtosis: 10.0            # excess kurtosis cap on log-returns
+  require_verified: true        # skip collections with is_verified: false
+
 collections:
   # Stocks (large-cap growth)
   - name: stocks_large_cap_growth
@@ -17,6 +29,10 @@ collections:
     symbols: ["CNDX.L", "AAPL", "MSFT", "NVDA"]
     fees: 0.0005  # approx IBKR
     slippage: 0.0005
+    reliability:
+      is_verified: true
+      min_data_points: 2000
+      last_updated: "2026-02-25T00:00:00"
 
   # Bonds (global aggregate)
   - name: bonds_global
@@ -24,6 +40,10 @@ collections:
     symbols: ["AGGH.L", "VAGP.L", "IGLA.L"]
     fees: 0.0005
     slippage: 0.0005
+    reliability:
+      is_verified: true
+      min_data_points: 1000     # bonds have shorter liquid histories
+      min_continuity_score: 0.995
 
   # Commodities (ETC mix)
   - name: commodities
@@ -32,7 +52,7 @@ collections:
     fees: 0.0005
     slippage: 0.0005
 
-  # Crypto (Binance via ccxt)
+  # Crypto (Binance via ccxt) — 24/7 market, stricter continuity expected
   - name: crypto
     source: binance
     exchange: binance
@@ -40,6 +60,10 @@ collections:
     symbols: ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT"]
     fees: 0.0006  # approx Bybit/Binance taker
     slippage: 0.0005
+    reliability:
+      is_verified: true
+      min_data_points: 3000
+      min_continuity_score: 0.9999  # stricter for 24/7 market
 
 # Choose timeframes compatible across sources for full history
 timeframes: ["1d"]

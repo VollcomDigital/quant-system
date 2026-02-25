@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .reliability.schema import CollectionReliability, ReliabilityThresholds
 
 
 @dataclass
@@ -25,6 +27,7 @@ class CollectionConfig:
     quote: str | None = None  # for ccxt symbols e.g., USDT
     fees: float | None = None
     slippage: float | None = None
+    reliability: CollectionReliability = field(default_factory=CollectionReliability)
 
 
 @dataclass
@@ -61,6 +64,39 @@ class Config:
     risk_free_rate: float = 0.0
     cache_dir: str = ".cache/data"
     notifications: NotificationsConfig | None = None
+    reliability: ReliabilityThresholds = field(default_factory=ReliabilityThresholds)
+
+
+def _parse_collection_reliability(
+    raw: dict[str, Any] | None,
+) -> CollectionReliability:
+    """Parse the optional ``reliability:`` block inside a collection entry.
+
+    Args:
+        raw: Raw dict from YAML or ``None``.
+
+    Returns:
+        Validated ``CollectionReliability`` model with defaults for missing keys.
+    """
+    if raw is None:
+        return CollectionReliability()
+    return CollectionReliability.model_validate(raw)
+
+
+def _parse_reliability_thresholds(
+    raw: dict[str, Any] | None,
+) -> ReliabilityThresholds:
+    """Parse the optional root-level ``reliability:`` block.
+
+    Args:
+        raw: Raw dict from YAML or ``None``.
+
+    Returns:
+        Validated ``ReliabilityThresholds`` model with defaults for missing keys.
+    """
+    if raw is None:
+        return ReliabilityThresholds()
+    return ReliabilityThresholds.model_validate(raw)
 
 
 def load_config(path: str | Path) -> Config:
@@ -91,6 +127,7 @@ def load_config(path: str | Path) -> Config:
             quote=c.get("quote"),
             fees=c.get("fees"),
             slippage=c.get("slippage"),
+            reliability=_parse_collection_reliability(c.get("reliability")),
         )
         for c in raw["collections"]
     ]
@@ -121,6 +158,8 @@ def load_config(path: str | Path) -> Config:
         if slack_cfg is not None:
             notifications_cfg = NotificationsConfig(slack=slack_cfg)
 
+    reliability_cfg = _parse_reliability_thresholds(raw.get("reliability"))
+
     cfg = Config(
         collections=collections,
         timeframes=raw["timeframes"],
@@ -140,5 +179,6 @@ def load_config(path: str | Path) -> Config:
         risk_free_rate=float(raw.get("risk_free_rate", 0.0)),
         cache_dir=raw.get("cache_dir", ".cache/data"),
         notifications=notifications_cfg,
+        reliability=reliability_cfg,
     )
     return cfg
