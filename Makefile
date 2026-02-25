@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 
-.PHONY: build build-nc sh run run-stocks-dividend run-stocks-large-cap-value run-stocks-large-cap-growth run-stocks-mid-cap run-stocks-small-cap run-stocks-international run-stocks-emerging run-bonds-global run-bonds-high-yield run-bonds-corporate run-bonds-municipal run-bonds-tips run-bonds-us-treasuries run-crypto run-commodities list-strategies lock lock-update discover-crypto manifest-status dashboard
+.PHONY: build build-nc sh run run-stocks-dividend run-stocks-large-cap-value run-stocks-large-cap-growth run-stocks-mid-cap run-stocks-small-cap run-stocks-international run-stocks-emerging run-bonds-global run-bonds-high-yield run-bonds-corporate run-bonds-municipal run-bonds-tips run-bonds-us-treasuries run-crypto run-commodities list-strategies lock lock-update discover-crypto manifest-status dashboard tests
 
 build:
 	docker-compose build
@@ -71,6 +71,9 @@ manifest-status:
 
 dashboard:
 	docker-compose run --rm --service-ports app bash -lc "poetry install && poetry run python -m src.main dashboard --reports-dir reports --host 0.0.0.0 --port 8000"
+
+tests:
+	docker-compose run --rm app bash -lc "poetry run pytest -q -vv"
 
 lock:
 	docker-compose run --rm app bash -lc "poetry lock --no-update && git add poetry.lock"

@@ -160,6 +160,83 @@ class BacktestRunner:
         return 252
 
     @staticmethod
+    def _timeframe_to_timedelta(timeframe: str) -> pd.Timedelta | None:
+        tf = (timeframe or "").strip().lower()
+        if not tf:
+            return None
+        digits = "".join(ch for ch in tf if ch.isdigit())
+        unit = tf[len(digits) :].strip() or "d"
+        value = int(digits) if digits else 1
+        value = max(1, value)
+        if unit in {"d", "day", "days"}:
+            return pd.Timedelta(days=value)
+        if unit in {"w", "week", "weeks"}:
+            return pd.Timedelta(weeks=value)
+        if unit in {"h", "hour", "hours"}:
+            return pd.Timedelta(hours=value)
+        if unit in {"m", "min", "minute", "minutes"}:
+            return pd.Timedelta(minutes=value)
+        if unit in {"s", "sec", "second", "seconds"}:
+            return pd.Timedelta(seconds=value)
+        return None
+
+    @classmethod
+    def compute_continuity_score(
+        cls,
+        df: pd.DataFrame,
+        timeframe: str,
+    ) -> dict[str, float | int]:
+        raw_idx = pd.DatetimeIndex(pd.to_datetime(df.index)).sort_values()
+        actual_bars = int(len(raw_idx))
+        idx = raw_idx
+        if idx.has_duplicates:
+            idx = idx[~idx.duplicated(keep="first")]
+        unique_bars = int(len(idx))
+        duplicate_bars = max(0, actual_bars - unique_bars)
+
+        if unique_bars <= 1:
+            raise ValueError(
+                "insufficient_bars_for_continuity: at least 2 bars are required"
+            )
+
+        expected_delta = cls._timeframe_to_timedelta(timeframe)
+        if expected_delta is None:
+            raise ValueError(f"unsupported_timeframe_for_continuity: {timeframe}")
+
+        diffs = pd.Series(idx[1:] - idx[:-1])
+        missing_bars = 0
+        largest_gap_bars = 0
+        for diff in diffs:
+            if diff <= expected_delta:
+                continue
+            gap_bars = int(diff / expected_delta) - 1
+            if gap_bars <= 0:
+                continue
+            missing_bars += gap_bars
+            largest_gap_bars = max(largest_gap_bars, gap_bars)
+
+        expected_bars = unique_bars + missing_bars
+        coverage_ratio = 1.0 if expected_bars <= 0 else float(unique_bars / expected_bars)
+        coverage_ratio = max(0.0, min(1.0, coverage_ratio))
+        missing_ratio = 0.0 if expected_bars <= 0 else (missing_bars / expected_bars)
+        largest_gap_ratio = 0.0 if expected_bars <= 0 else (largest_gap_bars / expected_bars)
+        duplicate_ratio = 0.0 if actual_bars <= 0 else (duplicate_bars / actual_bars)
+        score = max(
+            0.0, 1.0 - (0.60 * missing_ratio + 0.25 * largest_gap_ratio + 0.15 * duplicate_ratio)
+        )
+
+        return {
+            "score": float(score),
+            "coverage_ratio": float(coverage_ratio),
+            "expected_bars": int(expected_bars),
+            "actual_bars": int(actual_bars),
+            "unique_bars": int(unique_bars),
+            "duplicate_bars": int(duplicate_bars),
+            "missing_bars": int(missing_bars),
+            "largest_gap_bars": int(largest_gap_bars),
+        }
+
+    @staticmethod
     def _sample_series(series: pd.Series, max_points: int = 500) -> list[dict[str, float]]:
         if series.empty:
             return []
@@ -488,8 +565,94 @@ class BacktestRunner:
                     continue
 
             if df.empty:
+                self.failures.append(
+                    {
+                        "collection": col.name,
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "source": col.source,
+                        "stage": "data_validation",
+                        "error": "empty_dataframe",
+                    }
+                )
+                log_json(
+                    self.logger,
+                    "data_validation_failed",
+                    collection=col.name,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    source=col.source,
+                    reason="empty_dataframe",
+                )
+                continue
+            
+            # Compute diagnostic continuity metrics before any policy enforcement.
+            try:
+                continuity = self.compute_continuity_score(df, timeframe)
+            except ValueError as exc:
+                self.failures.append(
+                    {
+                        "collection": col.name,
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "source": col.source,
+                        "stage": "continuity_validation",
+                        "error": str(exc),
+                    }
+                )
                 continue
 
+            # Load reliability policy configuration
+            reliability_cfg = self.cfg.reliability_thresholds
+            reliability_on_fail = "skip_optimization"
+            min_data_points = None
+            min_continuity_score = None
+            if reliability_cfg is not None:
+                reliability_on_fail = str(reliability_cfg.on_fail).strip().lower()
+                min_data_points = reliability_cfg.min_data_points
+                min_continuity_score = reliability_cfg.min_continuity_score
+            reliability_reasons: list[str] = []
+
+            # Enforce reliability policy
+            if min_continuity_score is not None:
+                threshold = float(min_continuity_score)
+                continuity_score = float(continuity.get("score", 0.0))
+                if continuity_score < threshold:
+                    reliability_reasons.append(
+                        "min_continuity_score_not_met("
+                        f"required={threshold}, available={continuity_score})"
+                    )
+            if min_data_points is not None and len(df) < int(min_data_points):
+                reliability_reasons.append(
+                    f"min_data_points_not_met(required={int(min_data_points)}, available={len(df)})"
+                )
+
+            if reliability_reasons:
+                log_json(
+                    self.logger,
+                    "reliability_threshold_triggered",
+                    collection=col.name,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    source=col.source,
+                    on_fail=reliability_on_fail,
+                    reasons=reliability_reasons,
+                )       
+
+            if reliability_reasons and reliability_on_fail == "skip_evaluation":
+                self.failures.append(
+                    {
+                        "collection": col.name,
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "source": col.source,
+                        "stage": "reliability_threshold",
+                        "error": "; ".join(reliability_reasons),
+                    }
+                )
+                continue
+
+            # Convert Source data to pybroker_format
             _, _, _, _, data_col_enum = self._ensure_pybroker()
             data_frame, dates = self._prepare_pybroker_frame(df, symbol, data_col_enum)
             fractional = self._fractional_enabled(col, symbol)
@@ -514,13 +677,31 @@ class BacktestRunner:
                 else:
                     search_space[name] = options
 
+            # Optimization 
             n_params = len(search_space)
             dof_multiplier = self.cfg.param_dof_multiplier
             min_bars_floor = self.cfg.param_min_bars
             min_bars_for_optimization = max(min_bars_floor, dof_multiplier * n_params)
             optimization_skip_reason = None
+            optimization_details: dict[str, Any] | None = None
+
+            if reliability_reasons and reliability_on_fail == "skip_optimization":
+                optimization_skip_reason = "reliability_threshold_skip_optimization"
+                optimization_details = {
+                    "skipped": True,
+                    "reason": optimization_skip_reason,
+                    "reliability_reasons": list(reliability_reasons),
+                }
+
             if search_space and len(df) < min_bars_for_optimization:
-                optimization_skip_reason = "insufficient_bars_for_optimization"
+                if optimization_skip_reason is None:
+                    optimization_skip_reason = "insufficient_bars_for_optimization"
+                    optimization_details = {
+                        "skipped": True,
+                        "reason": optimization_skip_reason,
+                        "min_bars_required": min_bars_for_optimization,
+                        "bars_available": len(df),
+                    }
                 log_json(
                     self.logger,
                     "optimization_skipped",
@@ -646,14 +827,14 @@ class BacktestRunner:
                 if sim_result is None:
                     return float("-inf")
                 returns, equity_curve, stats = sim_result
-                if optimization_skip_reason:
-                    stats = dict(stats)
-                    stats["optimization"] = {
-                        "skipped": True,
-                        "reason": optimization_skip_reason,
-                        "min_bars_required": min_bars_for_optimization,
-                        "bars_available": len(df_local),
-                    }
+
+                # Create Job Metrics and Stats
+                stats = dict(stats)
+                if optimization_details is not None:
+                    stats["optimization"] = optimization_details
+                reliability = dict(stats.get("data_reliability", {}))
+                reliability["continuity"] = continuity
+                stats["data_reliability"] = reliability
                 self.metrics["param_evals"] += 1
                 metric_val = self._evaluate_metric(
                     self.cfg.metric, returns, equity_curve, bars_per_year_local

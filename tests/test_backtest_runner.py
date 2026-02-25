@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from src.backtest.runner import BacktestRunner, BestResult
-from src.config import CollectionConfig, Config, StrategyConfig
+from src.config import CollectionConfig, Config, ReliabilityThresholdsConfig, StrategyConfig
 from src.strategies.base import BaseStrategy
 
 
@@ -214,6 +214,62 @@ def test_bars_per_year_various_units():
     )
 
 
+def test_compute_continuity_score_complete_series():
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    df = pd.DataFrame({"Close": [1, 2, 3, 4, 5]}, index=idx)
+    continuity = BacktestRunner.compute_continuity_score(df, "1d")
+    assert continuity["score"] == pytest.approx(1.0)
+    assert continuity["coverage_ratio"] == pytest.approx(1.0)
+    assert continuity["missing_bars"] == 0
+    assert continuity["largest_gap_bars"] == 0
+    assert continuity["expected_bars"] == 5
+    assert continuity["actual_bars"] == 5
+    assert continuity["unique_bars"] == 5
+    assert continuity["duplicate_bars"] == 0
+
+
+def test_compute_continuity_score_detects_missing_internal_bars():
+    idx = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-04", "2024-01-05"])
+    df = pd.DataFrame({"Close": [1, 2, 4, 5]}, index=idx)
+    continuity = BacktestRunner.compute_continuity_score(df, "1d")
+    assert continuity["missing_bars"] == 1
+    assert continuity["largest_gap_bars"] == 1
+    assert continuity["expected_bars"] == 5
+    assert continuity["actual_bars"] == 4
+    assert continuity["score"] < 1.0
+
+
+def test_compute_continuity_score_deduplicates_index():
+    idx = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-02", "2024-01-03"])
+    df = pd.DataFrame({"Close": [1, 2, 2, 3]}, index=idx)
+    continuity = BacktestRunner.compute_continuity_score(df, "1d")
+    assert continuity["missing_bars"] == 0
+    assert continuity["score"] < 1.0
+    assert continuity["actual_bars"] == 4
+    assert continuity["unique_bars"] == 3
+    assert continuity["duplicate_bars"] == 1
+
+
+def test_compute_continuity_score_empty_frame():
+    df = pd.DataFrame(columns=["Close"])
+    with pytest.raises(ValueError, match="insufficient_bars_for_continuity"):
+        BacktestRunner.compute_continuity_score(df, "1d")
+
+
+def test_compute_continuity_score_single_bar_raises():
+    idx = pd.to_datetime(["2024-01-01"])
+    df = pd.DataFrame({"Close": [1]}, index=idx)
+    with pytest.raises(ValueError, match="insufficient_bars_for_continuity"):
+        BacktestRunner.compute_continuity_score(df, "1d")
+
+
+def test_compute_continuity_score_unsupported_timeframe_raises():
+    idx = pd.date_range("2024-01-01", periods=3, freq="D")
+    df = pd.DataFrame({"Close": [1, 2, 3]}, index=idx)
+    with pytest.raises(ValueError, match="unsupported_timeframe_for_continuity"):
+        BacktestRunner.compute_continuity_score(df, "1mo")
+
+
 def test_sample_series_preserves_last_point():
     idx = pd.date_range("2024-01-01", periods=3, freq="D")
     series = pd.Series([1.0, 2.0, 3.0], index=idx)
@@ -392,6 +448,9 @@ def test_run_all_produces_best_result(tmp_path, monkeypatch):
     # results cache set should have been called with run_id
     assert runner.results_cache.saved
     assert runner.results_cache.saved[0]["run_id"] == "test-run"
+    assert "data_reliability" in best.stats
+    assert "continuity" in best.stats["data_reliability"]
+    assert best.stats["data_reliability"]["continuity"]["score"] == pytest.approx(1.0)
     assert runner.metrics["result_cache_misses"] >= 1
     assert runner.metrics["param_evals"] >= 1
 
@@ -599,6 +658,10 @@ def test_run_all_skips_empty_frames(tmp_path, monkeypatch):
     results = runner.run_all()
     assert results == []
     assert not runner.results_cache.saved
+    assert runner.failures
+    failure = runner.failures[0]
+    assert failure["stage"] == "data_validation"
+    assert failure["error"] == "empty_dataframe"
 
 
 def _make_ohlcv(periods: int) -> pd.DataFrame:
@@ -696,3 +759,54 @@ def test_run_all_min_bars_and_dof_guard_behavior(
         assert optimization["bars_available"] == bars
     else:
         assert optimization is None
+
+
+def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.reliability_thresholds = ReliabilityThresholdsConfig(
+        min_data_points=10, on_fail="skip_optimization"
+    )
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results
+    assert eval_calls["count"] == 1
+    optimization = results[0].stats.get("optimization")
+    assert optimization is not None
+    assert optimization["reason"] == "reliability_threshold_skip_optimization"
+    reasons = optimization.get("reliability_reasons", [])
+    assert any("min_data_points_not_met" in r for r in reasons)
+
+
+def test_run_all_reliability_skip_evaluation_on_continuity_threshold(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.reliability_thresholds = ReliabilityThresholdsConfig(
+        min_continuity_score=0.95,
+        on_fail="skip_evaluation",
+    )
+
+    class _GappySource:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            idx = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-04", "2024-01-05"])
+            return pd.DataFrame(
+                {
+                    "Open": [10, 11, 13, 14],
+                    "High": [11, 12, 14, 15],
+                    "Low": [9, 10, 12, 13],
+                    "Close": [10.5, 11.5, 13.5, 14.5],
+                    "Volume": [100, 110, 130, 140],
+                },
+                index=idx,
+            )
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _GappySource())
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert runner.failures
+    failure = runner.failures[0]
+    assert failure["stage"] == "reliability_threshold"
+    assert "min_continuity_score_not_met" in failure["error"]

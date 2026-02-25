@@ -10,6 +10,18 @@ slippage: 0.0005
 risk_free_rate: 0.0
 cache_dir: .cache/data
 
+# Optimization settings
+param_search: grid  # grid | optuna
+param_trials: 25
+param_dof_multiplier: 100
+param_min_bars: 2000
+
+# Reliability policy (enforcement only if threshholds are configured)
+reliability_thresholds:
+  min_data_points: 2000
+  min_continuity_score: 0.98
+  on_fail: skip_evaluation  # skip_optimization | skip_evaluation
+
 collections:
   # Stocks (large-cap growth)
   - name: stocks_large_cap_growth
