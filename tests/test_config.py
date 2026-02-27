@@ -46,8 +46,16 @@ reliability_thresholds:
     assert cfg.reliability_thresholds.on_fail == "skip_evaluation"
 
 
-def test_load_config_reliability_thresholds_invalid_on_fail(tmp_path: Path):
-    config_text = """
+@pytest.mark.parametrize(
+    "reliability_yaml",
+    [
+        "on_fail: abort_run",
+        "min_continuity_score: 1.2",
+    ],
+    ids=["invalid_on_fail", "invalid_continuity_score"],
+)
+def test_load_config_reliability_thresholds_invalid_values(tmp_path: Path, reliability_yaml: str):
+    config_text = f"""
 collections:
   - name: test
     source: yfinance
@@ -55,25 +63,7 @@ collections:
 timeframes: ['1d']
 metric: sharpe
 reliability_thresholds:
-  on_fail: abort_run
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
-    with pytest.raises(ValueError):
-        load_config(path)
-
-
-def test_load_config_reliability_thresholds_invalid_min_continuity_score(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-timeframes: ['1d']
-metric: sharpe
-reliability_thresholds:
-  min_continuity_score: 1.2
+  {reliability_yaml}
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)

@@ -214,60 +214,77 @@ def test_bars_per_year_various_units():
     )
 
 
-def test_compute_continuity_score_complete_series():
-    idx = pd.date_range("2024-01-01", periods=5, freq="D")
-    df = pd.DataFrame({"Close": [1, 2, 3, 4, 5]}, index=idx)
+@pytest.mark.parametrize(
+    ("idx", "values", "expected"),
+    [
+        (
+            pd.date_range("2024-01-01", periods=5, freq="D"),
+            [1, 2, 3, 4, 5],
+            {
+                "score": pytest.approx(1.0),
+                "coverage_ratio": pytest.approx(1.0),
+                "missing_bars": 0,
+                "largest_gap_bars": 0,
+                "expected_bars": 5,
+                "actual_bars": 5,
+                "unique_bars": 5,
+                "duplicate_bars": 0,
+            },
+        ),
+        (
+            pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-04", "2024-01-05"]),
+            [1, 2, 4, 5],
+            {
+                "missing_bars": 1,
+                "largest_gap_bars": 1,
+                "expected_bars": 5,
+                "actual_bars": 4,
+            },
+        ),
+        (
+            pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-02", "2024-01-03"]),
+            [1, 2, 2, 3],
+            {
+                "missing_bars": 0,
+                "actual_bars": 4,
+                "unique_bars": 3,
+                "duplicate_bars": 1,
+            },
+        ),
+    ],
+    ids=["complete_series", "missing_internal_bars", "deduplicated_index"],
+)
+def test_compute_continuity_score_scenarios(idx, values, expected):
+    df = pd.DataFrame({"Close": values}, index=idx)
     continuity = BacktestRunner.compute_continuity_score(df, "1d")
-    assert continuity["score"] == pytest.approx(1.0)
-    assert continuity["coverage_ratio"] == pytest.approx(1.0)
-    assert continuity["missing_bars"] == 0
-    assert continuity["largest_gap_bars"] == 0
-    assert continuity["expected_bars"] == 5
-    assert continuity["actual_bars"] == 5
-    assert continuity["unique_bars"] == 5
-    assert continuity["duplicate_bars"] == 0
+
+    for key, value in expected.items():
+        assert continuity[key] == value
+
+    if expected["missing_bars"] > 0 or expected.get("duplicate_bars", 0) > 0:
+        assert continuity["score"] < 1.0
 
 
-def test_compute_continuity_score_detects_missing_internal_bars():
-    idx = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-04", "2024-01-05"])
-    df = pd.DataFrame({"Close": [1, 2, 4, 5]}, index=idx)
-    continuity = BacktestRunner.compute_continuity_score(df, "1d")
-    assert continuity["missing_bars"] == 1
-    assert continuity["largest_gap_bars"] == 1
-    assert continuity["expected_bars"] == 5
-    assert continuity["actual_bars"] == 4
-    assert continuity["score"] < 1.0
-
-
-def test_compute_continuity_score_deduplicates_index():
-    idx = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-02", "2024-01-03"])
-    df = pd.DataFrame({"Close": [1, 2, 2, 3]}, index=idx)
-    continuity = BacktestRunner.compute_continuity_score(df, "1d")
-    assert continuity["missing_bars"] == 0
-    assert continuity["score"] < 1.0
-    assert continuity["actual_bars"] == 4
-    assert continuity["unique_bars"] == 3
-    assert continuity["duplicate_bars"] == 1
-
-
-def test_compute_continuity_score_empty_frame():
-    df = pd.DataFrame(columns=["Close"])
-    with pytest.raises(ValueError, match="insufficient_bars_for_continuity"):
-        BacktestRunner.compute_continuity_score(df, "1d")
-
-
-def test_compute_continuity_score_single_bar_raises():
-    idx = pd.to_datetime(["2024-01-01"])
-    df = pd.DataFrame({"Close": [1]}, index=idx)
-    with pytest.raises(ValueError, match="insufficient_bars_for_continuity"):
-        BacktestRunner.compute_continuity_score(df, "1d")
-
-
-def test_compute_continuity_score_unsupported_timeframe_raises():
-    idx = pd.date_range("2024-01-01", periods=3, freq="D")
-    df = pd.DataFrame({"Close": [1, 2, 3]}, index=idx)
-    with pytest.raises(ValueError, match="unsupported_timeframe_for_continuity"):
-        BacktestRunner.compute_continuity_score(df, "1mo")
+@pytest.mark.parametrize(
+    ("df", "timeframe", "error_match"),
+    [
+        (pd.DataFrame(columns=["Close"]), "1d", "insufficient_bars_for_continuity"),
+        (
+            pd.DataFrame({"Close": [1]}, index=pd.to_datetime(["2024-01-01"])),
+            "1d",
+            "insufficient_bars_for_continuity",
+        ),
+        (
+            pd.DataFrame({"Close": [1, 2, 3]}, index=pd.date_range("2024-01-01", periods=3, freq="D")),
+            "1mo",
+            "unsupported_timeframe_for_continuity",
+        ),
+    ],
+    ids=["empty_frame", "single_bar", "unsupported_timeframe"],
+)
+def test_compute_continuity_score_invalid_inputs(df, timeframe, error_match):
+    with pytest.raises(ValueError, match=error_match):
+        BacktestRunner.compute_continuity_score(df, timeframe)
 
 
 def test_sample_series_preserves_last_point():
