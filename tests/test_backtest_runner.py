@@ -827,3 +827,109 @@ def test_run_all_reliability_skip_evaluation_on_continuity_threshold(tmp_path, m
     failure = runner.failures[0]
     assert failure["stage"] == "reliability_threshold"
     assert "min_continuity_score_not_met" in failure["error"]
+
+
+def test_run_all_fetches_once_per_symbol_timeframe_with_multiple_strategies(tmp_path, monkeypatch):
+    class _AltStrategy(BaseStrategy):
+        name = "alt"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    monkeypatch.setattr(
+        "src.backtest.runner.discover_external_strategies",
+        lambda root: {"dummy": _DummyStrategy, "alt": _AltStrategy},
+    )
+    runner.external_index = {"dummy": _DummyStrategy, "alt": _AltStrategy}
+
+    fetch_calls = {"count": 0}
+
+    class _Source:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            fetch_calls["count"] += 1
+            return _make_ohlcv(5)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
+    _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert fetch_calls["count"] == 1
+    assert len(results) == 2
+
+
+def test_run_all_skip_evaluation_adds_single_failure_for_multiple_strategies(tmp_path, monkeypatch):
+    class _AltStrategy(BaseStrategy):
+        name = "alt"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.cfg.reliability_thresholds = ReliabilityThresholdsConfig(
+        min_data_points=10,
+        on_fail="skip_evaluation",
+    )
+    monkeypatch.setattr(
+        "src.backtest.runner.discover_external_strategies",
+        lambda root: {"dummy": _DummyStrategy, "alt": _AltStrategy},
+    )
+    runner.external_index = {"dummy": _DummyStrategy, "alt": _AltStrategy}
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert len(runner.failures) == 1
+    assert runner.failures[0]["stage"] == "reliability_threshold"
+    assert "min_data_points_not_met" in runner.failures[0]["error"]
+
+
+def test_run_all_skip_optimization_still_evaluates_each_strategy(tmp_path, monkeypatch):
+    class _AltStrategy(BaseStrategy):
+        name = "alt"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [5, 6]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.cfg.reliability_thresholds = ReliabilityThresholdsConfig(
+        min_data_points=10,
+        on_fail="skip_optimization",
+    )
+    monkeypatch.setattr(
+        "src.backtest.runner.discover_external_strategies",
+        lambda root: {"dummy": _DummyStrategy, "alt": _AltStrategy},
+    )
+    runner.external_index = {"dummy": _DummyStrategy, "alt": _AltStrategy}
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 2
+    assert eval_calls["count"] == 2
+    for result in results:
+        optimization = result.stats.get("optimization")
+        assert optimization is not None
+        assert optimization["reason"] == "reliability_threshold_skip_optimization"
+        reasons = optimization.get("reliability_reasons", [])
+        assert any("min_data_points_not_met" in reason for reason in reasons)

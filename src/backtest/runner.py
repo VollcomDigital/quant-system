@@ -521,26 +521,14 @@ class BacktestRunner:
 
         overrides = {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
 
-        jobs: list[tuple[CollectionConfig, str, str, str]] = []
+        jobs: list[tuple[CollectionConfig, str, str]] = []
         for col in self.cfg.collections:
             for symbol in col.symbols:
                 for timeframe in self.cfg.timeframes:
-                    for name in self.external_index.keys():
-                        jobs.append((col, symbol, timeframe, name))
+                    jobs.append((col, symbol, timeframe))
 
         for job in jobs:
-            col, symbol, timeframe, strat_name = job
-            StrategyClass = self.external_index[strat_name]
-            strat: BaseStrategy = StrategyClass()
-            base_params = overrides.get(strat_name, {}) if overrides else {}
-            grid_override = base_params.get("grid") if isinstance(base_params, dict) else None
-            if isinstance(grid_override, dict):
-                grid = grid_override
-                static_params = {k: v for k, v in base_params.items() if k != "grid"}
-            else:
-                grid = strat.param_grid() | base_params
-                static_params = {}
-
+            col, symbol, timeframe = job
             source = self._make_source(col)
             with time_block(
                 self.logger,
@@ -585,7 +573,7 @@ class BacktestRunner:
                     reason="empty_dataframe",
                 )
                 continue
-            
+
             # Compute diagnostic continuity metrics before any policy enforcement.
             try:
                 continuity = self.compute_continuity_score(df, timeframe)
@@ -652,7 +640,6 @@ class BacktestRunner:
                 )
                 continue
 
-            # Convert Source data to pybroker_format
             _, _, _, _, data_col_enum = self._ensure_pybroker()
             data_frame, dates = self._prepare_pybroker_frame(df, symbol, data_col_enum)
             fractional = self._fractional_enabled(col, symbol)
@@ -661,135 +648,196 @@ class BacktestRunner:
             data_fingerprint = f"{len(df)}:{df.index[-1].isoformat()}:{float(price.iloc[-1])}"
             fees_use, slippage_use = self._fees_slippage_for(col)
 
-            search_method = getattr(self.cfg, "param_search", "grid") or "grid"
-            trials_target = max(1, int(getattr(self.cfg, "param_trials", 25)))
-
-            fixed_params = dict(static_params)
-            search_space: dict[str, list[Any]] = {}
-            for name, values in grid.items():
-                if isinstance(values, set | tuple | list):
-                    options = list(values)
+            for strat_name in self.external_index.keys():
+                StrategyClass = self.external_index[strat_name]
+                strat: BaseStrategy = StrategyClass()
+                base_params = overrides.get(strat_name, {}) if overrides else {}
+                grid_override = base_params.get("grid") if isinstance(base_params, dict) else None
+                if isinstance(grid_override, dict):
+                    grid = grid_override
+                    static_params = {k: v for k, v in base_params.items() if k != "grid"}
                 else:
-                    options = [values]
-                if len(options) <= 1:
-                    if options:
-                        fixed_params[name] = options[0]
-                else:
-                    search_space[name] = options
+                    grid = strat.param_grid() | base_params
+                    static_params = {}
 
-            # Optimization 
-            n_params = len(search_space)
-            dof_multiplier = self.cfg.param_dof_multiplier
-            min_bars_floor = self.cfg.param_min_bars
-            min_bars_for_optimization = max(min_bars_floor, dof_multiplier * n_params)
-            optimization_skip_reason = None
-            optimization_details: dict[str, Any] | None = None
+                search_method = getattr(self.cfg, "param_search", "grid") or "grid"
+                trials_target = max(1, int(getattr(self.cfg, "param_trials", 25)))
 
-            if reliability_reasons and reliability_on_fail == "skip_optimization":
-                optimization_skip_reason = "reliability_threshold_skip_optimization"
-                optimization_details = {
-                    "skipped": True,
-                    "reason": optimization_skip_reason,
-                    "reliability_reasons": list(reliability_reasons),
-                }
+                fixed_params = dict(static_params)
+                search_space: dict[str, list[Any]] = {}
+                for name, values in grid.items():
+                    if isinstance(values, set | tuple | list):
+                        options = list(values)
+                    else:
+                        options = [values]
+                    if len(options) <= 1:
+                        if options:
+                            fixed_params[name] = options[0]
+                    else:
+                        search_space[name] = options
 
-            if search_space and len(df) < min_bars_for_optimization:
-                if optimization_skip_reason is None:
-                    optimization_skip_reason = "insufficient_bars_for_optimization"
+                n_params = len(search_space)
+                dof_multiplier = self.cfg.param_dof_multiplier
+                min_bars_floor = self.cfg.param_min_bars
+                min_bars_for_optimization = max(min_bars_floor, dof_multiplier * n_params)
+                optimization_skip_reason = None
+                optimization_details: dict[str, Any] | None = None
+
+                if reliability_reasons and reliability_on_fail == "skip_optimization":
+                    optimization_skip_reason = "reliability_threshold_skip_optimization"
                     optimization_details = {
                         "skipped": True,
                         "reason": optimization_skip_reason,
-                        "min_bars_required": min_bars_for_optimization,
-                        "bars_available": len(df),
+                        "reliability_reasons": list(reliability_reasons),
                     }
-                log_json(
-                    self.logger,
-                    "optimization_skipped",
-                    reason=optimization_skip_reason,
-                    collection=col.name,
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    bars=len(df),
-                    min_bars=min_bars_for_optimization,
-                    n_params=n_params,
-                    dof_multiplier=dof_multiplier,
-                    min_bars_floor=min_bars_floor,
-                    strategy=strat.name,
-                    search_method=search_method,
-                )
 
-            best_val = -np.inf
-            best_params: dict[str, Any] | None = None
-            best_stats: dict[str, Any] | None = None
-            self.metrics["symbols_tested"] += 1
-            self.metrics["strategies_used"].add(strat.name)
-
-            collection_name = col.name
-            strategy_name = strat.name
-            timeframe_name = timeframe
-            symbol_name = symbol
-            fingerprint = data_fingerprint
-            fee_value = fees_use
-            slippage_value = slippage_use
-            frame_df = df
-            fetch_data_frame = data_frame
-            fetch_dates = dates
-            fractional_flag = fractional
-            bars_per_year = periods_per_year
-
-            def evaluate(
-                var_params: dict[str, Any],
-                *,
-                fixed=fixed_params,
-                strat_obj=strat,
-                df_local=frame_df,
-                collection_key=collection_name,
-                symbol_key=symbol_name,
-                timeframe_key=timeframe_name,
-                strategy_key=strategy_name,
-                fingerprint_key=fingerprint,
-                fee_key=fee_value,
-                slippage_key=slippage_value,
-                data_frame_local=fetch_data_frame,
-                dates_local=fetch_dates,
-                fractional_local=fractional_flag,
-                bars_per_year_local=bars_per_year,
-            ) -> float:
-                nonlocal best_val, best_params, best_stats
-                full_params = {**fixed, **var_params}
-                call_params = full_params.copy()
-                try:
-                    entries, exits = strat_obj.generate_signals(df_local, call_params)
-                except Exception as exc:
-                    self.failures.append(
-                        {
-                            "collection": collection_key,
-                            "symbol": symbol_key,
-                            "timeframe": timeframe_key,
-                            "strategy": strategy_key,
-                            "params": full_params,
-                            "stage": "generate_signals",
-                            "error": str(exc),
+                if search_space and len(df) < min_bars_for_optimization:
+                    if optimization_skip_reason is None:
+                        optimization_skip_reason = "insufficient_bars_for_optimization"
+                        optimization_details = {
+                            "skipped": True,
+                            "reason": optimization_skip_reason,
+                            "min_bars_required": min_bars_for_optimization,
+                            "bars_available": len(df),
                         }
+                    log_json(
+                        self.logger,
+                        "optimization_skipped",
+                        reason=optimization_skip_reason,
+                        collection=col.name,
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        bars=len(df),
+                        min_bars=min_bars_for_optimization,
+                        n_params=n_params,
+                        dof_multiplier=dof_multiplier,
+                        min_bars_floor=min_bars_floor,
+                        strategy=strat.name,
+                        search_method=search_method,
                     )
-                    return float("nan")
-                entries = entries.reindex(df_local.index, fill_value=False)
-                exits = exits.reindex(df_local.index, fill_value=False)
 
-                cached = self.results_cache.get(
-                    collection=collection_key,
-                    symbol=symbol_key,
-                    timeframe=timeframe_key,
-                    strategy=strategy_key,
-                    params=full_params,
-                    metric_name=self.cfg.metric,
-                    data_fingerprint=fingerprint_key,
-                    fees=fee_key,
-                    slippage=slippage_key,
-                )
-                if cached is not None:
-                    self.metrics["result_cache_hits"] += 1
-                    val_cached = float(cached["metric_value"])
+                best_val = -np.inf
+                best_params: dict[str, Any] | None = None
+                best_stats: dict[str, Any] | None = None
+                self.metrics["symbols_tested"] += 1
+                self.metrics["strategies_used"].add(strat.name)
+
+                collection_name = col.name
+                strategy_name = strat.name
+                timeframe_name = timeframe
+                symbol_name = symbol
+                fingerprint = data_fingerprint
+                fee_value = fees_use
+                slippage_value = slippage_use
+                frame_df = df
+                fetch_data_frame = data_frame
+                fetch_dates = dates
+                fractional_flag = fractional
+                bars_per_year = periods_per_year
+
+                def evaluate(
+                    var_params: dict[str, Any],
+                    *,
+                    fixed=fixed_params,
+                    strat_obj=strat,
+                    df_local=frame_df,
+                    collection_key=collection_name,
+                    symbol_key=symbol_name,
+                    timeframe_key=timeframe_name,
+                    strategy_key=strategy_name,
+                    fingerprint_key=fingerprint,
+                    fee_key=fee_value,
+                    slippage_key=slippage_value,
+                    data_frame_local=fetch_data_frame,
+                    dates_local=fetch_dates,
+                    fractional_local=fractional_flag,
+                    bars_per_year_local=bars_per_year,
+                ) -> float:
+                    nonlocal best_val, best_params, best_stats
+                    full_params = {**fixed, **var_params}
+                    call_params = full_params.copy()
+                    try:
+                        entries, exits = strat_obj.generate_signals(df_local, call_params)
+                    except Exception as exc:
+                        self.failures.append(
+                            {
+                                "collection": collection_key,
+                                "symbol": symbol_key,
+                                "timeframe": timeframe_key,
+                                "strategy": strategy_key,
+                                "params": full_params,
+                                "stage": "generate_signals",
+                                "error": str(exc),
+                            }
+                        )
+                        return float("nan")
+                    entries = entries.reindex(df_local.index, fill_value=False)
+                    exits = exits.reindex(df_local.index, fill_value=False)
+
+                    cached = self.results_cache.get(
+                        collection=collection_key,
+                        symbol=symbol_key,
+                        timeframe=timeframe_key,
+                        strategy=strategy_key,
+                        params=full_params,
+                        metric_name=self.cfg.metric,
+                        data_fingerprint=fingerprint_key,
+                        fees=fee_key,
+                        slippage=slippage_key,
+                    )
+                    if cached is not None:
+                        self.metrics["result_cache_hits"] += 1
+                        val_cached = float(cached["metric_value"])
+                        self._cache_set(
+                            collection=collection_key,
+                            symbol=symbol_key,
+                            timeframe=timeframe_key,
+                            strategy=strategy_key,
+                            params=full_params,
+                            metric_name=self.cfg.metric,
+                            metric_value=val_cached,
+                            stats=cached["stats"],
+                            data_fingerprint=fingerprint_key,
+                            fees=fee_key,
+                            slippage=slippage_key,
+                            run_id=self.run_id,
+                        )
+                        if val_cached > best_val:
+                            best_val = val_cached
+                            best_params = full_params.copy()
+                            best_stats = cached["stats"]
+                        return val_cached
+
+                    self.metrics["result_cache_misses"] += 1
+
+                    sim_result = self._run_pybroker_simulation(
+                        data_frame_local,
+                        dates_local,
+                        symbol_key,
+                        entries,
+                        exits,
+                        fee_key,
+                        slippage_key,
+                        timeframe_key,
+                        fractional_local,
+                        bars_per_year_local,
+                    )
+                    if sim_result is None:
+                        return float("-inf")
+                    returns, equity_curve, stats = sim_result
+
+                    stats = dict(stats)
+                    if optimization_details is not None:
+                        stats["optimization"] = optimization_details
+                    reliability = dict(stats.get("data_reliability", {}))
+                    reliability["continuity"] = continuity
+                    stats["data_reliability"] = reliability
+                    self.metrics["param_evals"] += 1
+                    metric_val = self._evaluate_metric(
+                        self.cfg.metric, returns, equity_curve, bars_per_year_local
+                    )
+                    if not np.isfinite(metric_val):
+                        return float("-inf")
                     self._cache_set(
                         collection=collection_key,
                         symbol=symbol_key,
@@ -797,113 +845,62 @@ class BacktestRunner:
                         strategy=strategy_key,
                         params=full_params,
                         metric_name=self.cfg.metric,
-                        metric_value=val_cached,
-                        stats=cached["stats"],
+                        metric_value=float(metric_val),
+                        stats=stats,
                         data_fingerprint=fingerprint_key,
                         fees=fee_key,
                         slippage=slippage_key,
                         run_id=self.run_id,
                     )
-                    if val_cached > best_val:
-                        best_val = val_cached
+                    if metric_val > best_val:
+                        best_val = metric_val
                         best_params = full_params.copy()
-                        best_stats = cached["stats"]
-                    return val_cached
+                        best_stats = stats
+                    return float(metric_val)
 
-                self.metrics["result_cache_misses"] += 1
+                space_items = list(search_space.items())
 
-                sim_result = self._run_pybroker_simulation(
-                    data_frame_local,
-                    dates_local,
-                    symbol_key,
-                    entries,
-                    exits,
-                    fee_key,
-                    slippage_key,
-                    timeframe_key,
-                    fractional_local,
-                    bars_per_year_local,
-                )
-                if sim_result is None:
-                    return float("-inf")
-                returns, equity_curve, stats = sim_result
+                if search_space and not optimization_skip_reason:
+                    if search_method == "optuna":
+                        try:
+                            import optuna
+                        except Exception:
+                            search_method = "grid"
+                    if search_method == "optuna":
 
-                # Create Job Metrics and Stats
-                stats = dict(stats)
-                if optimization_details is not None:
-                    stats["optimization"] = optimization_details
-                reliability = dict(stats.get("data_reliability", {}))
-                reliability["continuity"] = continuity
-                stats["data_reliability"] = reliability
-                self.metrics["param_evals"] += 1
-                metric_val = self._evaluate_metric(
-                    self.cfg.metric, returns, equity_curve, bars_per_year_local
-                )
-                if not np.isfinite(metric_val):
-                    return float("-inf")
-                self._cache_set(
-                    collection=collection_key,
-                    symbol=symbol_key,
-                    timeframe=timeframe_key,
-                    strategy=strategy_key,
-                    params=full_params,
-                    metric_name=self.cfg.metric,
-                    metric_value=float(metric_val),
-                    stats=stats,
-                    data_fingerprint=fingerprint_key,
-                    fees=fee_key,
-                    slippage=slippage_key,
-                    run_id=self.run_id,
-                )
-                if metric_val > best_val:
-                    best_val = metric_val
-                    best_params = full_params.copy()
-                    best_stats = stats
-                return float(metric_val)
+                        def objective(trial, space=space_items):
+                            var_params = {
+                                name: trial.suggest_categorical(name, options)
+                                for name, options in space
+                            }
+                            result = evaluate(var_params)
+                            return result if np.isfinite(result) else float("-inf")
 
-            space_items = list(search_space.items())
-
-            if search_space and not optimization_skip_reason:
-                if search_method == "optuna":
-                    try:
-                        import optuna
-                    except Exception:
-                        search_method = "grid"
-                if search_method == "optuna":
-
-                    def objective(trial, space=space_items):
-                        var_params = {
-                            name: trial.suggest_categorical(name, options)
-                            for name, options in space
-                        }
-                        result = evaluate(var_params)
-                        return result if np.isfinite(result) else float("-inf")
-
-                    total_combos = 1
-                    for options in search_space.values():
-                        total_combos *= max(1, len(options))
-                    n_trials = min(trials_target, max(1, total_combos))
-                    study = optuna.create_study(direction="maximize")
-                    study.optimize(objective, n_trials=n_trials)
+                        total_combos = 1
+                        for options in search_space.values():
+                            total_combos *= max(1, len(options))
+                        n_trials = min(trials_target, max(1, total_combos))
+                        study = optuna.create_study(direction="maximize")
+                        study.optimize(objective, n_trials=n_trials)
+                    else:
+                        for params in self._grid(search_space):
+                            evaluate(params)
                 else:
-                    for params in self._grid(search_space):
-                        evaluate(params)
-            else:
-                evaluate({})
+                    evaluate({})
 
-            if best_params is not None and best_stats is not None:
-                best_results.append(
-                    BestResult(
-                        collection=col.name,
-                        symbol=symbol,
-                        timeframe=timeframe,
-                        strategy=strat.name,
-                        params=best_params,
-                        metric_name=self.cfg.metric,
-                        metric_value=float(best_val),
-                        stats=best_stats,
+                if best_params is not None and best_stats is not None:
+                    best_results.append(
+                        BestResult(
+                            collection=col.name,
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            strategy=strat.name,
+                            params=best_params,
+                            metric_name=self.cfg.metric,
+                            metric_value=float(best_val),
+                            stats=best_stats,
+                        )
                     )
-                )
 
         if isinstance(self.metrics.get("strategies_used"), set):
             self.metrics["strategies_count"] = len(self.metrics["strategies_used"])  # type: ignore
