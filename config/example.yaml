@@ -20,7 +20,7 @@ param_min_bars: 2000
 reliability_thresholds:
   min_data_points: 2000
   min_continuity_score: 0.98
-  on_fail: skip_evaluation  # skip_optimization | skip_evaluation
+  on_fail: skip_job  # skip_optimization | skip_job
 
 collections:
   # Stocks (large-cap growth)

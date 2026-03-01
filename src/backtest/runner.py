@@ -4,11 +4,11 @@ import importlib
 import inspect
 import itertools
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -36,6 +36,16 @@ from .metrics import (
 )
 from .results_cache import ResultsCache
 
+StageName = Literal[
+    "created",
+    "collection_validation",
+    "data_fetch",
+    "data_validation",
+    "data_preparation",
+    "strategy_optimization",
+    "strategy_validation",
+]
+
 
 @dataclass
 class BestResult:
@@ -49,6 +59,83 @@ class BestResult:
     stats: dict[str, Any]
 
 
+@dataclass
+class JobContext:
+    collection: CollectionConfig
+    symbol: str
+    timeframe: str
+    source: str
+
+
+@dataclass
+class GateDecision:
+    passed: bool
+    action: Literal["continue", "skip_job", "skip_optimization", "reject_result"]
+    reasons: list[str]
+    stage: StageName
+
+
+@dataclass
+class JobState:
+    job: JobContext
+    current_stage: StageName = "created"
+    policy_skip_optimization: bool = False
+    decisions: dict[StageName, GateDecision] = field(default_factory=dict)
+    reasons_by_stage: dict[StageName, list[str]] = field(default_factory=dict)
+
+
+@dataclass
+class FetchedData:
+    raw_df: pd.DataFrame
+
+
+@dataclass
+class ValidatedData:
+    raw_df: pd.DataFrame
+    continuity: dict[str, float | int]
+    reliability_on_fail: str
+    reliability_reasons: list[str]
+
+
+@dataclass
+class ExecutionPreparedData:
+    data_frame: pd.DataFrame
+    dates: pd.DatetimeIndex
+    fees: float
+    slippage: float
+    fractional: bool
+    bars_per_year: int
+    fingerprint: str
+
+
+@dataclass
+class StrategyPlan:
+    strategy: BaseStrategy
+    fixed_params: dict[str, Any]
+    search_space: dict[str, list[Any]]
+    search_method: str
+    trials_target: int
+    skip_optimization: bool = False
+    optimization_skip_reasons: list[str] = field(default_factory=list)
+    optimization_skip_reason: str | None = None
+    optimization_details: dict[str, Any] | None = None
+    best_val: float = float("-inf")
+    best_params: dict[str, Any] | None = None
+    best_stats: dict[str, Any] | None = None
+    evaluations: int = 0
+
+
+@dataclass
+class StrategyEvalOutcome:
+    best_val: float
+    best_params: dict[str, Any] | None
+    best_stats: dict[str, Any] | None
+    evaluations: int
+    skipped_reason: str | None
+    strategy: str
+    job: JobContext
+
+
 class BacktestRunner:
     def __init__(self, cfg: Config, strategies_root: Path, run_id: str | None = None):
         self.cfg = cfg
@@ -59,6 +146,8 @@ class BacktestRunner:
         self.logger = get_logger()
         self._pybroker_components: tuple[Any, ...] | None = None
         self._cache_write_failures = 0
+        self._strategy_overrides: dict[str, dict[str, Any]] = {}
+        self.failures: list[dict[str, Any]] = []
 
     def _ensure_pybroker(self) -> tuple[Any, ...]:
         if self._pybroker_components is None:
@@ -507,8 +596,479 @@ class BacktestRunner:
         }
         return returns, equity_curve, stats
 
+    def _failure_record(self, payload: dict[str, Any]) -> None:
+        self.failures.append(payload)
+
+    @staticmethod
+    def _job_log_context(job: JobContext) -> dict[str, Any]:
+        return {
+            "collection": job.collection.name,
+            "symbol": job.symbol,
+            "timeframe": job.timeframe,
+            "source": job.source,
+        }
+
+    def _gate_log(self, stage: StageName, decision: GateDecision, context: dict[str, Any]) -> None:
+        log_json(
+            self.logger,
+            f"{stage}_gate",
+            passed=decision.passed,
+            action=decision.action,
+            reasons=decision.reasons,
+            **context,
+        )
+
+    def _apply_gate_to_state(self, state: JobState, decision: GateDecision) -> None:
+        state.current_stage = decision.stage
+        state.decisions[decision.stage] = decision
+        state.reasons_by_stage[decision.stage] = list(decision.reasons)
+        if decision.action == "skip_optimization":
+            state.policy_skip_optimization = True
+
+    def _handle_gate_decision(
+        self,
+        state: JobState,
+        decision: GateDecision,
+        context_extra: dict[str, Any] | None = None,
+        record_failure: bool = True,
+    ) -> GateDecision:
+        context = self._job_log_context(state.job)
+        if context_extra:
+            context |= context_extra
+        self._apply_gate_to_state(state, decision)
+        if not decision.passed or decision.action != "continue":
+            self._gate_log(decision.stage, decision, context)
+            if record_failure and decision.action in {"skip_job", "reject_result"}:
+                failure: dict[str, Any] = {
+                    **self._job_log_context(state.job),
+                    "stage": decision.stage,
+                    "error": "; ".join(decision.reasons) if decision.reasons else "gate_failed",
+                }
+                if context_extra and "strategy" in context_extra:
+                    failure["strategy"] = context_extra["strategy"]
+                self._failure_record(failure)
+        return decision
+
+    @staticmethod
+    def _plan_add_skip_reason(plan: StrategyPlan, reason: str) -> None:
+        if reason not in plan.optimization_skip_reasons:
+            plan.optimization_skip_reasons.append(reason)
+        plan.skip_optimization = bool(plan.optimization_skip_reasons)
+        plan.optimization_skip_reason = (
+            "; ".join(plan.optimization_skip_reasons) if plan.optimization_skip_reasons else None
+        )
+
+    def _apply_policy_constraints_to_plan(
+        self,
+        state: JobState,
+        validated_data: ValidatedData,
+        plan: StrategyPlan,
+    ) -> None:
+        if not state.policy_skip_optimization:
+            return
+        self._plan_add_skip_reason(plan, "reliability_threshold_skip_optimization")
+        if not isinstance(plan.optimization_details, dict):
+            plan.optimization_details = {}
+        plan.optimization_details["reliability_reasons"] = list(validated_data.reliability_reasons)
+
+    def _create_job_list(self) -> list[JobContext]:
+        # Expand config into executable collection/symbol/timeframe jobs.
+        jobs: list[JobContext] = []
+        for col in self.cfg.collections:
+            for symbol in col.symbols:
+                for timeframe in self.cfg.timeframes:
+                    jobs.append(
+                        JobContext(collection=col, symbol=symbol, timeframe=timeframe, source=col.source)
+                    )
+        return jobs
+
+    def _collection_validation(self, state: JobState) -> GateDecision:
+        # Validate collection-level prerequisites once before processing jobs.
+        try:
+            self._make_source(state.job.collection)
+            return GateDecision(True, "continue", [], "collection_validation")
+        except Exception as exc:
+            return GateDecision(False, "skip_job", [str(exc)], "collection_validation")
+
+    def _data_fetch(self, job: JobContext, only_cached: bool) -> tuple[GateDecision, FetchedData | None]:
+        # Fetch raw market data for a single job from source/cache
+        try:
+            source = self._make_source(job.collection)
+        except Exception as exc:
+            decision = GateDecision(False, "skip_job", [str(exc)], "data_fetch")
+            return decision, None
+
+        with time_block(
+            self.logger,
+            "data_fetch",
+            collection=job.collection.name,
+            symbol=job.symbol,
+            timeframe=job.timeframe,
+            source=job.source,
+        ):
+            try:
+                df = source.fetch(job.symbol, job.timeframe, only_cached=only_cached)
+                decision = GateDecision(True, "continue", [], "data_fetch")
+            except Exception as exc:
+                decision = GateDecision(False, "skip_job", [str(exc)], "data_fetch")
+                return decision, None
+        return decision, FetchedData(raw_df=df)
+
+    def _data_validation(
+        self, job: JobContext, fetched_data: FetchedData
+    ) -> tuple[GateDecision, ValidatedData | None]:
+        # Compute continuity and reliability policy decisions.
+        if fetched_data.raw_df.empty:
+            return GateDecision(False, "skip_job", ["empty_dataframe"], "data_validation"), None
+
+        try:
+            continuity = self.compute_continuity_score(fetched_data.raw_df, job.timeframe)
+        except ValueError as exc:
+            return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
+
+        reliability_cfg = self.cfg.reliability_thresholds
+        reliability_on_fail = "skip_optimization"
+        min_data_points = None
+        min_continuity_score = None
+        if reliability_cfg is not None:
+            reliability_on_fail = str(reliability_cfg.on_fail).strip().lower()
+            min_data_points = reliability_cfg.min_data_points
+            min_continuity_score = reliability_cfg.min_continuity_score
+        reliability_reasons: list[str] = []
+        if min_continuity_score is not None:
+            threshold = float(min_continuity_score)
+            continuity_score = float(continuity.get("score", 0.0))
+            if continuity_score < threshold:
+                reliability_reasons.append(
+                    "min_continuity_score_not_met("
+                    f"required={threshold}, available={continuity_score})"
+                )
+        if min_data_points is not None and len(fetched_data.raw_df) < int(min_data_points):
+            reliability_reasons.append(
+                f"min_data_points_not_met(required={int(min_data_points)}, available={len(fetched_data.raw_df)})"
+            )
+
+        if reliability_reasons and reliability_on_fail in {"skip_evaluation", "skip_job"}:
+            decision = GateDecision(False, "skip_job", reliability_reasons, "data_validation")
+        elif reliability_reasons:
+            decision = GateDecision(True, "skip_optimization", reliability_reasons, "data_validation")
+        else:
+            decision = GateDecision(True, "continue", [], "data_validation")
+        # Keep validated diagnostics available even when decision is skip_job.
+        validated_data = ValidatedData(
+            raw_df=fetched_data.raw_df,
+            continuity=continuity,
+            reliability_on_fail=reliability_on_fail,
+            reliability_reasons=list(reliability_reasons),
+        )
+        return decision, validated_data
+
+    def _execution_context_prepare(
+        self, job: JobContext, validated_data: ValidatedData
+    ) -> tuple[GateDecision, ExecutionPreparedData | None]:
+        # Prepare pybroker-ready frame and execution metadata for strategy stages.
+        try:
+            _, _, _, _, data_col_enum = self._ensure_pybroker()
+            data_frame, dates = self._prepare_pybroker_frame(validated_data.raw_df, job.symbol, data_col_enum)
+            fractional = self._fractional_enabled(job.collection, job.symbol)
+            bars_per_year = self._bars_per_year(job.timeframe)
+            price = validated_data.raw_df[
+                "Close" if "Close" in validated_data.raw_df.columns else "close"
+            ].astype(float)
+            fingerprint = (
+                f"{len(validated_data.raw_df)}:{validated_data.raw_df.index[-1].isoformat()}:{float(price.iloc[-1])}"
+            )
+            fees, slippage = self._fees_slippage_for(job.collection)
+            decision = GateDecision(True, "continue", [], "data_preparation")
+        except Exception as exc:
+            return GateDecision(False, "skip_job", [str(exc)], "data_preparation"), None
+        prepared = ExecutionPreparedData(
+            data_frame=data_frame,
+            dates=dates,
+            fees=fees,
+            slippage=slippage,
+            fractional=fractional,
+            bars_per_year=bars_per_year,
+            fingerprint=fingerprint,
+        )
+        return decision, prepared
+
+    def _strategy_create_plan(
+        self,
+        _state: JobState,
+        strat_name: str,
+    ) -> StrategyPlan:
+        # Build fixed/search params and search configuration for a strategy.
+        StrategyClass = self.external_index[strat_name]
+        strategy: BaseStrategy = StrategyClass()
+        base_params = self._strategy_overrides.get(strat_name, {})
+        grid_override = base_params.get("grid") if isinstance(base_params, dict) else None
+        if isinstance(grid_override, dict):
+            grid = grid_override
+            static_params = {k: v for k, v in base_params.items() if k != "grid"}
+        else:
+            grid = strategy.param_grid() | base_params
+            static_params = {}
+
+        fixed_params = dict(static_params)
+        search_space: dict[str, list[Any]] = {}
+        for name, values in grid.items():
+            options = list(values) if isinstance(values, set | tuple | list) else [values]
+            if len(options) <= 1:
+                if options:
+                    fixed_params[name] = options[0]
+            else:
+                search_space[name] = options
+
+        search_method = getattr(self.cfg, "param_search", "grid") or "grid"
+        trials_target = max(1, int(getattr(self.cfg, "param_trials", 25)))
+
+        return StrategyPlan(
+            strategy=strategy,
+            fixed_params=fixed_params,
+            search_space=search_space,
+            search_method=search_method,
+            trials_target=trials_target,
+        )
+
+    def _strategy_validate_plan(
+        self,
+        _state: JobState,
+        validated_data: ValidatedData,
+        plan: StrategyPlan,
+    ) -> GateDecision:
+        # Decide whether to skip optimization for this strategy plan.
+        n_params = len(plan.search_space)
+        min_bars_for_optimization = max(self.cfg.param_min_bars, self.cfg.param_dof_multiplier * n_params)
+        insufficient_bars = (
+            bool(plan.search_space) and len(validated_data.raw_df) < min_bars_for_optimization
+        )
+
+        skip_reasons = list(plan.optimization_skip_reasons)
+        if insufficient_bars:
+            skip_reasons.append("insufficient_bars_for_optimization")
+
+        if skip_reasons:
+            plan.skip_optimization = True
+            plan.optimization_skip_reasons = skip_reasons
+            plan.optimization_skip_reason = "; ".join(skip_reasons)
+            if not isinstance(plan.optimization_details, dict):
+                plan.optimization_details = {}
+            plan.optimization_details["skipped"] = True
+            plan.optimization_details["reason"] = skip_reasons[0]
+            plan.optimization_details["reasons"] = skip_reasons
+            if insufficient_bars:
+                plan.optimization_details["min_bars_required"] = min_bars_for_optimization
+                plan.optimization_details["bars_available"] = len(validated_data.raw_df)
+            return GateDecision(
+                passed=True,
+                action="skip_optimization",
+                reasons=skip_reasons,
+                stage="strategy_optimization",
+            )
+
+        plan.skip_optimization = False
+        plan.optimization_skip_reasons = []
+        plan.optimization_skip_reason = None
+        plan.optimization_details = None
+        return GateDecision(
+            passed=True,
+            action="continue",
+            reasons=[],
+            stage="strategy_optimization",
+        )
+
+    def _strategy_evaluation(
+        self,
+        plan: StrategyPlan,
+        state: JobState,
+        validated_data: ValidatedData,
+        prepared: ExecutionPreparedData,
+        params: dict[str, Any],
+    ) -> float:
+        # Evaluate one parameter set, using cache when available.
+        full_params = {**plan.fixed_params, **params}
+        call_params = full_params.copy()
+        try:
+            entries, exits = plan.strategy.generate_signals(validated_data.raw_df, call_params)
+        except Exception as exc:
+            self._failure_record(
+                {
+                    "collection": state.job.collection.name,
+                    "symbol": state.job.symbol,
+                    "timeframe": state.job.timeframe,
+                    "source": state.job.source,
+                    "strategy": plan.strategy.name,
+                    "params": full_params,
+                    "stage": "generate_signals",
+                    "error": str(exc),
+                }
+            )
+            return float("nan")
+        entries = entries.reindex(validated_data.raw_df.index, fill_value=False)
+        exits = exits.reindex(validated_data.raw_df.index, fill_value=False)
+
+        cached = self.results_cache.get(
+            collection=state.job.collection.name,
+            symbol=state.job.symbol,
+            timeframe=state.job.timeframe,
+            strategy=plan.strategy.name,
+            params=full_params,
+            metric_name=self.cfg.metric,
+            data_fingerprint=prepared.fingerprint,
+            fees=prepared.fees,
+            slippage=prepared.slippage,
+        )
+        if cached is not None:
+            self.metrics["result_cache_hits"] += 1
+            plan.evaluations += 1
+            val_cached = float(cached["metric_value"])
+            cached_stats = dict(cached["stats"])
+            self._cache_set(
+                collection=state.job.collection.name,
+                symbol=state.job.symbol,
+                timeframe=state.job.timeframe,
+                strategy=plan.strategy.name,
+                params=full_params,
+                metric_name=self.cfg.metric,
+                metric_value=val_cached,
+                stats=cached_stats,
+                data_fingerprint=prepared.fingerprint,
+                fees=prepared.fees,
+                slippage=prepared.slippage,
+                run_id=self.run_id,
+            )
+            if val_cached > plan.best_val:
+                plan.best_val = val_cached
+                plan.best_params = full_params.copy()
+                plan.best_stats = cached_stats
+            return val_cached
+
+        self.metrics["result_cache_misses"] += 1
+        sim_result = self._run_pybroker_simulation(
+            prepared.data_frame,
+            prepared.dates,
+            state.job.symbol,
+            entries,
+            exits,
+            prepared.fees,
+            prepared.slippage,
+            state.job.timeframe,
+            prepared.fractional,
+            prepared.bars_per_year,
+        )
+        if sim_result is None:
+            return float("-inf")
+        returns, equity_curve, stats = sim_result
+        stats = dict(stats)
+        if plan.optimization_details is not None:
+            stats["optimization"] = plan.optimization_details
+        reliability = dict(stats.get("data_reliability", {}))
+        reliability["continuity"] = validated_data.continuity
+        stats["data_reliability"] = reliability
+        self.metrics["param_evals"] += 1
+        plan.evaluations += 1
+        metric_val = self._evaluate_metric(self.cfg.metric, returns, equity_curve, prepared.bars_per_year)
+        if not np.isfinite(metric_val):
+            return float("-inf")
+        self._cache_set(
+            collection=state.job.collection.name,
+            symbol=state.job.symbol,
+            timeframe=state.job.timeframe,
+            strategy=plan.strategy.name,
+            params=full_params,
+            metric_name=self.cfg.metric,
+            metric_value=float(metric_val),
+            stats=stats,
+            data_fingerprint=prepared.fingerprint,
+            fees=prepared.fees,
+            slippage=prepared.slippage,
+            run_id=self.run_id,
+        )
+        if metric_val > plan.best_val:
+            plan.best_val = metric_val
+            plan.best_params = full_params.copy()
+            plan.best_stats = stats
+        return float(metric_val)
+
+    def _strategy_run(
+        self,
+        plan: StrategyPlan,
+        state: JobState,
+        validated_data: ValidatedData,
+        prepared: ExecutionPreparedData,
+    ) -> StrategyEvalOutcome | None:
+        # Run search (optuna/grid) or baseline evaluation and return the best candidate.
+        try:
+            space_items = list(plan.search_space.items())
+            if plan.search_space and not plan.skip_optimization:
+                search_method = plan.search_method
+                if search_method == "optuna":
+                    try:
+                        import optuna
+                    except Exception:
+                        search_method = "grid"
+                if search_method == "optuna":
+
+                    def objective(trial, space=space_items):
+                        var_params = {
+                            name: trial.suggest_categorical(name, options) for name, options in space
+                        }
+                        result = self._strategy_evaluation(plan, state, validated_data, prepared, var_params)
+                        return result if np.isfinite(result) else float("-inf")
+
+                    total_combos = 1
+                    for options in plan.search_space.values():
+                        total_combos *= max(1, len(options))
+                    n_trials = min(plan.trials_target, max(1, total_combos))
+                    study = optuna.create_study(direction="maximize")
+                    study.optimize(objective, n_trials=n_trials)
+                else:
+                    for params in self._grid(plan.search_space):
+                        self._strategy_evaluation(plan, state, validated_data, prepared, params)
+            else:
+                self._strategy_evaluation(plan, state, validated_data, prepared, {})
+            return StrategyEvalOutcome(
+                best_val=float(plan.best_val),
+                best_params=plan.best_params,
+                best_stats=plan.best_stats,
+                evaluations=plan.evaluations,
+                skipped_reason=plan.optimization_skip_reason,
+                strategy=plan.strategy.name,
+                job=state.job,
+            )
+        except Exception as exc:
+            self._failure_record(
+                {
+                    "collection": state.job.collection.name,
+                    "symbol": state.job.symbol,
+                    "timeframe": state.job.timeframe,
+                    "source": state.job.source,
+                    "strategy": plan.strategy.name,
+                    "stage": "strategy_optimization",
+                    "error": str(exc),
+                }
+            )
+            return None
+
+    def _strategy_validate_results(self, state: JobState, outcome: StrategyEvalOutcome) -> GateDecision:
+        # Keep this gate lightweight for now; stricter schema checks can be added later.
+        reasons: list[str] = []
+        if not np.isfinite(outcome.best_val):
+            reasons.append("best_metric_not_finite")
+        if outcome.best_params is None:
+            reasons.append("missing_best_params")
+        if not isinstance(outcome.best_stats, dict) or not outcome.best_stats:
+            reasons.append("missing_best_stats")
+        if reasons:
+            decision = GateDecision(False, "reject_result", reasons, "strategy_validation")
+        else:
+            decision = GateDecision(True, "continue", [], "strategy_validation")
+        return decision
+
     def run_all(self, only_cached: bool = False) -> list[BestResult]:
         best_results: list[BestResult] = []
+        # Initialize per-run counters and transient state.
         self.metrics = {
             "result_cache_hits": 0,
             "result_cache_misses": 0,
@@ -516,391 +1076,95 @@ class BacktestRunner:
             "symbols_tested": 0,
             "strategies_used": set(),
         }
-        self.failures: list[dict[str, Any]] = []
+        self.failures = []
         self._cache_write_failures = 0
+        self._strategy_overrides = (
+            {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
+        )
 
-        overrides = {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
-
-        jobs: list[tuple[CollectionConfig, str, str]] = []
-        for col in self.cfg.collections:
-            for symbol in col.symbols:
-                for timeframe in self.cfg.timeframes:
-                    jobs.append((col, symbol, timeframe))
+        jobs = self._create_job_list()
+        # Cache collection gate decisions so each collection is validated once per run.
+        validated_collections: dict[str, GateDecision] = {}
 
         for job in jobs:
-            col, symbol, timeframe = job
-            source = self._make_source(col)
-            with time_block(
-                self.logger,
-                "data_fetch",
-                collection=col.name,
-                symbol=symbol,
-                timeframe=timeframe,
-                source=col.source,
-            ):
-                try:
-                    df = source.fetch(symbol, timeframe, only_cached=only_cached)
-                except Exception as exc:
-                    self.failures.append(
-                        {
-                            "collection": col.name,
-                            "symbol": symbol,
-                            "timeframe": timeframe,
-                            "source": col.source,
-                            "error": str(exc),
-                        }
-                    )
-                    continue
-
-            if df.empty:
-                self.failures.append(
-                    {
-                        "collection": col.name,
-                        "symbol": symbol,
-                        "timeframe": timeframe,
-                        "source": col.source,
-                        "stage": "data_validation",
-                        "error": "empty_dataframe",
-                    }
+            state = JobState(job=job)
+            collection_key = job.collection.name
+            collection_decision = validated_collections.get(collection_key)
+            if collection_decision is None:
+                collection_decision = self._collection_validation(state)
+                collection_decision = self._handle_gate_decision(
+                    state,
+                    collection_decision,
                 )
-                log_json(
-                    self.logger,
-                    "data_validation_failed",
-                    collection=col.name,
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    source=col.source,
-                    reason="empty_dataframe",
-                )
+                validated_collections[collection_key] = collection_decision
+            else:
+                # Apply cached gate state without re-emitting logs/failure side effects.
+                self._apply_gate_to_state(state, collection_decision)
+            if not collection_decision.passed:
                 continue
 
-            # Compute diagnostic continuity metrics before any policy enforcement.
-            try:
-                continuity = self.compute_continuity_score(df, timeframe)
-            except ValueError as exc:
-                self.failures.append(
-                    {
-                        "collection": col.name,
-                        "symbol": symbol,
-                        "timeframe": timeframe,
-                        "source": col.source,
-                        "stage": "continuity_validation",
-                        "error": str(exc),
-                    }
-                )
+            data_fetch_decision, fetched_data = self._data_fetch(state.job, only_cached=only_cached)
+            data_fetch_decision = self._handle_gate_decision(
+                state,
+                data_fetch_decision,
+            )
+            if not data_fetch_decision.passed or fetched_data is None:
                 continue
 
-            # Load reliability policy configuration
-            reliability_cfg = self.cfg.reliability_thresholds
-            reliability_on_fail = "skip_optimization"
-            min_data_points = None
-            min_continuity_score = None
-            if reliability_cfg is not None:
-                reliability_on_fail = str(reliability_cfg.on_fail).strip().lower()
-                min_data_points = reliability_cfg.min_data_points
-                min_continuity_score = reliability_cfg.min_continuity_score
-            reliability_reasons: list[str] = []
-
-            # Enforce reliability policy
-            if min_continuity_score is not None:
-                threshold = float(min_continuity_score)
-                continuity_score = float(continuity.get("score", 0.0))
-                if continuity_score < threshold:
-                    reliability_reasons.append(
-                        "min_continuity_score_not_met("
-                        f"required={threshold}, available={continuity_score})"
-                    )
-            if min_data_points is not None and len(df) < int(min_data_points):
-                reliability_reasons.append(
-                    f"min_data_points_not_met(required={int(min_data_points)}, available={len(df)})"
-                )
-
-            if reliability_reasons:
-                log_json(
-                    self.logger,
-                    "reliability_threshold_triggered",
-                    collection=col.name,
-                    symbol=symbol,
-                    timeframe=timeframe,
-                    source=col.source,
-                    on_fail=reliability_on_fail,
-                    reasons=reliability_reasons,
-                )       
-
-            if reliability_reasons and reliability_on_fail == "skip_evaluation":
-                self.failures.append(
-                    {
-                        "collection": col.name,
-                        "symbol": symbol,
-                        "timeframe": timeframe,
-                        "source": col.source,
-                        "stage": "reliability_threshold",
-                        "error": "; ".join(reliability_reasons),
-                    }
-                )
+            data_decision, validated_data = self._data_validation(state.job, fetched_data)
+            data_decision = self._handle_gate_decision(
+                state,
+                data_decision,
+            )
+            if not data_decision.passed or validated_data is None:
                 continue
 
-            _, _, _, _, data_col_enum = self._ensure_pybroker()
-            data_frame, dates = self._prepare_pybroker_frame(df, symbol, data_col_enum)
-            fractional = self._fractional_enabled(col, symbol)
-            periods_per_year = self._bars_per_year(timeframe)
-            price = df["Close" if "Close" in df.columns else "close"].astype(float)
-            data_fingerprint = f"{len(df)}:{df.index[-1].isoformat()}:{float(price.iloc[-1])}"
-            fees_use, slippage_use = self._fees_slippage_for(col)
+            prep_decision, prepared = self._execution_context_prepare(state.job, validated_data)
+            prep_decision = self._handle_gate_decision(
+                state,
+                prep_decision,
+            )
+            if not prep_decision.passed or prepared is None:
+                continue
 
             for strat_name in self.external_index.keys():
-                StrategyClass = self.external_index[strat_name]
-                strat: BaseStrategy = StrategyClass()
-                base_params = overrides.get(strat_name, {}) if overrides else {}
-                grid_override = base_params.get("grid") if isinstance(base_params, dict) else None
-                if isinstance(grid_override, dict):
-                    grid = grid_override
-                    static_params = {k: v for k, v in base_params.items() if k != "grid"}
-                else:
-                    grid = strat.param_grid() | base_params
-                    static_params = {}
-
-                search_method = getattr(self.cfg, "param_search", "grid") or "grid"
-                trials_target = max(1, int(getattr(self.cfg, "param_trials", 25)))
-
-                fixed_params = dict(static_params)
-                search_space: dict[str, list[Any]] = {}
-                for name, values in grid.items():
-                    if isinstance(values, set | tuple | list):
-                        options = list(values)
-                    else:
-                        options = [values]
-                    if len(options) <= 1:
-                        if options:
-                            fixed_params[name] = options[0]
-                    else:
-                        search_space[name] = options
-
-                n_params = len(search_space)
-                dof_multiplier = self.cfg.param_dof_multiplier
-                min_bars_floor = self.cfg.param_min_bars
-                min_bars_for_optimization = max(min_bars_floor, dof_multiplier * n_params)
-                optimization_skip_reason = None
-                optimization_details: dict[str, Any] | None = None
-
-                if reliability_reasons and reliability_on_fail == "skip_optimization":
-                    optimization_skip_reason = "reliability_threshold_skip_optimization"
-                    optimization_details = {
-                        "skipped": True,
-                        "reason": optimization_skip_reason,
-                        "reliability_reasons": list(reliability_reasons),
-                    }
-
-                if search_space and len(df) < min_bars_for_optimization:
-                    if optimization_skip_reason is None:
-                        optimization_skip_reason = "insufficient_bars_for_optimization"
-                        optimization_details = {
-                            "skipped": True,
-                            "reason": optimization_skip_reason,
-                            "min_bars_required": min_bars_for_optimization,
-                            "bars_available": len(df),
-                        }
-                    log_json(
-                        self.logger,
-                        "optimization_skipped",
-                        reason=optimization_skip_reason,
-                        collection=col.name,
-                        symbol=symbol,
-                        timeframe=timeframe,
-                        bars=len(df),
-                        min_bars=min_bars_for_optimization,
-                        n_params=n_params,
-                        dof_multiplier=dof_multiplier,
-                        min_bars_floor=min_bars_floor,
-                        strategy=strat.name,
-                        search_method=search_method,
-                    )
-
-                best_val = -np.inf
-                best_params: dict[str, Any] | None = None
-                best_stats: dict[str, Any] | None = None
+                # Strategy stage: create plan -> validate plan -> run -> validate results.
+                plan = self._strategy_create_plan(state, strat_name)
+                self._apply_policy_constraints_to_plan(state, validated_data, plan)
+                plan_decision = self._strategy_validate_plan(state, validated_data, plan)
+                _ = self._handle_gate_decision(
+                    state,
+                    plan_decision,
+                    context_extra={
+                        "strategy": plan.strategy.name,
+                        "search_method": plan.search_method,
+                    },
+                )  # routing handled by plan.optimization_skip_reason in _strategy_run
                 self.metrics["symbols_tested"] += 1
-                self.metrics["strategies_used"].add(strat.name)
+                self.metrics["strategies_used"].add(plan.strategy.name)
+                outcome = self._strategy_run(plan, state, validated_data, prepared)
+                if outcome is None:
+                    continue
+                validation_decision = self._handle_gate_decision(
+                    state,
+                    self._strategy_validate_results(state, outcome),
+                    context_extra={"strategy": outcome.strategy},
+                )
+                if not validation_decision.passed:
+                    continue
 
-                collection_name = col.name
-                strategy_name = strat.name
-                timeframe_name = timeframe
-                symbol_name = symbol
-                fingerprint = data_fingerprint
-                fee_value = fees_use
-                slippage_value = slippage_use
-                frame_df = df
-                fetch_data_frame = data_frame
-                fetch_dates = dates
-                fractional_flag = fractional
-                bars_per_year = periods_per_year
-
-                def evaluate(
-                    var_params: dict[str, Any],
-                    *,
-                    fixed=fixed_params,
-                    strat_obj=strat,
-                    df_local=frame_df,
-                    collection_key=collection_name,
-                    symbol_key=symbol_name,
-                    timeframe_key=timeframe_name,
-                    strategy_key=strategy_name,
-                    fingerprint_key=fingerprint,
-                    fee_key=fee_value,
-                    slippage_key=slippage_value,
-                    data_frame_local=fetch_data_frame,
-                    dates_local=fetch_dates,
-                    fractional_local=fractional_flag,
-                    bars_per_year_local=bars_per_year,
-                ) -> float:
-                    nonlocal best_val, best_params, best_stats
-                    full_params = {**fixed, **var_params}
-                    call_params = full_params.copy()
-                    try:
-                        entries, exits = strat_obj.generate_signals(df_local, call_params)
-                    except Exception as exc:
-                        self.failures.append(
-                            {
-                                "collection": collection_key,
-                                "symbol": symbol_key,
-                                "timeframe": timeframe_key,
-                                "strategy": strategy_key,
-                                "params": full_params,
-                                "stage": "generate_signals",
-                                "error": str(exc),
-                            }
-                        )
-                        return float("nan")
-                    entries = entries.reindex(df_local.index, fill_value=False)
-                    exits = exits.reindex(df_local.index, fill_value=False)
-
-                    cached = self.results_cache.get(
-                        collection=collection_key,
-                        symbol=symbol_key,
-                        timeframe=timeframe_key,
-                        strategy=strategy_key,
-                        params=full_params,
+                best_results.append(
+                    BestResult(
+                        collection=state.job.collection.name,
+                        symbol=state.job.symbol,
+                        timeframe=state.job.timeframe,
+                        strategy=plan.strategy.name,
+                        params=outcome.best_params or {},
                         metric_name=self.cfg.metric,
-                        data_fingerprint=fingerprint_key,
-                        fees=fee_key,
-                        slippage=slippage_key,
+                        metric_value=float(outcome.best_val),
+                        stats=outcome.best_stats or {},
                     )
-                    if cached is not None:
-                        self.metrics["result_cache_hits"] += 1
-                        val_cached = float(cached["metric_value"])
-                        self._cache_set(
-                            collection=collection_key,
-                            symbol=symbol_key,
-                            timeframe=timeframe_key,
-                            strategy=strategy_key,
-                            params=full_params,
-                            metric_name=self.cfg.metric,
-                            metric_value=val_cached,
-                            stats=cached["stats"],
-                            data_fingerprint=fingerprint_key,
-                            fees=fee_key,
-                            slippage=slippage_key,
-                            run_id=self.run_id,
-                        )
-                        if val_cached > best_val:
-                            best_val = val_cached
-                            best_params = full_params.copy()
-                            best_stats = cached["stats"]
-                        return val_cached
-
-                    self.metrics["result_cache_misses"] += 1
-
-                    sim_result = self._run_pybroker_simulation(
-                        data_frame_local,
-                        dates_local,
-                        symbol_key,
-                        entries,
-                        exits,
-                        fee_key,
-                        slippage_key,
-                        timeframe_key,
-                        fractional_local,
-                        bars_per_year_local,
-                    )
-                    if sim_result is None:
-                        return float("-inf")
-                    returns, equity_curve, stats = sim_result
-
-                    stats = dict(stats)
-                    if optimization_details is not None:
-                        stats["optimization"] = optimization_details
-                    reliability = dict(stats.get("data_reliability", {}))
-                    reliability["continuity"] = continuity
-                    stats["data_reliability"] = reliability
-                    self.metrics["param_evals"] += 1
-                    metric_val = self._evaluate_metric(
-                        self.cfg.metric, returns, equity_curve, bars_per_year_local
-                    )
-                    if not np.isfinite(metric_val):
-                        return float("-inf")
-                    self._cache_set(
-                        collection=collection_key,
-                        symbol=symbol_key,
-                        timeframe=timeframe_key,
-                        strategy=strategy_key,
-                        params=full_params,
-                        metric_name=self.cfg.metric,
-                        metric_value=float(metric_val),
-                        stats=stats,
-                        data_fingerprint=fingerprint_key,
-                        fees=fee_key,
-                        slippage=slippage_key,
-                        run_id=self.run_id,
-                    )
-                    if metric_val > best_val:
-                        best_val = metric_val
-                        best_params = full_params.copy()
-                        best_stats = stats
-                    return float(metric_val)
-
-                space_items = list(search_space.items())
-
-                if search_space and not optimization_skip_reason:
-                    if search_method == "optuna":
-                        try:
-                            import optuna
-                        except Exception:
-                            search_method = "grid"
-                    if search_method == "optuna":
-
-                        def objective(trial, space=space_items):
-                            var_params = {
-                                name: trial.suggest_categorical(name, options)
-                                for name, options in space
-                            }
-                            result = evaluate(var_params)
-                            return result if np.isfinite(result) else float("-inf")
-
-                        total_combos = 1
-                        for options in search_space.values():
-                            total_combos *= max(1, len(options))
-                        n_trials = min(trials_target, max(1, total_combos))
-                        study = optuna.create_study(direction="maximize")
-                        study.optimize(objective, n_trials=n_trials)
-                    else:
-                        for params in self._grid(search_space):
-                            evaluate(params)
-                else:
-                    evaluate({})
-
-                if best_params is not None and best_stats is not None:
-                    best_results.append(
-                        BestResult(
-                            collection=col.name,
-                            symbol=symbol,
-                            timeframe=timeframe,
-                            strategy=strat.name,
-                            params=best_params,
-                            metric_name=self.cfg.metric,
-                            metric_value=float(best_val),
-                            stats=best_stats,
-                        )
-                    )
+                )
 
         if isinstance(self.metrics.get("strategies_used"), set):
             self.metrics["strategies_count"] = len(self.metrics["strategies_used"])  # type: ignore

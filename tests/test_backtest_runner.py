@@ -800,7 +800,7 @@ def test_run_all_reliability_skip_evaluation_on_continuity_threshold(tmp_path, m
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.reliability_thresholds = ReliabilityThresholdsConfig(
         min_continuity_score=0.95,
-        on_fail="skip_evaluation",
+        on_fail="skip_job",
     )
 
     class _GappySource:
@@ -825,7 +825,7 @@ def test_run_all_reliability_skip_evaluation_on_continuity_threshold(tmp_path, m
     assert eval_calls["count"] == 0
     assert runner.failures
     failure = runner.failures[0]
-    assert failure["stage"] == "reliability_threshold"
+    assert failure["stage"] == "data_validation"
     assert "min_continuity_score_not_met" in failure["error"]
 
 
@@ -880,7 +880,7 @@ def test_run_all_skip_evaluation_adds_single_failure_for_multiple_strategies(tmp
     runner.cfg.strategies = []
     runner.cfg.reliability_thresholds = ReliabilityThresholdsConfig(
         min_data_points=10,
-        on_fail="skip_evaluation",
+        on_fail="skip_job",
     )
     monkeypatch.setattr(
         "src.backtest.runner.discover_external_strategies",
@@ -894,7 +894,7 @@ def test_run_all_skip_evaluation_adds_single_failure_for_multiple_strategies(tmp
     assert results == []
     assert eval_calls["count"] == 0
     assert len(runner.failures) == 1
-    assert runner.failures[0]["stage"] == "reliability_threshold"
+    assert runner.failures[0]["stage"] == "data_validation"
     assert "min_data_points_not_met" in runner.failures[0]["error"]
 
 

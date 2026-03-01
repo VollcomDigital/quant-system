@@ -138,7 +138,7 @@ def load_config(path: str | Path) -> Config:
         if not isinstance(reliability_raw, dict):
             raise ValueError("Invalid `reliability_thresholds`: expected a mapping")
         on_fail = str(reliability_raw.get("on_fail", "skip_optimization")).strip().lower()
-        allowed_on_fail = {"skip_optimization", "skip_evaluation"}
+        allowed_on_fail = {"skip_optimization", "skip_job"}
         if on_fail not in allowed_on_fail:
             raise ValueError(
                 "Invalid `reliability_thresholds.on_fail`: "
