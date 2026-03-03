@@ -200,7 +200,8 @@ def run(
             "manifest_refresh": manifest_status,
             "notifications": notification_events,
         }
-        (base_out / "summary.json").write_text(safe_json_dumps(summary, indent=2))
+        summary_json = safe_json_dumps(summary, indent=2)
+        (base_out / "summary.json").write_text(summary_json)
         if manifest_status:
             (base_out / "manifest_status.json").write_text(
                 safe_json_dumps(manifest_status, indent=2)
@@ -209,6 +210,27 @@ def run(
             (base_out / "notifications.json").write_text(
                 safe_json_dumps(notification_events, indent=2)
             )
+        metrics = summary.get("metrics", {}) or {}
+        failures = summary.get("failures", []) or []
+        failed_strategies = sorted(
+            {
+                str(item.get("strategy")).strip()
+                for item in failures
+                if isinstance(item, dict) and item.get("strategy")
+            }
+        )
+        typer.echo("Run summary:")
+        typer.echo(f"- run_id: {run_id}")
+        typer.echo(f"- metric: {summary.get('metric')}")
+        typer.echo(f"- results_count: {summary.get('results_count')}")
+        typer.echo(f"- failures_count: {summary.get('failures_count')}")
+        typer.echo(f"- result_cache_hits: {metrics.get('result_cache_hits', 0)}")
+        typer.echo(f"- result_cache_misses: {metrics.get('result_cache_misses', 0)}")
+        typer.echo(f"- fresh_evaluations: {metrics.get('param_evals', 0)}")
+        typer.echo(f"- strategies_count: {metrics.get('strategies_count', 0)}")
+        if failed_strategies:
+            typer.echo(f"- failed_strategies: {', '.join(failed_strategies)}")
+        typer.echo(f"- duration_sec: {summary.get('duration_sec')}")
     except Exception as exc:
         logger.warning("summary emit failed", exc_info=exc)
 
