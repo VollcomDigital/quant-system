@@ -130,6 +130,7 @@ class StrategyEvalOutcome:
     best_val: float
     best_params: dict[str, Any] | None
     best_stats: dict[str, Any] | None
+    has_valid_candidate: bool
     evaluations: int
     skipped_reason: str | None
     strategy: str
@@ -1028,10 +1029,14 @@ class BacktestRunner:
                         self._strategy_evaluation(plan, state, validated_data, prepared, params)
             else:
                 self._strategy_evaluation(plan, state, validated_data, prepared, {})
+            has_valid_candidate = plan.best_params is not None and isinstance(
+                plan.best_stats, dict
+            ) and bool(plan.best_stats)
             return StrategyEvalOutcome(
                 best_val=float(plan.best_val),
                 best_params=plan.best_params,
                 best_stats=plan.best_stats,
+                has_valid_candidate=has_valid_candidate,
                 evaluations=plan.evaluations,
                 skipped_reason=plan.optimization_skip_reason,
                 strategy=plan.strategy.name,
@@ -1053,13 +1058,12 @@ class BacktestRunner:
 
     def _strategy_validate_results(self, state: JobState, outcome: StrategyEvalOutcome) -> GateDecision:
         # Keep this gate lightweight for now; stricter schema checks can be added later.
+        if not outcome.has_valid_candidate:
+            return GateDecision(False, "reject_result", ["no_valid_candidate"], "strategy_validation")
+
         reasons: list[str] = []
         if not np.isfinite(outcome.best_val):
             reasons.append("best_metric_not_finite")
-        if outcome.best_params is None:
-            reasons.append("missing_best_params")
-        if not isinstance(outcome.best_stats, dict) or not outcome.best_stats:
-            reasons.append("missing_best_stats")
         if reasons:
             decision = GateDecision(False, "reject_result", reasons, "strategy_validation")
         else:
