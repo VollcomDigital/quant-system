@@ -963,3 +963,55 @@ def test_run_all_collection_reliability_override_takes_precedence(tmp_path, monk
     assert optimization["reason"] == "reliability_threshold_skip_optimization"
     reasons = optimization.get("reliability_reasons", [])
     assert any("min_data_points_not_met" in reason for reason in reasons)
+
+
+def test_run_all_reliability_skip_collection_blocks_remaining_jobs_in_collection(
+    tmp_path, monkeypatch
+):
+    collections = [
+        CollectionConfig(
+            name="bad_col",
+            source="custom",
+            symbols=["AAPL", "MSFT"],
+            fees=0.0004,
+            slippage=0.0003,
+        ),
+        CollectionConfig(
+            name="good_col",
+            source="custom",
+            symbols=["NVDA"],
+            fees=0.0004,
+            slippage=0.0003,
+        ),
+    ]
+    runner = _make_runner(tmp_path, monkeypatch, collections=collections)
+    runner.cfg.reliability_thresholds = ReliabilityThresholdsConfig(
+        min_data_points=10,
+        on_fail="skip_collection",
+    )
+
+    fetch_calls = {"bad_col": 0, "good_col": 0}
+
+    class _Source:
+        def __init__(self, collection_name: str):
+            self.collection_name = collection_name
+
+        def fetch(self, symbol, timeframe, only_cached=False):
+            fetch_calls[self.collection_name] += 1
+            if self.collection_name == "bad_col":
+                return _make_ohlcv(5)
+            return _make_ohlcv(20)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source(col.name))
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    assert fetch_calls["bad_col"] == 1
+    assert fetch_calls["good_col"] == 1
+    assert eval_calls["count"] == 1
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["collection"] == "bad_col"
+    assert failure["stage"] == "data_validation"
+    assert "min_data_points_not_met" in failure["error"]

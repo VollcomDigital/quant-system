@@ -81,6 +81,7 @@ reliability_thresholds:
     [
         "skip_job",
         "skip_optimization",
+        "skip_collection",
     ],
 )
 def test_load_config_reliability_thresholds_on_fail_values(tmp_path: Path, on_fail_input: str):
