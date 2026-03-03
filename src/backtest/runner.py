@@ -70,7 +70,7 @@ class JobContext:
 @dataclass
 class GateDecision:
     passed: bool
-    action: Literal["continue", "skip_job", "skip_optimization", "reject_result"]
+    action: Literal["continue", "skip_job", "skip_collection", "skip_optimization", "reject_result"]
     reasons: list[str]
     stage: StageName
 
@@ -651,15 +651,18 @@ class BacktestRunner:
         decision: GateDecision,
         context_extra: dict[str, Any] | None = None,
         record_failure: bool = True,
+        blocked_collections: set[str] | None = None,
     ) -> GateDecision:
         """Apply, log, and optionally record a non-continue gate decision."""
         context = self._job_log_context(state.job)
         if context_extra:
             context |= context_extra
         self._apply_gate_to_state(state, decision)
+        if decision.action == "skip_collection" and blocked_collections is not None:
+            blocked_collections.add(state.job.collection.name)
         if not decision.passed or decision.action != "continue":
             self._gate_log(decision.stage, decision, context)
-            if record_failure and decision.action in {"skip_job", "reject_result"}:
+            if record_failure and decision.action in {"skip_job", "skip_collection", "reject_result"}:
                 failure: dict[str, Any] = {
                     **self._job_log_context(state.job),
                     "stage": decision.stage,
@@ -769,8 +772,10 @@ class BacktestRunner:
                 f"min_data_points_not_met(required={int(min_data_points)}, available={len(fetched_data.raw_df)})"
             )
 
-        if reliability_reasons and reliability_on_fail in {"skip_evaluation", "skip_job"}:
+        if reliability_reasons and reliability_on_fail == "skip_job":
             decision = GateDecision(False, "skip_job", reliability_reasons, "data_validation")
+        elif reliability_reasons and reliability_on_fail == "skip_collection":
+            decision = GateDecision(False, "skip_collection", reliability_reasons, "data_validation")
         elif reliability_reasons:
             decision = GateDecision(True, "skip_optimization", reliability_reasons, "data_validation")
         else:
@@ -1136,16 +1141,20 @@ class BacktestRunner:
         jobs = self._create_job_list()
         # Cache collection gate decisions so each collection is validated once per run.
         validated_collections: dict[str, GateDecision] = {}
+        blocked_collections: set[str] = set()
 
         for job in jobs:
             state = JobState(job=job)
             collection_key = job.collection.name
+            if collection_key in blocked_collections:
+                continue
             collection_decision = validated_collections.get(collection_key)
             if collection_decision is None:
                 collection_decision = self._collection_validation(state)
                 collection_decision = self._handle_gate_decision(
                     state,
                     collection_decision,
+                    blocked_collections=blocked_collections,
                 )
                 validated_collections[collection_key] = collection_decision
             else:
@@ -1158,6 +1167,7 @@ class BacktestRunner:
             data_fetch_decision = self._handle_gate_decision(
                 state,
                 data_fetch_decision,
+                blocked_collections=blocked_collections,
             )
             if not data_fetch_decision.passed or fetched_data is None:
                 continue
@@ -1166,6 +1176,7 @@ class BacktestRunner:
             data_decision = self._handle_gate_decision(
                 state,
                 data_decision,
+                blocked_collections=blocked_collections,
             )
             if not data_decision.passed or validated_data is None:
                 continue
@@ -1174,6 +1185,7 @@ class BacktestRunner:
             prep_decision = self._handle_gate_decision(
                 state,
                 prep_decision,
+                blocked_collections=blocked_collections,
             )
             if not prep_decision.passed or prepared is None:
                 continue
@@ -1200,6 +1212,7 @@ class BacktestRunner:
                     state,
                     self._strategy_validate_results(state, outcome),
                     context_extra={"strategy": outcome.strategy},
+                    blocked_collections=blocked_collections,
                 )
                 if not validation_decision.passed:
                     continue

@@ -81,7 +81,7 @@ def _parse_reliability_thresholds(raw: Any, prefix: str) -> ReliabilityThreshold
         raise ValueError(f"Invalid `{prefix}`: expected a mapping")
 
     on_fail = str(raw.get("on_fail", "skip_optimization")).strip().lower()
-    allowed_on_fail = {"skip_optimization", "skip_job"}
+    allowed_on_fail = {"skip_optimization", "skip_job", "skip_collection"}
     if on_fail not in allowed_on_fail:
         raise ValueError(
             f"Invalid `{prefix}.on_fail`: expected one of {sorted(allowed_on_fail)}, got '{on_fail}'"
