@@ -747,7 +747,7 @@ class BacktestRunner:
         except ValueError as exc:
             return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
 
-        reliability_cfg = self.cfg.reliability_thresholds
+        reliability_cfg = self._resolve_reliability_thresholds(job.collection)
         reliability_on_fail = "skip_optimization"
         min_data_points = None
         min_continuity_score = None
@@ -783,6 +783,38 @@ class BacktestRunner:
             reliability_reasons=list(reliability_reasons),
         )
         return decision, validated_data
+
+    def _resolve_reliability_thresholds(self, collection: CollectionConfig):
+        """Resolve reliability policy with collection-level overrides over global defaults."""
+        global_cfg = self.cfg.reliability_thresholds
+        override_cfg = getattr(collection, "reliability_thresholds", None)
+        if override_cfg is None:
+            return global_cfg
+        if global_cfg is None:
+            return override_cfg
+        return type(global_cfg)(
+            min_data_points=(
+                override_cfg.min_data_points
+                if override_cfg.min_data_points is not None
+                else global_cfg.min_data_points
+            ),
+            max_missing_bar_pct=(
+                override_cfg.max_missing_bar_pct
+                if override_cfg.max_missing_bar_pct is not None
+                else global_cfg.max_missing_bar_pct
+            ),
+            max_kurtosis=(
+                override_cfg.max_kurtosis
+                if override_cfg.max_kurtosis is not None
+                else global_cfg.max_kurtosis
+            ),
+            min_continuity_score=(
+                override_cfg.min_continuity_score
+                if override_cfg.min_continuity_score is not None
+                else global_cfg.min_continuity_score
+            ),
+            on_fail=(override_cfg.on_fail or global_cfg.on_fail),
+        )
 
     def _execution_context_prepare(
         self, job: JobContext, validated_data: ValidatedData

@@ -25,6 +25,7 @@ class CollectionConfig:
     quote: str | None = None  # for ccxt symbols e.g., USDT
     fees: float | None = None
     slippage: float | None = None
+    reliability_thresholds: "ReliabilityThresholdsConfig | None" = None
 
 
 @dataclass
@@ -73,6 +74,49 @@ class Config:
     reliability_thresholds: ReliabilityThresholdsConfig | None = None
 
 
+def _parse_reliability_thresholds(raw: Any, prefix: str) -> ReliabilityThresholdsConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid `{prefix}`: expected a mapping")
+
+    on_fail = str(raw.get("on_fail", "skip_optimization")).strip().lower()
+    allowed_on_fail = {"skip_optimization", "skip_job"}
+    if on_fail not in allowed_on_fail:
+        raise ValueError(
+            f"Invalid `{prefix}.on_fail`: expected one of {sorted(allowed_on_fail)}, got '{on_fail}'"
+        )
+
+    def _as_optional_int(value: Any, field: str) -> int | None:
+        if value is None:
+            return None
+        parsed = int(value)
+        if parsed < 0:
+            raise ValueError(f"`{prefix}.{field}` must be >= 0")
+        return parsed
+
+    def _as_optional_float(value: Any, field: str) -> float | None:
+        if value is None:
+            return None
+        parsed = float(value)
+        if parsed < 0:
+            raise ValueError(f"`{prefix}.{field}` must be >= 0")
+        return parsed
+
+    cfg = ReliabilityThresholdsConfig(
+        min_data_points=_as_optional_int(raw.get("min_data_points"), "min_data_points"),
+        max_missing_bar_pct=_as_optional_float(raw.get("max_missing_bar_pct"), "max_missing_bar_pct"),
+        max_kurtosis=_as_optional_float(raw.get("max_kurtosis"), "max_kurtosis"),
+        min_continuity_score=_as_optional_float(
+            raw.get("min_continuity_score"), "min_continuity_score"
+        ),
+        on_fail=on_fail,
+    )
+    if cfg.min_continuity_score is not None and not 0.0 <= cfg.min_continuity_score <= 1.0:
+        raise ValueError(f"`{prefix}.min_continuity_score` must be between 0 and 1")
+    return cfg
+
+
 def load_config(path: str | Path) -> Config:
     with open(path) as f:
         raw = yaml.safe_load(f)
@@ -101,8 +145,12 @@ def load_config(path: str | Path) -> Config:
             quote=c.get("quote"),
             fees=c.get("fees"),
             slippage=c.get("slippage"),
+            reliability_thresholds=_parse_reliability_thresholds(
+                c.get("reliability_thresholds"),
+                f"collections[{idx}].reliability_thresholds",
+            ),
         )
-        for c in raw["collections"]
+        for idx, c in enumerate(raw["collections"])
     ]
 
     strategies = [
@@ -131,57 +179,9 @@ def load_config(path: str | Path) -> Config:
         if slack_cfg is not None:
             notifications_cfg = NotificationsConfig(slack=slack_cfg)
 
-    reliability_cfg = None
-    reliability_raw = raw.get("reliability_thresholds")
-    if reliability_raw is not None:
-        # Reliability thresholds are enforcement policy (separate from collection metadata).
-        if not isinstance(reliability_raw, dict):
-            raise ValueError("Invalid `reliability_thresholds`: expected a mapping")
-        on_fail = str(reliability_raw.get("on_fail", "skip_optimization")).strip().lower()
-        allowed_on_fail = {"skip_optimization", "skip_job"}
-        if on_fail not in allowed_on_fail:
-            raise ValueError(
-                "Invalid `reliability_thresholds.on_fail`: "
-                f"expected one of {sorted(allowed_on_fail)}, got '{on_fail}'"
-            )
-
-        def _as_optional_int(value: Any, field: str) -> int | None:
-            if value is None:
-                return None
-            parsed = int(value)
-            if parsed < 0:
-                raise ValueError(f"`reliability_thresholds.{field}` must be >= 0")
-            return parsed
-
-        def _as_optional_float(value: Any, field: str) -> float | None:
-            if value is None:
-                return None
-            parsed = float(value)
-            if parsed < 0:
-                raise ValueError(f"`reliability_thresholds.{field}` must be >= 0")
-            return parsed
-
-        reliability_cfg = ReliabilityThresholdsConfig(
-            min_data_points=_as_optional_int(
-                reliability_raw.get("min_data_points"),
-                "min_data_points",
-            ),
-            max_missing_bar_pct=_as_optional_float(
-                reliability_raw.get("max_missing_bar_pct"), "max_missing_bar_pct"
-            ),
-            max_kurtosis=_as_optional_float(reliability_raw.get("max_kurtosis"), "max_kurtosis"),
-            min_continuity_score=_as_optional_float(
-                reliability_raw.get("min_continuity_score"), "min_continuity_score"
-            ),
-            on_fail=on_fail,
-        )
-        if (
-            reliability_cfg.min_continuity_score is not None
-            and not 0.0 <= reliability_cfg.min_continuity_score <= 1.0
-        ):
-            raise ValueError(
-                "`reliability_thresholds.min_continuity_score` must be between 0 and 1"
-            )
+    reliability_cfg = _parse_reliability_thresholds(
+        raw.get("reliability_thresholds"), "reliability_thresholds"
+    )
 
     cfg = Config(
         collections=collections,

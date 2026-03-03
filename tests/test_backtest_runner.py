@@ -933,3 +933,33 @@ def test_run_all_skip_optimization_still_evaluates_each_strategy(tmp_path, monke
         assert optimization["reason"] == "reliability_threshold_skip_optimization"
         reasons = optimization.get("reliability_reasons", [])
         assert any("min_data_points_not_met" in reason for reason in reasons)
+
+
+def test_run_all_collection_reliability_override_takes_precedence(tmp_path, monkeypatch):
+    collection = CollectionConfig(
+        name="demo",
+        source="custom",
+        symbols=["AAPL"],
+        fees=0.0004,
+        slippage=0.0003,
+        reliability_thresholds=ReliabilityThresholdsConfig(
+            min_data_points=10,
+            on_fail="skip_optimization",
+        ),
+    )
+    runner = _make_runner(tmp_path, monkeypatch, collections=[collection])
+    runner.cfg.reliability_thresholds = ReliabilityThresholdsConfig(
+        min_data_points=10,
+        on_fail="skip_job",
+    )
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    assert eval_calls["count"] == 1
+    optimization = results[0].stats.get("optimization")
+    assert optimization is not None
+    assert optimization["reason"] == "reliability_threshold_skip_optimization"
+    reasons = optimization.get("reliability_reasons", [])
+    assert any("min_data_points_not_met" in reason for reason in reasons)

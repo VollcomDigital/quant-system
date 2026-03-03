@@ -46,6 +46,36 @@ reliability_thresholds:
     assert cfg.reliability_thresholds.on_fail == "skip_job"
 
 
+def test_load_config_collection_reliability_thresholds_override(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    reliability_thresholds:
+      min_data_points: 250
+      min_continuity_score: 0.95
+      on_fail: skip_optimization
+timeframes: ['1d']
+metric: sharpe
+reliability_thresholds:
+  min_data_points: 500
+  min_continuity_score: 0.98
+  on_fail: skip_job
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.reliability_thresholds is not None
+    assert len(cfg.collections) == 1
+    col = cfg.collections[0]
+    assert col.reliability_thresholds is not None
+    assert col.reliability_thresholds.min_data_points == 250
+    assert col.reliability_thresholds.min_continuity_score == pytest.approx(0.95)
+    assert col.reliability_thresholds.on_fail == "skip_optimization"
+
+
 @pytest.mark.parametrize(
     "on_fail_input",
     [
@@ -90,6 +120,24 @@ timeframes: ['1d']
 metric: sharpe
 reliability_thresholds:
   {reliability_yaml}
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_collection_reliability_thresholds_invalid_values(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    reliability_thresholds:
+      on_fail: abort_run
+timeframes: ['1d']
+metric: sharpe
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
