@@ -600,6 +600,25 @@ class BacktestRunner:
     def _failure_record(self, payload: dict[str, Any]) -> None:
         self.failures.append(payload)
 
+    def _strategy_failure_payload(
+        self,
+        state: JobState,
+        stage: str,
+        error: str,
+        strategy: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Build a normalized strategy failure record for summary/report outputs."""
+        payload: dict[str, Any] = {
+            **self._job_log_context(state.job),
+            "strategy": strategy,
+            "stage": stage,
+            "error": error,
+        }
+        if params is not None:
+            payload["params"] = params
+        return payload
+
     @staticmethod
     def _job_log_context(job: JobContext) -> dict[str, Any]:
         return {
@@ -633,6 +652,7 @@ class BacktestRunner:
         context_extra: dict[str, Any] | None = None,
         record_failure: bool = True,
     ) -> GateDecision:
+        """Apply, log, and optionally record a non-continue gate decision."""
         context = self._job_log_context(state.job)
         if context_extra:
             context |= context_extra
@@ -692,7 +712,7 @@ class BacktestRunner:
             return GateDecision(False, "skip_job", [str(exc)], "collection_validation")
 
     def _data_fetch(self, job: JobContext, only_cached: bool) -> tuple[GateDecision, FetchedData | None]:
-        # Fetch raw market data for a single job from source/cache
+        """Fetch market data for one job and translate failures into gate decisions."""
         try:
             source = self._make_source(job.collection)
         except Exception as exc:
@@ -887,23 +907,20 @@ class BacktestRunner:
         prepared: ExecutionPreparedData,
         params: dict[str, Any],
     ) -> float:
-        # Evaluate one parameter set, using cache when available.
+        """Evaluate one parameter set, preferring cached results when available."""
         full_params = {**plan.fixed_params, **params}
         call_params = full_params.copy()
         try:
             entries, exits = plan.strategy.generate_signals(validated_data.raw_df, call_params)
         except Exception as exc:
             self._failure_record(
-                {
-                    "collection": state.job.collection.name,
-                    "symbol": state.job.symbol,
-                    "timeframe": state.job.timeframe,
-                    "source": state.job.source,
-                    "strategy": plan.strategy.name,
-                    "params": full_params,
-                    "stage": "generate_signals",
-                    "error": str(exc),
-                }
+                self._strategy_failure_payload(
+                    state=state,
+                    stage="generate_signals",
+                    error=str(exc),
+                    strategy=plan.strategy.name,
+                    params=full_params,
+                )
             )
             return float("nan")
         entries = entries.reindex(validated_data.raw_df.index, fill_value=False)
@@ -999,7 +1016,7 @@ class BacktestRunner:
         validated_data: ValidatedData,
         prepared: ExecutionPreparedData,
     ) -> StrategyEvalOutcome | None:
-        # Run search (optuna/grid) or baseline evaluation and return the best candidate.
+        """Run optimization/baseline evaluation and return the best strategy outcome."""
         try:
             space_items = list(plan.search_space.items())
             if plan.search_space and not plan.skip_optimization:
@@ -1044,15 +1061,12 @@ class BacktestRunner:
             )
         except Exception as exc:
             self._failure_record(
-                {
-                    "collection": state.job.collection.name,
-                    "symbol": state.job.symbol,
-                    "timeframe": state.job.timeframe,
-                    "source": state.job.source,
-                    "strategy": plan.strategy.name,
-                    "stage": "strategy_optimization",
-                    "error": str(exc),
-                }
+                self._strategy_failure_payload(
+                    state=state,
+                    stage="strategy_optimization",
+                    error=str(exc),
+                    strategy=plan.strategy.name,
+                )
             )
             return None
 
@@ -1071,6 +1085,7 @@ class BacktestRunner:
         return decision
 
     def run_all(self, only_cached: bool = False) -> list[BestResult]:
+        """Execute the full backtest pipeline across all jobs and strategies."""
         best_results: list[BestResult] = []
         # Initialize per-run counters and transient state.
         self.metrics = {
