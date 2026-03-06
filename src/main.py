@@ -219,6 +219,15 @@ def run(
                 if isinstance(item, dict) and item.get("strategy")
             }
         )
+        failed_collections = sorted(
+            {
+                str(item.get("collection")).strip()
+                for item in failures
+                if isinstance(item, dict)
+                and item.get("collection")
+                and not item.get("strategy")
+            }
+        )
         typer.echo("Run summary:")
         typer.echo(f"- run_id: {run_id}")
         typer.echo(f"- metric: {summary.get('metric')}")
@@ -230,6 +239,8 @@ def run(
         typer.echo(f"- strategies_count: {metrics.get('strategies_count', 0)}")
         if failed_strategies:
             typer.echo(f"- failed_strategies: {', '.join(failed_strategies)}")
+        if failed_collections:
+            typer.echo(f"- failed_collections: {', '.join(failed_collections)}")
         typer.echo(f"- duration_sec: {summary.get('duration_sec')}")
     except Exception as exc:
         logger.warning("summary emit failed", exc_info=exc)
