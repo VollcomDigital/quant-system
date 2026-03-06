@@ -70,6 +70,7 @@ class Config:
     slippage: float = 0.0
     risk_free_rate: float = 0.0
     cache_dir: str = ".cache/data"
+    evaluation_mode: str = "backtest"
     notifications: NotificationsConfig | None = None
     reliability_thresholds: ReliabilityThresholdsConfig | None = None
 
@@ -183,6 +184,13 @@ def load_config(path: str | Path) -> Config:
         raw.get("reliability_thresholds"), "reliability_thresholds"
     )
 
+    evaluation_mode = str(raw.get("evaluation_mode", "backtest")).strip().lower()
+    allowed_modes = {"backtest", "walk_forward"}
+    if evaluation_mode not in allowed_modes:
+        raise ValueError(
+            f"Invalid `evaluation_mode`: expected one of {sorted(allowed_modes)}, got '{evaluation_mode}'"
+        )
+
     cfg = Config(
         collections=collections,
         timeframes=raw["timeframes"],
@@ -201,6 +209,7 @@ def load_config(path: str | Path) -> Config:
         slippage=float(raw.get("slippage", 0.0)),
         risk_free_rate=float(raw.get("risk_free_rate", 0.0)),
         cache_dir=raw.get("cache_dir", ".cache/data"),
+        evaluation_mode=evaluation_mode,
         notifications=notifications_cfg,
         reliability_thresholds=reliability_cfg,
     )

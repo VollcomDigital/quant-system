@@ -60,6 +60,23 @@ class _StubResultsCache:
         self.saved.append(kwargs)
 
 
+class _StubEvaluationCache:
+    def __init__(self):
+        self.saved = []
+        self.retrieved = []
+
+    def hash_mode_config(self, mode_config):
+        payload = mode_config.payload if hasattr(mode_config, "payload") else {}
+        return f"{mode_config.mode}:{sorted(payload.items())}"
+
+    def get(self, **kwargs):
+        self.retrieved.append(kwargs)
+        return None
+
+    def set(self, **kwargs):
+        self.saved.append(kwargs)
+
+
 class _DummyStrategy(BaseStrategy):
     name = "dummy"
 
@@ -201,6 +218,8 @@ def _make_runner(
         monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _fake_sim)
 
     runner.results_cache = _StubResultsCache()
+    runner.evaluation_cache = _StubEvaluationCache()
+    runner.mode_config_hash = runner.evaluation_cache.hash_mode_config(runner.mode_config)
     return runner
 
 
@@ -469,7 +488,7 @@ def test_run_all_produces_best_result(tmp_path, monkeypatch):
     assert "continuity" in best.stats["data_reliability"]
     assert best.stats["data_reliability"]["continuity"]["score"] == pytest.approx(1.0)
     assert runner.metrics["result_cache_misses"] >= 1
-    assert runner.metrics["param_evals"] >= 1
+    assert runner.metrics["fresh_metric_evals"] >= 1
 
 
 def test_run_all_uses_cached_results(tmp_path, monkeypatch):
@@ -480,15 +499,18 @@ def test_run_all_uses_cached_results(tmp_path, monkeypatch):
             super().__init__()
             self.set_calls = 0
 
-        def get(self, **kwargs):
-            self.retrieved.append(kwargs)
-            return {"metric_value": 2.0, "stats": {"cached": True}}
-
         def set(self, **kwargs):
             self.set_calls += 1
             super().set(**kwargs)
 
+    class _CachedEval(_StubEvaluationCache):
+        def get(self, **kwargs):
+            self.retrieved.append(kwargs)
+            return {"metric_value": 2.0, "stats": {"cached": True}}
+
     runner.results_cache = _CachedResults()
+    runner.evaluation_cache = _CachedEval()
+    runner.mode_config_hash = runner.evaluation_cache.hash_mode_config(runner.mode_config)
 
     def _fail_sim(*args, **kwargs):  # should never be called
         raise AssertionError("Simulation should not execute when cache hits")
@@ -498,7 +520,7 @@ def test_run_all_uses_cached_results(tmp_path, monkeypatch):
     assert len(results) == 1
     assert runner.metrics["result_cache_hits"] >= 1
     assert runner.metrics["result_cache_misses"] == 0
-    assert runner.metrics["param_evals"] == 0
+    assert runner.metrics["fresh_metric_evals"] == 0
     assert runner.results_cache.set_calls == runner.metrics["result_cache_hits"]
 
 
@@ -540,7 +562,7 @@ def test_run_all_handles_failed_and_nan_metrics(tmp_path, monkeypatch):
     results = runner.run_all()
     assert results == []
     assert runner.metrics["result_cache_misses"] >= 1
-    assert runner.metrics.get("param_evals", 0) >= 1
+    assert runner.metrics.get("fresh_metric_evals", 0) >= 1
 
 
 def test_run_pybroker_simulation_generates_metrics(tmp_path, monkeypatch):
@@ -1015,3 +1037,17 @@ def test_run_all_reliability_skip_collection_blocks_remaining_jobs_in_collection
     assert failure["collection"] == "bad_col"
     assert failure["stage"] == "data_validation"
     assert "min_data_points_not_met" in failure["error"]
+
+
+def test_runner_rejects_walk_forward_mode_until_implemented(tmp_path, monkeypatch):
+    cfg = Config(
+        collections=[CollectionConfig(name="demo", source="yfinance", symbols=["AAPL"])],
+        timeframes=["1d"],
+        metric="sharpe",
+        strategies=[],
+        cache_dir=str(tmp_path / "cache"),
+        evaluation_mode="walk_forward",
+    )
+    monkeypatch.setattr("src.backtest.runner.discover_external_strategies", lambda root: {})
+    with pytest.raises(NotImplementedError):
+        BacktestRunner(cfg, strategies_root=tmp_path, run_id="wf")

@@ -13,6 +13,14 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
+from .evaluation.adapters import normalized_rows_to_legacy_rows
+from .evaluation.contracts import (
+    EvaluationModeConfig,
+    EvaluationRequest,
+    ResultRecord,
+)
+from .evaluation.evaluator import BacktestEvaluator
+from .evaluation.store import EvaluationCache, ResultStore
 from ..config import CollectionConfig, Config
 from ..data.alpaca_source import AlpacaSource
 from ..data.alphavantage_source import AlphaVantageSource
@@ -137,18 +145,54 @@ class StrategyEvalOutcome:
     job: JobContext
 
 
+@dataclass
+class ValidationContext:
+    stage: StageName
+    state: JobState
+    mode: str
+    job: JobContext
+    fetched_data: FetchedData | None = None
+    validated_data: ValidatedData | None = None
+    prepared_data: ExecutionPreparedData | None = None
+    plan: StrategyPlan | None = None
+    outcome: StrategyEvalOutcome | None = None
+
+
 class BacktestRunner:
-    def __init__(self, cfg: Config, strategies_root: Path, run_id: str | None = None):
+    def __init__(
+        self,
+        cfg: Config,
+        strategies_root: Path,
+        run_id: str | None = None,
+        evaluation_mode: str | None = None,
+    ):
         self.cfg = cfg
         self.strategies_root = strategies_root
         self.external_index = discover_external_strategies(strategies_root)
         self.results_cache = ResultsCache(Path(self.cfg.cache_dir).parent / "results")
+        eval_root = Path(self.cfg.cache_dir).parent / "evaluation"
+        self.evaluation_cache = EvaluationCache(eval_root)
+        self.result_store = ResultStore(eval_root)
         self.run_id = run_id
         self.logger = get_logger()
         self._pybroker_components: tuple[Any, ...] | None = None
         self._cache_write_failures = 0
         self._strategy_overrides: dict[str, dict[str, Any]] = {}
         self.failures: list[dict[str, Any]] = []
+        requested_mode = (evaluation_mode or getattr(self.cfg, "evaluation_mode", "backtest")).strip().lower()
+        if requested_mode not in {"backtest", "walk_forward"}:
+            raise ValueError(
+                f"Invalid evaluation mode: {requested_mode}. Expected 'backtest' or 'walk_forward'."
+            )
+        if requested_mode == "walk_forward":
+            raise NotImplementedError(
+                "evaluation_mode=walk_forward is configured but not implemented yet. "
+                "Use evaluation_mode=backtest for now."
+            )
+        self.evaluation_mode = requested_mode
+        self.mode_config = EvaluationModeConfig(mode="backtest", payload={})
+        self.mode_config_hash = self.evaluation_cache.hash_mode_config(self.mode_config)
+        self._result_store_write_failures = 0
 
     def _ensure_pybroker(self) -> tuple[Any, ...]:
         if self._pybroker_components is None:
@@ -190,6 +234,31 @@ class BacktestRunner:
                 self.logger.warning(
                     "results cache write failures continuing; suppressing further warnings"
                 )
+
+    def _evaluation_cache_set(self, **kwargs: Any) -> None:
+        try:
+            self.evaluation_cache.set(**kwargs)
+        except Exception as exc:
+            self._cache_write_failures += 1
+            if self._cache_write_failures <= 3:
+                self.logger.warning("evaluation cache write failed", exc_info=exc)
+
+    def _result_store_insert(self, record: ResultRecord) -> None:
+        try:
+            self.result_store.insert(record)
+        except Exception as exc:
+            self._result_store_write_failures += 1
+            if self._result_store_write_failures <= 3:
+                self.logger.warning("result store write failed", exc_info=exc)
+            elif self._result_store_write_failures == 4:
+                self.logger.warning(
+                    "result store write failures continuing; suppressing further warnings"
+                )
+
+    def _get_evaluator(self) -> BacktestEvaluator:
+        # Resolve evaluator at call-time so monkeypatches and future mode dispatch
+        # are reflected without recreating runner instances.
+        return BacktestEvaluator(self._run_pybroker_simulation, self._evaluate_metric)
 
     def _make_source(self, col: CollectionConfig) -> DataSource:
         cache_dir = Path(self.cfg.cache_dir)
@@ -706,13 +775,66 @@ class BacktestRunner:
                     )
         return jobs
 
+    @staticmethod
+    def _gate_action_rank(action: str) -> int:
+        order = {
+            "continue": 0,
+            "skip_optimization": 1,
+            "skip_job": 2,
+            "skip_collection": 3,
+            "reject_result": 4,
+        }
+        return order.get(action, -1)
+
+    def _compose_gate_decisions(self, stage: StageName, *decisions: GateDecision) -> GateDecision:
+        reasons: list[str] = []
+        chosen = GateDecision(True, "continue", [], stage)
+        for decision in decisions:
+            if decision.stage != stage:
+                continue
+            if self._gate_action_rank(decision.action) > self._gate_action_rank(chosen.action):
+                chosen = decision
+            for reason in decision.reasons:
+                if reason not in reasons:
+                    reasons.append(reason)
+        action = chosen.action
+        passed = action in {"continue", "skip_optimization"}
+        return GateDecision(passed=passed, action=action, reasons=reasons, stage=stage)
+
     def _collection_validation(self, state: JobState) -> GateDecision:
-        # Validate collection-level prerequisites once before processing jobs.
+        context = ValidationContext(
+            stage="collection_validation",
+            state=state,
+            mode=self.mode_config.mode,
+            job=state.job,
+        )
+        common_decision = self._collection_validation_common(context)
+        mode_decision = (
+            self._collection_validation_backtest(context)
+            if context.mode == "backtest"
+            else self._collection_validation_walk_forward(context)
+        )
+        return self._compose_gate_decisions("collection_validation", common_decision, mode_decision)
+
+    def _collection_validation_common(self, context: ValidationContext) -> GateDecision:
         try:
-            self._make_source(state.job.collection)
+            self._make_source(context.job.collection)
             return GateDecision(True, "continue", [], "collection_validation")
         except Exception as exc:
             return GateDecision(False, "skip_job", [str(exc)], "collection_validation")
+
+    @staticmethod
+    def _collection_validation_backtest(_context: ValidationContext) -> GateDecision:
+        return GateDecision(True, "continue", [], "collection_validation")
+
+    @staticmethod
+    def _collection_validation_walk_forward(_context: ValidationContext) -> GateDecision:
+        return GateDecision(
+            False,
+            "skip_job",
+            ["walk_forward_collection_validation_not_implemented"],
+            "collection_validation",
+        )
 
     def _data_fetch(self, job: JobContext, only_cached: bool) -> tuple[GateDecision, FetchedData | None]:
         """Fetch market data for one job and translate failures into gate decisions."""
@@ -739,18 +861,40 @@ class BacktestRunner:
         return decision, FetchedData(raw_df=df)
 
     def _data_validation(
-        self, job: JobContext, fetched_data: FetchedData
+        self, state: JobState, fetched_data: FetchedData
     ) -> tuple[GateDecision, ValidatedData | None]:
-        # Compute continuity and reliability policy decisions.
+        context = ValidationContext(
+            stage="data_validation",
+            state=state,
+            mode=self.mode_config.mode,
+            job=state.job,
+            fetched_data=fetched_data,
+        )
+        common_decision, validated_data = self._data_validation_common(context)
+        mode_decision = (
+            self._data_validation_backtest(context)
+            if context.mode == "backtest"
+            else self._data_validation_walk_forward(context)
+        )
+        decision = self._compose_gate_decisions("data_validation", common_decision, mode_decision)
+        return decision, validated_data
+
+    def _data_validation_common(
+        self, context: ValidationContext
+    ) -> tuple[GateDecision, ValidatedData | None]:
+        # Compute continuity and reliability policy decisions shared by all evaluation modes.
+        fetched_data = context.fetched_data
+        if fetched_data is None:
+            return GateDecision(False, "skip_job", ["missing_fetched_data"], "data_validation"), None
         if fetched_data.raw_df.empty:
             return GateDecision(False, "skip_job", ["empty_dataframe"], "data_validation"), None
 
         try:
-            continuity = self.compute_continuity_score(fetched_data.raw_df, job.timeframe)
+            continuity = self.compute_continuity_score(fetched_data.raw_df, context.job.timeframe)
         except ValueError as exc:
             return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
 
-        reliability_cfg = self._resolve_reliability_thresholds(job.collection)
+        reliability_cfg = self._resolve_reliability_thresholds(context.job.collection)
         reliability_on_fail = "skip_optimization"
         min_data_points = None
         min_continuity_score = None
@@ -789,6 +933,19 @@ class BacktestRunner:
         )
         return decision, validated_data
 
+    @staticmethod
+    def _data_validation_backtest(_context: ValidationContext) -> GateDecision:
+        return GateDecision(True, "continue", [], "data_validation")
+
+    @staticmethod
+    def _data_validation_walk_forward(_context: ValidationContext) -> GateDecision:
+        return GateDecision(
+            False,
+            "skip_job",
+            ["walk_forward_data_validation_not_implemented"],
+            "data_validation",
+        )
+
     def _resolve_reliability_thresholds(self, collection: CollectionConfig):
         """Resolve reliability policy with collection-level overrides over global defaults."""
         global_cfg = self.cfg.reliability_thresholds
@@ -822,21 +979,45 @@ class BacktestRunner:
         )
 
     def _execution_context_prepare(
-        self, job: JobContext, validated_data: ValidatedData
+        self, state: JobState, validated_data: ValidatedData
     ) -> tuple[GateDecision, ExecutionPreparedData | None]:
-        # Prepare pybroker-ready frame and execution metadata for strategy stages.
+        context = ValidationContext(
+            stage="data_preparation",
+            state=state,
+            mode=self.mode_config.mode,
+            job=state.job,
+            validated_data=validated_data,
+        )
+        common_decision, prepared = self._execution_context_prepare_common(context)
+        mode_decision = (
+            self._execution_context_prepare_backtest(context)
+            if context.mode == "backtest"
+            else self._execution_context_prepare_walk_forward(context)
+        )
+        decision = self._compose_gate_decisions("data_preparation", common_decision, mode_decision)
+        return decision, prepared
+
+    def _execution_context_prepare_common(
+        self, context: ValidationContext
+    ) -> tuple[GateDecision, ExecutionPreparedData | None]:
+        # Prepare engine-ready frame and execution metadata for strategy stages.
         try:
+            validated_data = context.validated_data
+            if validated_data is None:
+                return GateDecision(False, "skip_job", ["missing_validated_data"], "data_preparation"), None
             _, _, _, _, data_col_enum = self._ensure_pybroker()
-            data_frame, dates = self._prepare_pybroker_frame(validated_data.raw_df, job.symbol, data_col_enum)
-            fractional = self._fractional_enabled(job.collection, job.symbol)
-            bars_per_year = self._bars_per_year(job.timeframe)
+            data_frame, dates = self._prepare_pybroker_frame(
+                validated_data.raw_df, context.job.symbol, data_col_enum
+            )
+            fractional = self._fractional_enabled(context.job.collection, context.job.symbol)
+            bars_per_year = self._bars_per_year(context.job.timeframe)
             price = validated_data.raw_df[
                 "Close" if "Close" in validated_data.raw_df.columns else "close"
             ].astype(float)
             fingerprint = (
                 f"{len(validated_data.raw_df)}:{validated_data.raw_df.index[-1].isoformat()}:{float(price.iloc[-1])}"
             )
-            fees, slippage = self._fees_slippage_for(job.collection)
+            fees, slippage = self._fees_slippage_for(context.job.collection)
             decision = GateDecision(True, "continue", [], "data_preparation")
         except Exception as exc:
             return GateDecision(False, "skip_job", [str(exc)], "data_preparation"), None
@@ -850,6 +1031,19 @@ class BacktestRunner:
             fingerprint=fingerprint,
         )
         return decision, prepared
+
+    @staticmethod
+    def _execution_context_prepare_backtest(_context: ValidationContext) -> GateDecision:
+        return GateDecision(True, "continue", [], "data_preparation")
+
+    @staticmethod
+    def _execution_context_prepare_walk_forward(_context: ValidationContext) -> GateDecision:
+        return GateDecision(
+            False,
+            "skip_job",
+            ["walk_forward_data_preparation_not_implemented"],
+            "data_preparation",
+        )
 
     def _strategy_create_plan(
         self,
@@ -891,11 +1085,32 @@ class BacktestRunner:
 
     def _strategy_validate_plan(
         self,
-        _state: JobState,
+        state: JobState,
         validated_data: ValidatedData,
         plan: StrategyPlan,
     ) -> GateDecision:
+        context = ValidationContext(
+            stage="strategy_optimization",
+            state=state,
+            mode=self.mode_config.mode,
+            job=state.job,
+            validated_data=validated_data,
+            plan=plan,
+        )
+        common_decision = self._strategy_validate_plan_common(context)
+        mode_decision = (
+            self._strategy_validate_plan_backtest(context)
+            if context.mode == "backtest"
+            else self._strategy_validate_plan_walk_forward(context)
+        )
+        return self._compose_gate_decisions("strategy_optimization", common_decision, mode_decision)
+
+    def _strategy_validate_plan_common(self, context: ValidationContext) -> GateDecision:
         # Decide whether to skip optimization for this strategy plan.
+        plan = context.plan
+        validated_data = context.validated_data
+        if plan is None or validated_data is None:
+            return GateDecision(False, "skip_job", ["missing_strategy_plan_context"], "strategy_optimization")
         n_params = len(plan.search_space)
         min_bars_for_optimization = max(self.cfg.param_min_bars, self.cfg.param_dof_multiplier * n_params)
         insufficient_bars = (
@@ -936,6 +1151,19 @@ class BacktestRunner:
             stage="strategy_optimization",
         )
 
+    @staticmethod
+    def _strategy_validate_plan_backtest(_context: ValidationContext) -> GateDecision:
+        return GateDecision(True, "continue", [], "strategy_optimization")
+
+    @staticmethod
+    def _strategy_validate_plan_walk_forward(_context: ValidationContext) -> GateDecision:
+        return GateDecision(
+            False,
+            "skip_job",
+            ["walk_forward_strategy_plan_validation_not_implemented"],
+            "strategy_optimization",
+        )
+
     def _strategy_evaluation(
         self,
         plan: StrategyPlan,
@@ -944,7 +1172,7 @@ class BacktestRunner:
         prepared: ExecutionPreparedData,
         params: dict[str, Any],
     ) -> float:
-        """Evaluate one parameter set, preferring cached results when available."""
+        """Evaluate one parameter set, preferring mode-aware cache when available."""
         full_params = {**plan.fixed_params, **params}
         call_params = full_params.copy()
         try:
@@ -963,35 +1191,55 @@ class BacktestRunner:
         entries = entries.reindex(validated_data.raw_df.index, fill_value=False)
         exits = exits.reindex(validated_data.raw_df.index, fill_value=False)
 
-        cached = self.results_cache.get(
+        request = EvaluationRequest(
             collection=state.job.collection.name,
             symbol=state.job.symbol,
             timeframe=state.job.timeframe,
+            source=state.job.source,
             strategy=plan.strategy.name,
             params=full_params,
             metric_name=self.cfg.metric,
             data_fingerprint=prepared.fingerprint,
             fees=prepared.fees,
             slippage=prepared.slippage,
+            bars_per_year=prepared.bars_per_year,
+            mode_config=self.mode_config,
+        )
+
+        cached = self.evaluation_cache.get(
+            collection=request.collection,
+            symbol=request.symbol,
+            timeframe=request.timeframe,
+            strategy=request.strategy,
+            params=request.params,
+            metric_name=request.metric_name,
+            data_fingerprint=request.data_fingerprint,
+            fees=request.fees,
+            slippage=request.slippage,
+            evaluation_mode=self.mode_config.mode,
+            mode_config_hash=self.mode_config_hash,
         )
         if cached is not None:
             self.metrics["result_cache_hits"] += 1
             plan.evaluations += 1
             val_cached = float(cached["metric_value"])
             cached_stats = dict(cached["stats"])
+            # Legacy cache continues to be written for reporting compatibility.
             self._cache_set(
-                collection=state.job.collection.name,
-                symbol=state.job.symbol,
-                timeframe=state.job.timeframe,
-                strategy=plan.strategy.name,
-                params=full_params,
-                metric_name=self.cfg.metric,
+                collection=request.collection,
+                symbol=request.symbol,
+                timeframe=request.timeframe,
+                strategy=request.strategy,
+                params=request.params,
+                metric_name=request.metric_name,
                 metric_value=val_cached,
                 stats=cached_stats,
-                data_fingerprint=prepared.fingerprint,
-                fees=prepared.fees,
-                slippage=prepared.slippage,
+                data_fingerprint=request.data_fingerprint,
+                fees=request.fees,
+                slippage=request.slippage,
                 run_id=self.run_id,
+                evaluation_mode=self.mode_config.mode,
+                mode_config_hash=self.mode_config_hash,
             )
             if val_cached > plan.best_val:
                 plan.best_val = val_cached
@@ -1000,45 +1248,64 @@ class BacktestRunner:
             return val_cached
 
         self.metrics["result_cache_misses"] += 1
-        sim_result = self._run_pybroker_simulation(
+        outcome = self._get_evaluator().evaluate(
+            request,
             prepared.data_frame,
             prepared.dates,
-            state.job.symbol,
             entries,
             exits,
-            prepared.fees,
-            prepared.slippage,
-            state.job.timeframe,
             prepared.fractional,
-            prepared.bars_per_year,
         )
-        if sim_result is None:
-            return float("-inf")
-        returns, equity_curve, stats = sim_result
-        stats = dict(stats)
+        stats = dict(outcome.stats)
         if plan.optimization_details is not None:
             stats["optimization"] = plan.optimization_details
         reliability = dict(stats.get("data_reliability", {}))
         reliability["continuity"] = validated_data.continuity
         stats["data_reliability"] = reliability
-        self.metrics["param_evals"] += 1
         plan.evaluations += 1
-        metric_val = self._evaluate_metric(self.cfg.metric, returns, equity_curve, prepared.bars_per_year)
-        if not np.isfinite(metric_val):
+        # Evaluator owns execution-state flags; runner only aggregates.
+        if outcome.simulation_executed:
+            self.metrics["fresh_simulation_runs"] += 1
+        if outcome.metric_computed:
+            self.metrics["fresh_metric_evals"] += 1
+            # Backward-compatible alias for existing dashboards/tests.
+            self.metrics["param_evals"] = self.metrics["fresh_metric_evals"]
+        if not outcome.valid:
             return float("-inf")
-        self._cache_set(
-            collection=state.job.collection.name,
-            symbol=state.job.symbol,
-            timeframe=state.job.timeframe,
-            strategy=plan.strategy.name,
-            params=full_params,
-            metric_name=self.cfg.metric,
-            metric_value=float(metric_val),
+        metric_val = float(outcome.metric_value)
+
+        self._evaluation_cache_set(
+            collection=request.collection,
+            symbol=request.symbol,
+            timeframe=request.timeframe,
+            strategy=request.strategy,
+            params=request.params,
+            metric_name=request.metric_name,
+            metric_value=metric_val,
             stats=stats,
-            data_fingerprint=prepared.fingerprint,
-            fees=prepared.fees,
-            slippage=prepared.slippage,
+            data_fingerprint=request.data_fingerprint,
+            fees=request.fees,
+            slippage=request.slippage,
+            evaluation_mode=self.mode_config.mode,
+            mode_config_hash=self.mode_config_hash,
+        )
+
+        # Legacy cache remains the compatibility source for current reporters.
+        self._cache_set(
+            collection=request.collection,
+            symbol=request.symbol,
+            timeframe=request.timeframe,
+            strategy=request.strategy,
+            params=request.params,
+            metric_name=request.metric_name,
+            metric_value=metric_val,
+            stats=stats,
+            data_fingerprint=request.data_fingerprint,
+            fees=request.fees,
+            slippage=request.slippage,
             run_id=self.run_id,
+            evaluation_mode=self.mode_config.mode,
+            mode_config_hash=self.mode_config_hash,
         )
         if metric_val > plan.best_val:
             plan.best_val = metric_val
@@ -1108,7 +1375,27 @@ class BacktestRunner:
             return None
 
     def _strategy_validate_results(self, state: JobState, outcome: StrategyEvalOutcome) -> GateDecision:
+        context = ValidationContext(
+            stage="strategy_validation",
+            state=state,
+            mode=self.mode_config.mode,
+            job=state.job,
+            outcome=outcome,
+        )
+        common_decision = self._strategy_validate_results_common(context)
+        mode_decision = (
+            self._strategy_validate_results_backtest(context)
+            if context.mode == "backtest"
+            else self._strategy_validate_results_walk_forward(context)
+        )
+        return self._compose_gate_decisions("strategy_validation", common_decision, mode_decision)
+
+    @staticmethod
+    def _strategy_validate_results_common(context: ValidationContext) -> GateDecision:
         # Keep this gate lightweight for now; stricter schema checks can be added later.
+        outcome = context.outcome
+        if outcome is None:
+            return GateDecision(False, "reject_result", ["missing_strategy_outcome"], "strategy_validation")
         if not outcome.has_valid_candidate:
             return GateDecision(False, "reject_result", ["no_valid_candidate"], "strategy_validation")
 
@@ -1121,6 +1408,42 @@ class BacktestRunner:
             decision = GateDecision(True, "continue", [], "strategy_validation")
         return decision
 
+    @staticmethod
+    def _strategy_validate_results_backtest(_context: ValidationContext) -> GateDecision:
+        return GateDecision(True, "continue", [], "strategy_validation")
+
+    @staticmethod
+    def _strategy_validate_results_walk_forward(_context: ValidationContext) -> GateDecision:
+        return GateDecision(
+            False,
+            "reject_result",
+            ["walk_forward_result_validation_not_implemented"],
+            "strategy_validation",
+        )
+
+    def _build_result_record(self, best: BestResult, job: JobContext, prepared: ExecutionPreparedData) -> ResultRecord:
+        return ResultRecord(
+            run_id=self.run_id,
+            evaluation_mode=self.mode_config.mode,
+            collection=best.collection,
+            symbol=best.symbol,
+            timeframe=best.timeframe,
+            source=job.source,
+            strategy=best.strategy,
+            params=dict(best.params),
+            metric_name=best.metric_name,
+            metric_value=float(best.metric_value),
+            stats=dict(best.stats),
+            data_fingerprint=prepared.fingerprint,
+            fees=prepared.fees,
+            slippage=prepared.slippage,
+            mode_config_hash=self.mode_config_hash,
+        )
+
+    def list_result_rows_for_run(self, run_id: str) -> list[dict[str, Any]]:
+        rows = self.result_store.list_by_run(run_id)
+        return normalized_rows_to_legacy_rows(rows)
+
     def run_all(self, only_cached: bool = False) -> list[BestResult]:
         """Execute the full backtest pipeline across all jobs and strategies."""
         best_results: list[BestResult] = []
@@ -1128,12 +1451,15 @@ class BacktestRunner:
         self.metrics = {
             "result_cache_hits": 0,
             "result_cache_misses": 0,
+            "fresh_simulation_runs": 0,
+            "fresh_metric_evals": 0,
             "param_evals": 0,
             "symbols_tested": 0,
             "strategies_used": set(),
         }
         self.failures = []
         self._cache_write_failures = 0
+        self._result_store_write_failures = 0
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
         )
@@ -1172,7 +1498,7 @@ class BacktestRunner:
             if not data_fetch_decision.passed or fetched_data is None:
                 continue
 
-            data_decision, validated_data = self._data_validation(state.job, fetched_data)
+            data_decision, validated_data = self._data_validation(state, fetched_data)
             data_decision = self._handle_gate_decision(
                 state,
                 data_decision,
@@ -1181,7 +1507,7 @@ class BacktestRunner:
             if not data_decision.passed or validated_data is None:
                 continue
 
-            prep_decision, prepared = self._execution_context_prepare(state.job, validated_data)
+            prep_decision, prepared = self._execution_context_prepare(state, validated_data)
             prep_decision = self._handle_gate_decision(
                 state,
                 prep_decision,
@@ -1217,18 +1543,18 @@ class BacktestRunner:
                 if not validation_decision.passed:
                     continue
 
-                best_results.append(
-                    BestResult(
-                        collection=state.job.collection.name,
-                        symbol=state.job.symbol,
-                        timeframe=state.job.timeframe,
-                        strategy=plan.strategy.name,
-                        params=outcome.best_params or {},
-                        metric_name=self.cfg.metric,
-                        metric_value=float(outcome.best_val),
-                        stats=outcome.best_stats or {},
-                    )
+                best = BestResult(
+                    collection=state.job.collection.name,
+                    symbol=state.job.symbol,
+                    timeframe=state.job.timeframe,
+                    strategy=plan.strategy.name,
+                    params=outcome.best_params or {},
+                    metric_name=self.cfg.metric,
+                    metric_value=float(outcome.best_val),
+                    stats=outcome.best_stats or {},
                 )
+                best_results.append(best)
+                self._result_store_insert(self._build_result_record(best, state.job, prepared))
 
         if isinstance(self.metrics.get("strategies_used"), set):
             self.metrics["strategies_count"] = len(self.metrics["strategies_used"])  # type: ignore

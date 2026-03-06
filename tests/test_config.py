@@ -21,6 +21,41 @@ metric: sharpe
 
     cfg = load_config(path)
     assert cfg.strategies == []
+    assert cfg.evaluation_mode == "backtest"
+
+
+def test_load_config_accepts_evaluation_mode(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+evaluation_mode: walk_forward
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.evaluation_mode == "walk_forward"
+
+
+def test_load_config_rejects_invalid_evaluation_mode(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+evaluation_mode: invalid_mode
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
 
 
 def test_load_config_reliability_thresholds(tmp_path: Path):

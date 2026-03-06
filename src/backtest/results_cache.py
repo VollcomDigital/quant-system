@@ -33,6 +33,8 @@ class ResultsCache:
                     fees REAL,
                     slippage REAL,
                     run_id TEXT,
+                    evaluation_mode TEXT DEFAULT 'backtest',
+                    mode_config_hash TEXT DEFAULT '',
                     engine_version TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY(collection, symbol, timeframe, strategy, params_json, metric_name, data_fingerprint, fees, slippage, engine_version)
@@ -42,6 +44,16 @@ class ResultsCache:
             # Backward-compat: ensure run_id column exists
             try:
                 con.execute("ALTER TABLE results ADD COLUMN run_id TEXT")
+            except Exception:
+                pass
+            try:
+                con.execute(
+                    "ALTER TABLE results ADD COLUMN evaluation_mode TEXT DEFAULT 'backtest'"
+                )
+            except Exception:
+                pass
+            try:
+                con.execute("ALTER TABLE results ADD COLUMN mode_config_hash TEXT DEFAULT ''")
             except Exception:
                 pass
             con.commit()
@@ -61,6 +73,8 @@ class ResultsCache:
         fees: float,
         slippage: float,
         run_id: str | None = None,
+        evaluation_mode: str = "backtest",
+        mode_config_hash: str = "",
     ) -> dict[str, Any] | None:
         params_json = json.dumps(params, sort_keys=True)
         con = sqlite3.connect(self.db_path)
@@ -71,6 +85,8 @@ class ResultsCache:
                 WHERE collection=? AND symbol=? AND timeframe=? AND strategy=?
                   AND params_json=? AND metric_name=? AND data_fingerprint=?
                   AND fees=? AND slippage=? AND engine_version=?
+                  AND COALESCE(evaluation_mode, 'backtest')=?
+                  AND COALESCE(mode_config_hash, '')=?
                 """,
                 (
                     collection,
@@ -83,6 +99,8 @@ class ResultsCache:
                     fees,
                     slippage,
                     ENGINE_VERSION,
+                    evaluation_mode,
+                    mode_config_hash,
                 ),
             )
             row = cur.fetchone()
@@ -111,6 +129,8 @@ class ResultsCache:
         fees: float,
         slippage: float,
         run_id: str | None = None,
+        evaluation_mode: str = "backtest",
+        mode_config_hash: str = "",
     ) -> None:
         params_json = json.dumps(params, sort_keys=True)
         con = sqlite3.connect(self.db_path)
@@ -118,8 +138,24 @@ class ResultsCache:
             con.execute(
                 """
                 INSERT OR REPLACE INTO results
-                (collection, symbol, timeframe, strategy, params_json, metric_name, metric_value, stats_json, data_fingerprint, fees, slippage, run_id, engine_version)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (
+                    collection,
+                    symbol,
+                    timeframe,
+                    strategy,
+                    params_json,
+                    metric_name,
+                    metric_value,
+                    stats_json,
+                    data_fingerprint,
+                    fees,
+                    slippage,
+                    run_id,
+                    evaluation_mode,
+                    mode_config_hash,
+                    engine_version
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     collection,
@@ -134,6 +170,8 @@ class ResultsCache:
                     fees,
                     slippage,
                     run_id,
+                    evaluation_mode,
+                    mode_config_hash,
                     ENGINE_VERSION,
                 ),
             )
