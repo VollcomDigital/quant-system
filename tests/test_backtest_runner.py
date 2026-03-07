@@ -7,8 +7,8 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from src.backtest.runner import BacktestRunner, BestResult
-from src.config import CollectionConfig, Config, StrategyConfig
+from src.backtest.runner import BacktestRunner, BestResult, GateDecision
+from src.config import CollectionConfig, Config, ReliabilityThresholdsConfig, StrategyConfig
 from src.strategies.base import BaseStrategy
 
 
@@ -54,6 +54,23 @@ class _StubResultsCache:
                 "metric": metric_name,
             }
         )
+        return None
+
+    def set(self, **kwargs):
+        self.saved.append(kwargs)
+
+
+class _StubEvaluationCache:
+    def __init__(self):
+        self.saved = []
+        self.retrieved = []
+
+    def hash_mode_config(self, mode_config):
+        payload = mode_config.payload if hasattr(mode_config, "payload") else {}
+        return f"{mode_config.mode}:{sorted(payload.items())}"
+
+    def get(self, **kwargs):
+        self.retrieved.append(kwargs)
         return None
 
     def set(self, **kwargs):
@@ -201,17 +218,99 @@ def _make_runner(
         monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _fake_sim)
 
     runner.results_cache = _StubResultsCache()
+    runner.evaluation_cache = _StubEvaluationCache()
+    runner.mode_config_hash = runner.evaluation_cache.hash_mode_config(runner.mode_config)
     return runner
 
 
 def test_bars_per_year_various_units():
     assert BacktestRunner._bars_per_year("1d") == 252
     assert BacktestRunner._bars_per_year("2w") == 26
+    assert BacktestRunner._bars_per_year("1wk") == 52
+    assert BacktestRunner._bars_per_year("1mo") == 12
     assert BacktestRunner._bars_per_year("4h") == pytest.approx(int(round(24 * 365 / 4)))
     assert BacktestRunner._bars_per_year("15m") == pytest.approx(int(round(60 * 24 * 365 / 15)))
     assert BacktestRunner._bars_per_year("10s") == pytest.approx(
         int(round(60 * 60 * 24 * 365 / 10))
     )
+
+
+def test_timeframe_to_timedelta_supports_common_aliases():
+    assert BacktestRunner._timeframe_to_timedelta("1wk") == pd.Timedelta(weeks=1)
+    assert BacktestRunner._timeframe_to_timedelta("1mo") == pd.Timedelta(days=30)
+
+
+@pytest.mark.parametrize(
+    ("idx", "values", "expected"),
+    [
+        (
+            pd.date_range("2024-01-01", periods=5, freq="D"),
+            [1, 2, 3, 4, 5],
+            {
+                "score": pytest.approx(1.0),
+                "coverage_ratio": pytest.approx(1.0),
+                "missing_bars": 0,
+                "largest_gap_bars": 0,
+                "expected_bars": 5,
+                "actual_bars": 5,
+                "unique_bars": 5,
+                "duplicate_bars": 0,
+            },
+        ),
+        (
+            pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-04", "2024-01-05"]),
+            [1, 2, 4, 5],
+            {
+                "missing_bars": 1,
+                "largest_gap_bars": 1,
+                "expected_bars": 5,
+                "actual_bars": 4,
+            },
+        ),
+        (
+            pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-02", "2024-01-03"]),
+            [1, 2, 2, 3],
+            {
+                "missing_bars": 0,
+                "actual_bars": 4,
+                "unique_bars": 3,
+                "duplicate_bars": 1,
+            },
+        ),
+    ],
+    ids=["complete_series", "missing_internal_bars", "deduplicated_index"],
+)
+def test_compute_continuity_score_scenarios(idx, values, expected):
+    df = pd.DataFrame({"Close": values}, index=idx)
+    continuity = BacktestRunner.compute_continuity_score(df, "1d")
+
+    for key, value in expected.items():
+        assert continuity[key] == value
+
+    if expected["missing_bars"] > 0 or expected.get("duplicate_bars", 0) > 0:
+        assert continuity["score"] < 1.0
+
+
+@pytest.mark.parametrize(
+    ("df", "timeframe", "error_match"),
+    [
+        (pd.DataFrame(columns=["Close"]), "1d", "insufficient_bars_for_continuity"),
+        (
+            pd.DataFrame({"Close": [1]}, index=pd.to_datetime(["2024-01-01"])),
+            "1d",
+            "insufficient_bars_for_continuity",
+        ),
+        (
+            pd.DataFrame({"Close": [1, 2, 3]}, index=pd.date_range("2024-01-01", periods=3, freq="D")),
+            "1quarter",
+            "unsupported_timeframe_for_continuity",
+        ),
+    ],
+    ids=["empty_frame", "single_bar", "unsupported_timeframe"],
+)
+def test_compute_continuity_score_invalid_inputs(df, timeframe, error_match):
+    with pytest.raises(ValueError, match=error_match):
+        BacktestRunner.compute_continuity_score(df, timeframe)
 
 
 def test_sample_series_preserves_last_point():
@@ -392,8 +491,50 @@ def test_run_all_produces_best_result(tmp_path, monkeypatch):
     # results cache set should have been called with run_id
     assert runner.results_cache.saved
     assert runner.results_cache.saved[0]["run_id"] == "test-run"
+    assert "data_reliability" in best.stats
+    assert "continuity" in best.stats["data_reliability"]
+    assert best.stats["data_reliability"]["continuity"]["score"] == pytest.approx(1.0)
     assert runner.metrics["result_cache_misses"] >= 1
-    assert runner.metrics["param_evals"] >= 1
+    assert runner.metrics["fresh_metric_evals"] >= 1
+
+
+def test_run_all_accepts_weekly_timeframe_alias(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.timeframes = ["1wk"]
+
+    results = runner.run_all()
+    assert len(results) == 1
+
+
+def test_evaluation_cache_persists_raw_stats_only(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    assert runner.evaluation_cache.saved
+    cached_stats = runner.evaluation_cache.saved[0]["stats"]
+    assert "data_reliability" not in cached_stats
+    assert "optimization" not in cached_stats
+
+
+def test_run_all_skips_strategy_when_plan_gate_fails(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+
+    def _skip_plan(self, state, validated_data, plan):
+        return GateDecision(False, "skip_job", ["plan_gate_blocked"], "strategy_optimization")
+
+    def _fail_strategy_run(*args, **kwargs):  # pragma: no cover - defensive assertion
+        raise AssertionError("strategy should not execute when plan gate fails")
+
+    monkeypatch.setattr(BacktestRunner, "_strategy_validate_plan", _skip_plan)
+    monkeypatch.setattr(BacktestRunner, "_strategy_run", _fail_strategy_run)
+
+    results = runner.run_all()
+    assert results == []
+    assert runner.metrics["symbols_tested"] == 1
+    assert runner.failures
+    assert runner.failures[0]["stage"] == "strategy_optimization"
+    assert runner.failures[0]["error"] == "plan_gate_blocked"
 
 
 def test_run_all_uses_cached_results(tmp_path, monkeypatch):
@@ -404,15 +545,18 @@ def test_run_all_uses_cached_results(tmp_path, monkeypatch):
             super().__init__()
             self.set_calls = 0
 
-        def get(self, **kwargs):
-            self.retrieved.append(kwargs)
-            return {"metric_value": 2.0, "stats": {"cached": True}}
-
         def set(self, **kwargs):
             self.set_calls += 1
             super().set(**kwargs)
 
+    class _CachedEval(_StubEvaluationCache):
+        def get(self, **kwargs):
+            self.retrieved.append(kwargs)
+            return {"metric_value": 2.0, "stats": {"cached": True}}
+
     runner.results_cache = _CachedResults()
+    runner.evaluation_cache = _CachedEval()
+    runner.mode_config_hash = runner.evaluation_cache.hash_mode_config(runner.mode_config)
 
     def _fail_sim(*args, **kwargs):  # should never be called
         raise AssertionError("Simulation should not execute when cache hits")
@@ -422,12 +566,14 @@ def test_run_all_uses_cached_results(tmp_path, monkeypatch):
     assert len(results) == 1
     assert runner.metrics["result_cache_hits"] >= 1
     assert runner.metrics["result_cache_misses"] == 0
-    assert runner.metrics["param_evals"] == 0
+    assert runner.metrics["fresh_metric_evals"] == 0
     assert runner.results_cache.set_calls == runner.metrics["result_cache_hits"]
 
 
 def test_run_all_handles_failed_and_nan_metrics(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.param_min_bars = 1
+    runner.cfg.param_dof_multiplier = 1
     call_state = {"count": 0}
 
     def _sim_with_none(self, *args, **kwargs):
@@ -462,7 +608,11 @@ def test_run_all_handles_failed_and_nan_metrics(tmp_path, monkeypatch):
     results = runner.run_all()
     assert results == []
     assert runner.metrics["result_cache_misses"] >= 1
-    assert runner.metrics.get("param_evals", 0) >= 1
+    assert runner.metrics.get("fresh_metric_evals", 0) >= 1
+    assert len(runner.evaluation_cache.saved) == 1
+    assert len(runner.results_cache.saved) == 1
+    assert runner.evaluation_cache.saved[0]["metric_value"] == float("-inf")
+    assert runner.results_cache.saved[0]["metric_value"] == float("-inf")
 
 
 def test_run_pybroker_simulation_generates_metrics(tmp_path, monkeypatch):
@@ -597,6 +747,10 @@ def test_run_all_skips_empty_frames(tmp_path, monkeypatch):
     results = runner.run_all()
     assert results == []
     assert not runner.results_cache.saved
+    assert runner.failures
+    failure = runner.failures[0]
+    assert failure["stage"] == "data_validation"
+    assert failure["error"] == "empty_dataframe"
 
 
 def _make_ohlcv(periods: int) -> pd.DataFrame:
@@ -694,3 +848,321 @@ def test_run_all_min_bars_and_dof_guard_behavior(
         assert optimization["bars_available"] == bars
     else:
         assert optimization is None
+
+
+def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.reliability_thresholds = ReliabilityThresholdsConfig(
+        min_data_points=10, on_fail="skip_optimization"
+    )
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results
+    assert eval_calls["count"] == 1
+    optimization = results[0].stats.get("optimization")
+    assert optimization is not None
+    assert optimization["reason"] == "reliability_threshold_skip_optimization"
+    reasons = optimization.get("reliability_reasons", [])
+    assert any("min_data_points_not_met" in r for r in reasons)
+
+
+def test_run_all_reliability_skip_evaluation_on_continuity_threshold(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.reliability_thresholds = ReliabilityThresholdsConfig(
+        min_continuity_score=0.95,
+        on_fail="skip_job",
+    )
+
+    class _GappySource:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            idx = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-04", "2024-01-05"])
+            return pd.DataFrame(
+                {
+                    "Open": [10, 11, 13, 14],
+                    "High": [11, 12, 14, 15],
+                    "Low": [9, 10, 12, 13],
+                    "Close": [10.5, 11.5, 13.5, 14.5],
+                    "Volume": [100, 110, 130, 140],
+                },
+                index=idx,
+            )
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _GappySource())
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert runner.failures
+    failure = runner.failures[0]
+    assert failure["stage"] == "data_validation"
+    assert "min_continuity_score_not_met" in failure["error"]
+
+
+def test_run_all_fetches_once_per_symbol_timeframe_with_multiple_strategies(tmp_path, monkeypatch):
+    class _AltStrategy(BaseStrategy):
+        name = "alt"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    monkeypatch.setattr(
+        "src.backtest.runner.discover_external_strategies",
+        lambda root: {"dummy": _DummyStrategy, "alt": _AltStrategy},
+    )
+    runner.external_index = {"dummy": _DummyStrategy, "alt": _AltStrategy}
+
+    fetch_calls = {"count": 0}
+
+    class _Source:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            fetch_calls["count"] += 1
+            return _make_ohlcv(5)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
+    _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert fetch_calls["count"] == 1
+    assert len(results) == 2
+    assert runner.metrics["symbols_tested"] == 1
+
+
+def test_run_all_skip_evaluation_adds_single_failure_for_multiple_strategies(tmp_path, monkeypatch):
+    class _AltStrategy(BaseStrategy):
+        name = "alt"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.cfg.reliability_thresholds = ReliabilityThresholdsConfig(
+        min_data_points=10,
+        on_fail="skip_job",
+    )
+    monkeypatch.setattr(
+        "src.backtest.runner.discover_external_strategies",
+        lambda root: {"dummy": _DummyStrategy, "alt": _AltStrategy},
+    )
+    runner.external_index = {"dummy": _DummyStrategy, "alt": _AltStrategy}
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert len(runner.failures) == 1
+    assert runner.failures[0]["stage"] == "data_validation"
+    assert "min_data_points_not_met" in runner.failures[0]["error"]
+
+
+def test_run_all_skip_optimization_still_evaluates_each_strategy(tmp_path, monkeypatch):
+    class _AltStrategy(BaseStrategy):
+        name = "alt"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [5, 6]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.cfg.reliability_thresholds = ReliabilityThresholdsConfig(
+        min_data_points=10,
+        on_fail="skip_optimization",
+    )
+    monkeypatch.setattr(
+        "src.backtest.runner.discover_external_strategies",
+        lambda root: {"dummy": _DummyStrategy, "alt": _AltStrategy},
+    )
+    runner.external_index = {"dummy": _DummyStrategy, "alt": _AltStrategy}
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 2
+    assert eval_calls["count"] == 2
+    for result in results:
+        optimization = result.stats.get("optimization")
+        assert optimization is not None
+        assert optimization["reason"] == "reliability_threshold_skip_optimization"
+        reasons = optimization.get("reliability_reasons", [])
+        assert any("min_data_points_not_met" in reason for reason in reasons)
+
+
+def test_strategy_plan_skip_optimization_does_not_leak_to_next_strategy(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.param_min_bars = 1
+    runner.cfg.param_dof_multiplier = 3
+    runner.cfg.strategies = []
+
+    class _WideStrategy(BaseStrategy):
+        name = "wide"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"a": [1, 2], "b": [1, 2], "c": [1, 2]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    class _NarrowStrategy(BaseStrategy):
+        name = "narrow"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"x": [1, 2]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    sim_calls = {"count": 0}
+
+    def _counting_sim(self, *args, **kwargs):
+        sim_calls["count"] += 1
+        dates = pd.date_range("2024-01-01", periods=5, freq="D")
+        returns = pd.Series([0.01, 0.0, 0.0, 0.0, 0.0], index=dates)
+        equity = (1 + returns).cumprod()
+        stats = {
+            "sharpe": 1.0,
+            "sortino": 1.0,
+            "omega": 1.0,
+            "tail_ratio": 1.0,
+            "profit": 0.01,
+            "pain_index": 0.0,
+            "trades": 1,
+            "max_drawdown": 0.0,
+            "cagr": 0.0,
+            "calmar": 0.0,
+            "equity_curve": [],
+            "drawdown_curve": [],
+            "trades_log": [],
+        }
+        return returns, equity, stats
+
+    monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _counting_sim)
+    monkeypatch.setattr(
+        "src.backtest.runner.discover_external_strategies",
+        lambda root: {"wide": _WideStrategy, "narrow": _NarrowStrategy},
+    )
+    runner.external_index = {"wide": _WideStrategy, "narrow": _NarrowStrategy}
+
+    results = runner.run_all()
+    assert len(results) == 2
+    assert sim_calls["count"] == 3
+
+
+def test_run_all_collection_reliability_override_takes_precedence(tmp_path, monkeypatch):
+    collection = CollectionConfig(
+        name="demo",
+        source="custom",
+        symbols=["AAPL"],
+        fees=0.0004,
+        slippage=0.0003,
+        reliability_thresholds=ReliabilityThresholdsConfig(
+            min_data_points=10,
+            on_fail="skip_optimization",
+        ),
+    )
+    runner = _make_runner(tmp_path, monkeypatch, collections=[collection])
+    runner.cfg.reliability_thresholds = ReliabilityThresholdsConfig(
+        min_data_points=10,
+        on_fail="skip_job",
+    )
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    assert eval_calls["count"] == 1
+    optimization = results[0].stats.get("optimization")
+    assert optimization is not None
+    assert optimization["reason"] == "reliability_threshold_skip_optimization"
+    reasons = optimization.get("reliability_reasons", [])
+    assert any("min_data_points_not_met" in reason for reason in reasons)
+
+
+def test_run_all_reliability_skip_collection_blocks_remaining_jobs_in_collection(
+    tmp_path, monkeypatch
+):
+    collections = [
+        CollectionConfig(
+            name="bad_col",
+            source="custom",
+            symbols=["AAPL", "MSFT"],
+            fees=0.0004,
+            slippage=0.0003,
+        ),
+        CollectionConfig(
+            name="good_col",
+            source="custom",
+            symbols=["NVDA"],
+            fees=0.0004,
+            slippage=0.0003,
+        ),
+    ]
+    runner = _make_runner(tmp_path, monkeypatch, collections=collections)
+    runner.cfg.reliability_thresholds = ReliabilityThresholdsConfig(
+        min_data_points=10,
+        on_fail="skip_collection",
+    )
+
+    fetch_calls = {"bad_col": 0, "good_col": 0}
+
+    class _Source:
+        def __init__(self, collection_name: str):
+            self.collection_name = collection_name
+
+        def fetch(self, symbol, timeframe, only_cached=False):
+            fetch_calls[self.collection_name] += 1
+            if self.collection_name == "bad_col":
+                return _make_ohlcv(5)
+            return _make_ohlcv(20)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source(col.name))
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    assert fetch_calls["bad_col"] == 1
+    assert fetch_calls["good_col"] == 1
+    assert eval_calls["count"] == 1
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["collection"] == "bad_col"
+    assert failure["stage"] == "data_validation"
+    assert "min_data_points_not_met" in failure["error"]
+
+
+def test_runner_rejects_walk_forward_mode_until_implemented(tmp_path, monkeypatch):
+    cfg = Config(
+        collections=[CollectionConfig(name="demo", source="yfinance", symbols=["AAPL"])],
+        timeframes=["1d"],
+        metric="sharpe",
+        strategies=[],
+        cache_dir=str(tmp_path / "cache"),
+        evaluation_mode="walk_forward",
+    )
+    monkeypatch.setattr("src.backtest.runner.discover_external_strategies", lambda root: {})
+    with pytest.raises(NotImplementedError):
+        BacktestRunner(cfg, strategies_root=tmp_path, run_id="wf")

@@ -25,6 +25,7 @@ class CollectionConfig:
     quote: str | None = None  # for ccxt symbols e.g., USDT
     fees: float | None = None
     slippage: float | None = None
+    reliability_thresholds: "ReliabilityThresholdsConfig | None" = None
 
 
 @dataclass
@@ -39,6 +40,15 @@ class SlackNotificationConfig:
 @dataclass
 class NotificationsConfig:
     slack: SlackNotificationConfig | None = None
+
+
+@dataclass
+class ReliabilityThresholdsConfig:
+    min_data_points: int | None = None
+    max_missing_bar_pct: float | None = None
+    max_kurtosis: float | None = None
+    min_continuity_score: float | None = None
+    on_fail: str | None = None
 
 
 @dataclass
@@ -60,7 +70,55 @@ class Config:
     slippage: float = 0.0
     risk_free_rate: float = 0.0
     cache_dir: str = ".cache/data"
+    evaluation_mode: str = "backtest"
     notifications: NotificationsConfig | None = None
+    reliability_thresholds: ReliabilityThresholdsConfig | None = None
+
+
+def _parse_reliability_thresholds(raw: Any, prefix: str) -> ReliabilityThresholdsConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid `{prefix}`: expected a mapping")
+
+    on_fail_raw = raw.get("on_fail")
+    on_fail: str | None = None
+    if on_fail_raw is not None:
+        on_fail = str(on_fail_raw).strip().lower()
+        allowed_on_fail = {"skip_optimization", "skip_job", "skip_collection"}
+        if on_fail not in allowed_on_fail:
+            raise ValueError(
+                f"Invalid `{prefix}.on_fail`: expected one of {sorted(allowed_on_fail)}, got '{on_fail}'"
+            )
+
+    def _as_optional_int(value: Any, field: str) -> int | None:
+        if value is None:
+            return None
+        parsed = int(value)
+        if parsed < 0:
+            raise ValueError(f"`{prefix}.{field}` must be >= 0")
+        return parsed
+
+    def _as_optional_float(value: Any, field: str) -> float | None:
+        if value is None:
+            return None
+        parsed = float(value)
+        if parsed < 0:
+            raise ValueError(f"`{prefix}.{field}` must be >= 0")
+        return parsed
+
+    cfg = ReliabilityThresholdsConfig(
+        min_data_points=_as_optional_int(raw.get("min_data_points"), "min_data_points"),
+        max_missing_bar_pct=_as_optional_float(raw.get("max_missing_bar_pct"), "max_missing_bar_pct"),
+        max_kurtosis=_as_optional_float(raw.get("max_kurtosis"), "max_kurtosis"),
+        min_continuity_score=_as_optional_float(
+            raw.get("min_continuity_score"), "min_continuity_score"
+        ),
+        on_fail=on_fail,
+    )
+    if cfg.min_continuity_score is not None and not 0.0 <= cfg.min_continuity_score <= 1.0:
+        raise ValueError(f"`{prefix}.min_continuity_score` must be between 0 and 1")
+    return cfg
 
 
 def load_config(path: str | Path) -> Config:
@@ -91,8 +149,12 @@ def load_config(path: str | Path) -> Config:
             quote=c.get("quote"),
             fees=c.get("fees"),
             slippage=c.get("slippage"),
+            reliability_thresholds=_parse_reliability_thresholds(
+                c.get("reliability_thresholds"),
+                f"collections[{idx}].reliability_thresholds",
+            ),
         )
-        for c in raw["collections"]
+        for idx, c in enumerate(raw["collections"])
     ]
 
     strategies = [
@@ -121,6 +183,17 @@ def load_config(path: str | Path) -> Config:
         if slack_cfg is not None:
             notifications_cfg = NotificationsConfig(slack=slack_cfg)
 
+    reliability_cfg = _parse_reliability_thresholds(
+        raw.get("reliability_thresholds"), "reliability_thresholds"
+    )
+
+    evaluation_mode = str(raw.get("evaluation_mode", "backtest")).strip().lower()
+    allowed_modes = {"backtest", "walk_forward"}
+    if evaluation_mode not in allowed_modes:
+        raise ValueError(
+            f"Invalid `evaluation_mode`: expected one of {sorted(allowed_modes)}, got '{evaluation_mode}'"
+        )
+
     cfg = Config(
         collections=collections,
         timeframes=raw["timeframes"],
@@ -139,6 +212,8 @@ def load_config(path: str | Path) -> Config:
         slippage=float(raw.get("slippage", 0.0)),
         risk_free_rate=float(raw.get("risk_free_rate", 0.0)),
         cache_dir=raw.get("cache_dir", ".cache/data"),
+        evaluation_mode=evaluation_mode,
         notifications=notifications_cfg,
+        reliability_thresholds=reliability_cfg,
     )
     return cfg
