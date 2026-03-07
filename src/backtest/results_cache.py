@@ -23,16 +23,19 @@ class ResultsCache:
             try:
                 con.execute("ALTER TABLE results ADD COLUMN run_id TEXT")
             except Exception:
+                # Column already exists or migration not needed; safe to ignore.
                 pass
             try:
                 con.execute(
                     "ALTER TABLE results ADD COLUMN evaluation_mode TEXT DEFAULT 'backtest'"
                 )
             except Exception:
+                # Column already exists or migration not needed; safe to ignore.
                 pass
             try:
                 con.execute("ALTER TABLE results ADD COLUMN mode_config_hash TEXT DEFAULT ''")
             except Exception:
+                # Column already exists or migration not needed; safe to ignore.
                 pass
             self._migrate_legacy_primary_key(con)
             con.commit()

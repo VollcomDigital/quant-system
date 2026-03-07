@@ -18,7 +18,8 @@ class Evaluator(Protocol):
         entries: pd.Series,
         exits: pd.Series,
         fractional: bool,
-    ) -> EvaluationOutcome: ...
+    ) -> EvaluationOutcome:
+        raise NotImplementedError
 
 
 class BacktestEvaluator:
