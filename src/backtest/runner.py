@@ -377,9 +377,9 @@ class BacktestRunner:
             missing_bars = 0
             largest_gap_bars = 0
         else:
-            gap_bars = (gap_diffs // expected_delta) - 1
+            gap_bars = np.asarray(gap_diffs // expected_delta, dtype=int) - 1
             positive_gap_bars = gap_bars[gap_bars > 0]
-            if len(positive_gap_bars) == 0:
+            if positive_gap_bars.size == 0:
                 missing_bars = 0
                 largest_gap_bars = 0
             else:
