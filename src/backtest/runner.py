@@ -895,35 +895,23 @@ class BacktestRunner:
             return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
 
         reliability_cfg = self._resolve_reliability_thresholds(context.job.collection)
-        reliability_on_fail = "skip_optimization"
-        min_data_points = None
-        min_continuity_score = None
-        if reliability_cfg is not None:
-            reliability_on_fail = str(reliability_cfg.on_fail).strip().lower()
-            min_data_points = reliability_cfg.min_data_points
-            min_continuity_score = reliability_cfg.min_continuity_score
-        reliability_reasons: list[str] = []
-        if min_continuity_score is not None:
-            threshold = float(min_continuity_score)
-            continuity_score = float(continuity.get("score", 0.0))
-            if continuity_score < threshold:
-                reliability_reasons.append(
-                    "min_continuity_score_not_met("
-                    f"required={threshold}, available={continuity_score})"
-                )
-        if min_data_points is not None and len(fetched_data.raw_df) < int(min_data_points):
-            reliability_reasons.append(
-                f"min_data_points_not_met(required={int(min_data_points)}, available={len(fetched_data.raw_df)})"
-            )
-
-        if reliability_reasons and reliability_on_fail == "skip_job":
-            decision = GateDecision(False, "skip_job", reliability_reasons, "data_validation")
-        elif reliability_reasons and reliability_on_fail == "skip_collection":
-            decision = GateDecision(False, "skip_collection", reliability_reasons, "data_validation")
-        elif reliability_reasons:
-            decision = GateDecision(True, "skip_optimization", reliability_reasons, "data_validation")
-        else:
+        reliability_on_fail, min_data_points, min_continuity_score = self._read_reliability_policy(
+            reliability_cfg
+        )
+        reliability_reasons = self._collect_reliability_reasons(
+            raw_df=fetched_data.raw_df,
+            continuity=continuity,
+            min_data_points=min_data_points,
+            min_continuity_score=min_continuity_score,
+        )
+        if not reliability_reasons:
             decision = GateDecision(True, "continue", [], "data_validation")
+        elif reliability_on_fail == "skip_job":
+            decision = GateDecision(False, "skip_job", reliability_reasons, "data_validation")
+        elif reliability_on_fail == "skip_collection":
+            decision = GateDecision(False, "skip_collection", reliability_reasons, "data_validation")
+        else:
+            decision = GateDecision(True, "skip_optimization", reliability_reasons, "data_validation")
         # Keep validated diagnostics available even when decision is skip_job.
         validated_data = ValidatedData(
             raw_df=fetched_data.raw_df,
@@ -932,6 +920,43 @@ class BacktestRunner:
             reliability_reasons=list(reliability_reasons),
         )
         return decision, validated_data
+
+    @staticmethod
+    def _read_reliability_policy(reliability_cfg: Any) -> tuple[str, int | None, float | None]:
+        reliability_on_fail = "skip_optimization"
+        min_data_points: int | None = None
+        min_continuity_score: float | None = None
+        if reliability_cfg is not None:
+            reliability_on_fail = str(reliability_cfg.on_fail).strip().lower()
+            min_data_points = reliability_cfg.min_data_points
+            min_continuity_score = reliability_cfg.min_continuity_score
+        return reliability_on_fail, min_data_points, min_continuity_score
+
+    @staticmethod
+    def _collect_reliability_reasons(
+        *,
+        raw_df: pd.DataFrame,
+        continuity: dict[str, float | int],
+        min_data_points: int | None,
+        min_continuity_score: float | None,
+    ) -> list[str]:
+        reasons: list[str] = []
+        if min_continuity_score is not None:
+            threshold = float(min_continuity_score)
+            continuity_score = float(continuity.get("score", 0.0))
+            if continuity_score < threshold:
+                reasons.append(
+                    "min_continuity_score_not_met("
+                    f"required={threshold}, available={continuity_score})"
+                )
+        if min_data_points is not None:
+            required = int(min_data_points)
+            available = len(raw_df)
+            if available < required:
+                reasons.append(
+                    f"min_data_points_not_met(required={required}, available={available})"
+                )
+        return reasons
 
     @staticmethod
     def _data_validation_backtest(_context: ValidationContext) -> GateDecision:
