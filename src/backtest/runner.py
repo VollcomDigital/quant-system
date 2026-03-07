@@ -193,6 +193,7 @@ class BacktestRunner:
         self.mode_config = EvaluationModeConfig(mode="backtest", payload={})
         self.mode_config_hash = self.evaluation_cache.hash_mode_config(self.mode_config)
         self._result_store_write_failures = 0
+        self._evaluation_cache_write_failures = 0
 
     def _ensure_pybroker(self) -> tuple[Any, ...]:
         if self._pybroker_components is None:
@@ -239,9 +240,13 @@ class BacktestRunner:
         try:
             self.evaluation_cache.set(**kwargs)
         except Exception as exc:
-            self._cache_write_failures += 1
-            if self._cache_write_failures <= 3:
+            self._evaluation_cache_write_failures += 1
+            if self._evaluation_cache_write_failures <= 3:
                 self.logger.warning("evaluation cache write failed", exc_info=exc)
+            elif self._evaluation_cache_write_failures == 4:
+                self.logger.warning(
+                    "evaluation cache write failures continuing; suppressing further warnings"
+                )
 
     def _result_store_insert(self, record: ResultRecord) -> None:
         try:
@@ -899,7 +904,8 @@ class BacktestRunner:
         min_data_points = None
         min_continuity_score = None
         if reliability_cfg is not None:
-            reliability_on_fail = str(reliability_cfg.on_fail).strip().lower()
+            if reliability_cfg.on_fail is not None:
+                reliability_on_fail = str(reliability_cfg.on_fail).strip().lower()
             min_data_points = reliability_cfg.min_data_points
             min_continuity_score = reliability_cfg.min_continuity_score
         reliability_reasons: list[str] = []
@@ -975,7 +981,11 @@ class BacktestRunner:
                 if override_cfg.min_continuity_score is not None
                 else global_cfg.min_continuity_score
             ),
-            on_fail=(override_cfg.on_fail or global_cfg.on_fail),
+            on_fail=(
+                override_cfg.on_fail
+                if override_cfg.on_fail is not None
+                else global_cfg.on_fail
+            ),
         )
 
     def _execution_context_prepare(
@@ -1460,6 +1470,7 @@ class BacktestRunner:
         self.failures = []
         self._cache_write_failures = 0
         self._result_store_write_failures = 0
+        self._evaluation_cache_write_failures = 0
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
         )

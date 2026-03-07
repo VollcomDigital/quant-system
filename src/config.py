@@ -48,7 +48,7 @@ class ReliabilityThresholdsConfig:
     max_missing_bar_pct: float | None = None
     max_kurtosis: float | None = None
     min_continuity_score: float | None = None
-    on_fail: str = "skip_optimization"
+    on_fail: str | None = None
 
 
 @dataclass
@@ -81,12 +81,15 @@ def _parse_reliability_thresholds(raw: Any, prefix: str) -> ReliabilityThreshold
     if not isinstance(raw, dict):
         raise ValueError(f"Invalid `{prefix}`: expected a mapping")
 
-    on_fail = str(raw.get("on_fail", "skip_optimization")).strip().lower()
-    allowed_on_fail = {"skip_optimization", "skip_job", "skip_collection"}
-    if on_fail not in allowed_on_fail:
-        raise ValueError(
-            f"Invalid `{prefix}.on_fail`: expected one of {sorted(allowed_on_fail)}, got '{on_fail}'"
-        )
+    on_fail_raw = raw.get("on_fail")
+    on_fail: str | None = None
+    if on_fail_raw is not None:
+        on_fail = str(on_fail_raw).strip().lower()
+        allowed_on_fail = {"skip_optimization", "skip_job", "skip_collection"}
+        if on_fail not in allowed_on_fail:
+            raise ValueError(
+                f"Invalid `{prefix}.on_fail`: expected one of {sorted(allowed_on_fail)}, got '{on_fail}'"
+            )
 
     def _as_optional_int(value: Any, field: str) -> int | None:
         if value is None:
