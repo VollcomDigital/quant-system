@@ -977,6 +977,70 @@ def test_run_all_skip_optimization_still_evaluates_each_strategy(tmp_path, monke
         assert any("min_data_points_not_met" in reason for reason in reasons)
 
 
+def test_strategy_plan_skip_optimization_does_not_leak_to_next_strategy(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.param_min_bars = 1
+    runner.cfg.param_dof_multiplier = 3
+    runner.cfg.strategies = []
+
+    class _WideStrategy(BaseStrategy):
+        name = "wide"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"a": [1, 2], "b": [1, 2], "c": [1, 2]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    class _NarrowStrategy(BaseStrategy):
+        name = "narrow"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"x": [1, 2]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    sim_calls = {"count": 0}
+
+    def _counting_sim(self, *args, **kwargs):
+        sim_calls["count"] += 1
+        dates = pd.date_range("2024-01-01", periods=5, freq="D")
+        returns = pd.Series([0.01, 0.0, 0.0, 0.0, 0.0], index=dates)
+        equity = (1 + returns).cumprod()
+        stats = {
+            "sharpe": 1.0,
+            "sortino": 1.0,
+            "omega": 1.0,
+            "tail_ratio": 1.0,
+            "profit": 0.01,
+            "pain_index": 0.0,
+            "trades": 1,
+            "max_drawdown": 0.0,
+            "cagr": 0.0,
+            "calmar": 0.0,
+            "equity_curve": [],
+            "drawdown_curve": [],
+            "trades_log": [],
+        }
+        return returns, equity, stats
+
+    monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _counting_sim)
+    monkeypatch.setattr(
+        "src.backtest.runner.discover_external_strategies",
+        lambda root: {"wide": _WideStrategy, "narrow": _NarrowStrategy},
+    )
+    runner.external_index = {"wide": _WideStrategy, "narrow": _NarrowStrategy}
+
+    results = runner.run_all()
+    assert len(results) == 2
+    assert sim_calls["count"] == 3
+
+
 def test_run_all_collection_reliability_override_takes_precedence(tmp_path, monkeypatch):
     collection = CollectionConfig(
         name="demo",

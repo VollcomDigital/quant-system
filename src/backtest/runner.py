@@ -738,8 +738,13 @@ class BacktestRunner:
         state.current_stage = decision.stage
         state.decisions[decision.stage] = decision
         state.reasons_by_stage[decision.stage] = list(decision.reasons)
-        if decision.action == "skip_optimization":
+        if self._is_job_level_skip_optimization(decision):
             state.policy_skip_optimization = True
+
+    @staticmethod
+    def _is_job_level_skip_optimization(decision: GateDecision) -> bool:
+        # Only data-level reliability gates should persist as job-wide optimization policy.
+        return decision.action == "skip_optimization" and decision.stage == "data_validation"
 
     def _handle_gate_decision(
         self,
