@@ -32,6 +32,7 @@ app = typer.Typer(add_completion=False, no_args_is_help=True)
 DATA_SOURCES = {
     "yfinance": YFinanceSource,
 }
+SUMMARY_JSON_FILENAME = "summary.json"
 
 
 @app.command()
@@ -233,7 +234,7 @@ def run(
             "notifications": notification_events,
         }
         summary_json = safe_json_dumps(summary, indent=2)
-        (base_out / "summary.json").write_text(summary_json)
+        (base_out / SUMMARY_JSON_FILENAME).write_text(summary_json)
         if manifest_status:
             (base_out / "manifest_status.json").write_text(
                 safe_json_dumps(manifest_status, indent=2)
@@ -375,10 +376,10 @@ def manifest_status(
             typer.secho(f"Unable to read manifest status: {exc}", fg=typer.colors.RED)
             raise typer.Exit(code=1) from exc
     else:
-        summary_path = run_dir / "summary.json"
+        summary_path = run_dir / SUMMARY_JSON_FILENAME
         if not summary_path.exists():
             typer.secho(
-                f"No manifest_status.json or summary.json found under {run_dir}",
+                f"No manifest_status.json or {SUMMARY_JSON_FILENAME} found under {run_dir}",
                 fg=typer.colors.YELLOW,
             )
             raise typer.Exit(code=1)
@@ -386,7 +387,7 @@ def manifest_status(
             summary = json.loads(summary_path.read_text())
             statuses = summary.get("manifest_refresh") or []
         except Exception as exc:
-            typer.secho(f"Unable to read summary.json: {exc}", fg=typer.colors.RED)
+            typer.secho(f"Unable to read {SUMMARY_JSON_FILENAME}: {exc}", fg=typer.colors.RED)
             raise typer.Exit(code=1) from exc
 
     if not statuses:
@@ -451,14 +452,14 @@ def rebuild_dashboard(
             raise typer.Exit(code=1)
         run_dir = max(candidate_dirs, key=lambda p: p.name)
 
-    summary_path = run_dir / "summary.json"
+    summary_path = run_dir / SUMMARY_JSON_FILENAME
     summary: dict[str, Any] | None = None
     if summary_path.exists():
         try:
             summary = json.loads(summary_path.read_text())
             summary.setdefault("base_dir", str(run_dir))
         except Exception as exc:
-            typer.secho(f"Unable to read summary.json: {exc}", fg=typer.colors.RED)
+            typer.secho(f"Unable to read {SUMMARY_JSON_FILENAME}: {exc}", fg=typer.colors.RED)
             raise typer.Exit(code=1) from exc
 
     cache = ResultsCache(Path(results_cache_dir))
