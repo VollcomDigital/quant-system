@@ -531,7 +531,7 @@ def test_run_all_skips_strategy_when_plan_gate_fails(tmp_path, monkeypatch):
 
     results = runner.run_all()
     assert results == []
-    assert runner.metrics["symbols_tested"] == 0
+    assert runner.metrics["symbols_tested"] == 1
     assert runner.failures
     assert runner.failures[0]["stage"] == "strategy_optimization"
     assert runner.failures[0]["error"] == "plan_gate_blocked"
@@ -609,6 +609,10 @@ def test_run_all_handles_failed_and_nan_metrics(tmp_path, monkeypatch):
     assert results == []
     assert runner.metrics["result_cache_misses"] >= 1
     assert runner.metrics.get("fresh_metric_evals", 0) >= 1
+    assert len(runner.evaluation_cache.saved) == 1
+    assert len(runner.results_cache.saved) == 1
+    assert runner.evaluation_cache.saved[0]["metric_value"] == float("-inf")
+    assert runner.results_cache.saved[0]["metric_value"] == float("-inf")
 
 
 def test_run_pybroker_simulation_generates_metrics(tmp_path, monkeypatch):
@@ -930,6 +934,7 @@ def test_run_all_fetches_once_per_symbol_timeframe_with_multiple_strategies(tmp_
     results = runner.run_all()
     assert fetch_calls["count"] == 1
     assert len(results) == 2
+    assert runner.metrics["symbols_tested"] == 1
 
 
 def test_run_all_skip_evaluation_adds_single_failure_for_multiple_strategies(tmp_path, monkeypatch):

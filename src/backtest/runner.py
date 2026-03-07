@@ -13,14 +13,6 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
-from .evaluation.adapters import normalized_rows_to_legacy_rows
-from .evaluation.contracts import (
-    EvaluationModeConfig,
-    EvaluationRequest,
-    ResultRecord,
-)
-from .evaluation.evaluator import BacktestEvaluator
-from .evaluation.store import EvaluationCache, ResultStore
 from ..config import CollectionConfig, Config
 from ..data.alpaca_source import AlpacaSource
 from ..data.alphavantage_source import AlphaVantageSource
@@ -34,6 +26,14 @@ from ..data.yfinance_source import YFinanceSource
 from ..strategies.base import BaseStrategy
 from ..strategies.registry import discover_external_strategies
 from ..utils.telemetry import get_logger, log_json, time_block
+from .evaluation.adapters import normalized_rows_to_legacy_rows
+from .evaluation.contracts import (
+    EvaluationModeConfig,
+    EvaluationRequest,
+    ResultRecord,
+)
+from .evaluation.evaluator import BacktestEvaluator
+from .evaluation.store import EvaluationCache, ResultStore
 from .metrics import (
     omega_ratio,
     pain_index,
@@ -1332,43 +1332,43 @@ class BacktestRunner:
             self.metrics["fresh_metric_evals"] += 1
             # Backward-compatible alias for existing dashboards/tests.
             self.metrics["param_evals"] = self.metrics["fresh_metric_evals"]
+        metric_val = float(outcome.metric_value)
+        if outcome.valid or outcome.metric_computed:
+            self._evaluation_cache_set(
+                collection=request.collection,
+                symbol=request.symbol,
+                timeframe=request.timeframe,
+                strategy=request.strategy,
+                params=request.params,
+                metric_name=request.metric_name,
+                metric_value=metric_val,
+                stats=raw_stats,
+                data_fingerprint=request.data_fingerprint,
+                fees=request.fees,
+                slippage=request.slippage,
+                evaluation_mode=self.mode_config.mode,
+                mode_config_hash=self.mode_config_hash,
+            )
+
+            # Legacy cache remains the compatibility source for current reporters.
+            self._cache_set(
+                collection=request.collection,
+                symbol=request.symbol,
+                timeframe=request.timeframe,
+                strategy=request.strategy,
+                params=request.params,
+                metric_name=request.metric_name,
+                metric_value=metric_val,
+                stats=stats,
+                data_fingerprint=request.data_fingerprint,
+                fees=request.fees,
+                slippage=request.slippage,
+                run_id=self.run_id,
+                evaluation_mode=self.mode_config.mode,
+                mode_config_hash=self.mode_config_hash,
+            )
         if not outcome.valid:
             return float("-inf")
-        metric_val = float(outcome.metric_value)
-
-        self._evaluation_cache_set(
-            collection=request.collection,
-            symbol=request.symbol,
-            timeframe=request.timeframe,
-            strategy=request.strategy,
-            params=request.params,
-            metric_name=request.metric_name,
-            metric_value=metric_val,
-            stats=raw_stats,
-            data_fingerprint=request.data_fingerprint,
-            fees=request.fees,
-            slippage=request.slippage,
-            evaluation_mode=self.mode_config.mode,
-            mode_config_hash=self.mode_config_hash,
-        )
-
-        # Legacy cache remains the compatibility source for current reporters.
-        self._cache_set(
-            collection=request.collection,
-            symbol=request.symbol,
-            timeframe=request.timeframe,
-            strategy=request.strategy,
-            params=request.params,
-            metric_name=request.metric_name,
-            metric_value=metric_val,
-            stats=stats,
-            data_fingerprint=request.data_fingerprint,
-            fees=request.fees,
-            slippage=request.slippage,
-            run_id=self.run_id,
-            evaluation_mode=self.mode_config.mode,
-            mode_config_hash=self.mode_config_hash,
-        )
         if metric_val > plan.best_val:
             plan.best_val = metric_val
             plan.best_params = full_params.copy()
@@ -1603,6 +1603,7 @@ class BacktestRunner:
             if not prep_decision.passed or prepared is None:
                 continue
 
+            self.metrics["symbols_tested"] += 1
             for strat_name in self.external_index.keys():
                 # Strategy stage: create plan -> validate plan -> run -> validate results.
                 plan = self._strategy_create_plan(state, strat_name)
@@ -1619,7 +1620,6 @@ class BacktestRunner:
                 )
                 if not plan_decision.passed:
                     continue
-                self.metrics["symbols_tested"] += 1
                 self.metrics["strategies_used"].add(plan.strategy.name)
                 outcome = self._strategy_run(plan, state, validated_data, prepared)
                 if outcome is None:
