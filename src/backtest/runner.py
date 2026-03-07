@@ -193,6 +193,7 @@ class BacktestRunner:
         self.mode_config = EvaluationModeConfig(mode="backtest", payload={})
         self.mode_config_hash = self.evaluation_cache.hash_mode_config(self.mode_config)
         self._result_store_write_failures = 0
+        self._evaluation_cache_write_failures = 0
 
     def _ensure_pybroker(self) -> tuple[Any, ...]:
         if self._pybroker_components is None:
@@ -243,9 +244,13 @@ class BacktestRunner:
         try:
             self.evaluation_cache.set(**kwargs)
         except Exception as exc:
-            self._cache_write_failures += 1
-            if self._cache_write_failures <= 3:
+            self._evaluation_cache_write_failures += 1
+            if self._evaluation_cache_write_failures <= 3:
                 self.logger.warning("evaluation cache write failed", exc_info=exc)
+            elif self._evaluation_cache_write_failures == 4:
+                self.logger.warning(
+                    "evaluation cache write failures continuing; suppressing further warnings"
+                )
 
     def _result_store_insert(self, record: ResultRecord) -> None:
         try:
@@ -366,17 +371,20 @@ class BacktestRunner:
         if expected_delta is None:
             raise ValueError(f"unsupported_timeframe_for_continuity: {timeframe}")
 
-        diffs = pd.Series(idx[1:] - idx[:-1])
-        missing_bars = 0
-        largest_gap_bars = 0
-        for diff in diffs:
-            if diff <= expected_delta:
-                continue
-            gap_bars = int(diff / expected_delta) - 1
-            if gap_bars <= 0:
-                continue
-            missing_bars += gap_bars
-            largest_gap_bars = max(largest_gap_bars, gap_bars)
+        diffs = idx[1:] - idx[:-1]
+        gap_diffs = diffs[diffs > expected_delta]
+        if len(gap_diffs) == 0:
+            missing_bars = 0
+            largest_gap_bars = 0
+        else:
+            gap_bars = (gap_diffs // expected_delta) - 1
+            positive_gap_bars = gap_bars[gap_bars > 0]
+            if len(positive_gap_bars) == 0:
+                missing_bars = 0
+                largest_gap_bars = 0
+            else:
+                missing_bars = int(positive_gap_bars.sum())
+                largest_gap_bars = int(positive_gap_bars.max())
 
         expected_bars = unique_bars + missing_bars
         coverage_ratio = 1.0 if expected_bars <= 0 else float(unique_bars / expected_bars)
@@ -398,6 +406,21 @@ class BacktestRunner:
             "missing_bars": int(missing_bars),
             "largest_gap_bars": int(largest_gap_bars),
         }
+
+    @staticmethod
+    def _enrich_evaluation_stats(
+        stats: dict[str, Any],
+        plan: StrategyPlan,
+        validated_data: ValidatedData,
+    ) -> dict[str, Any]:
+        enriched_stats = dict(stats)
+        enriched_stats.pop("optimization", None)
+        if plan.optimization_details is not None:
+            enriched_stats["optimization"] = dict(plan.optimization_details)
+        reliability = dict(enriched_stats.get("data_reliability", {}))
+        reliability["continuity"] = validated_data.continuity
+        enriched_stats["data_reliability"] = reliability
+        return enriched_stats
 
     @staticmethod
     def _sample_series(series: pd.Series, max_points: int = 500) -> list[dict[str, float]]:
@@ -1004,7 +1027,11 @@ class BacktestRunner:
                 if override_cfg.min_continuity_score is not None
                 else global_cfg.min_continuity_score
             ),
-            on_fail=(override_cfg.on_fail or global_cfg.on_fail),
+            on_fail=(
+                override_cfg.on_fail
+                if override_cfg.on_fail is not None
+                else global_cfg.on_fail
+            ),
         )
 
     def _execution_context_prepare(
@@ -1252,7 +1279,7 @@ class BacktestRunner:
             self.metrics["result_cache_hits"] += 1
             plan.evaluations += 1
             val_cached = float(cached["metric_value"])
-            cached_stats = dict(cached["stats"])
+            cached_stats = self._enrich_evaluation_stats(cached["stats"], plan, validated_data)
             # Legacy cache continues to be written for reporting compatibility.
             self._cache_set(
                 collection=request.collection,
@@ -1285,12 +1312,7 @@ class BacktestRunner:
             exits,
             prepared.fractional,
         )
-        stats = dict(outcome.stats)
-        if plan.optimization_details is not None:
-            stats["optimization"] = plan.optimization_details
-        reliability = dict(stats.get("data_reliability", {}))
-        reliability["continuity"] = validated_data.continuity
-        stats["data_reliability"] = reliability
+        stats = self._enrich_evaluation_stats(outcome.stats, plan, validated_data)
         plan.evaluations += 1
         # Evaluator owns execution-state flags; runner only aggregates.
         if outcome.simulation_executed:
@@ -1513,6 +1535,7 @@ class BacktestRunner:
         self.failures = []
         self._cache_write_failures = 0
         self._result_store_write_failures = 0
+        self._evaluation_cache_write_failures = 0
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
         )
@@ -1574,14 +1597,17 @@ class BacktestRunner:
                 plan = self._strategy_create_plan(state, strat_name)
                 self._apply_policy_constraints_to_plan(state, validated_data, plan)
                 plan_decision = self._strategy_validate_plan(state, validated_data, plan)
-                _ = self._handle_gate_decision(
+                plan_decision = self._handle_gate_decision(
                     state,
                     plan_decision,
                     context_extra={
                         "strategy": plan.strategy.name,
                         "search_method": plan.search_method,
                     },
-                )  # routing handled by plan.optimization_skip_reason in _strategy_run
+                    blocked_collections=blocked_collections,
+                )
+                if not plan_decision.passed:
+                    continue
                 self.metrics["symbols_tested"] += 1
                 self.metrics["strategies_used"].add(plan.strategy.name)
                 outcome = self._strategy_run(plan, state, validated_data, prepared)

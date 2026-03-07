@@ -1,4 +1,4 @@
-from .adapters import normalized_rows_to_legacy_rows, result_record_to_legacy_row
+from .adapters import normalized_rows_to_legacy_rows
 from .contracts import (
     EvaluationMode,
     EvaluationModeConfig,
@@ -20,5 +20,4 @@ __all__ = [
     "ResultRecord",
     "ResultStore",
     "normalized_rows_to_legacy_rows",
-    "result_record_to_legacy_row",
 ]

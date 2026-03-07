@@ -72,47 +72,123 @@ class ResultsCache:
     def _ensure(self):
         con = sqlite3.connect(self.db_path)
         try:
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS results (
-                    collection TEXT,
-                    symbol TEXT,
-                    timeframe TEXT,
-                    strategy TEXT,
-                    params_json TEXT,
-                    metric_name TEXT,
-                    metric_value REAL,
-                    stats_json TEXT,
-                    data_fingerprint TEXT,
-                    fees REAL,
-                    slippage REAL,
-                    run_id TEXT,
-                    evaluation_mode TEXT DEFAULT 'backtest',
-                    mode_config_hash TEXT DEFAULT '',
-                    engine_version TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY(collection, symbol, timeframe, strategy, params_json, metric_name, data_fingerprint, fees, slippage, engine_version)
-                )
-                """
-            )
+            self._create_results_table(con)
             # Backward-compat: ensure run_id column exists
             try:
                 con.execute("ALTER TABLE results ADD COLUMN run_id TEXT")
             except Exception:
+                # Column already exists or migration not needed; safe to ignore.
                 pass
             try:
                 con.execute(
                     "ALTER TABLE results ADD COLUMN evaluation_mode TEXT DEFAULT 'backtest'"
                 )
             except Exception:
+                # Column already exists or migration not needed; safe to ignore.
                 pass
             try:
                 con.execute("ALTER TABLE results ADD COLUMN mode_config_hash TEXT DEFAULT ''")
             except Exception:
+                # Column already exists or migration not needed; safe to ignore.
                 pass
+            self._migrate_legacy_primary_key(con)
             con.commit()
         finally:
             con.close()
+
+    @staticmethod
+    def _create_results_table(con: sqlite3.Connection) -> None:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS results (
+                collection TEXT,
+                symbol TEXT,
+                timeframe TEXT,
+                strategy TEXT,
+                params_json TEXT,
+                metric_name TEXT,
+                metric_value REAL,
+                stats_json TEXT,
+                data_fingerprint TEXT,
+                fees REAL,
+                slippage REAL,
+                run_id TEXT,
+                evaluation_mode TEXT DEFAULT 'backtest',
+                mode_config_hash TEXT DEFAULT '',
+                engine_version TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(
+                    collection,
+                    symbol,
+                    timeframe,
+                    strategy,
+                    params_json,
+                    metric_name,
+                    data_fingerprint,
+                    fees,
+                    slippage,
+                    evaluation_mode,
+                    mode_config_hash,
+                    engine_version
+                )
+            )
+            """
+        )
+
+    @staticmethod
+    def _primary_key_columns(con: sqlite3.Connection, table: str) -> list[str]:
+        rows = con.execute(f"PRAGMA table_info({table})").fetchall()
+        pk_rows = sorted((int(row[5]), str(row[1])) for row in rows if int(row[5]) > 0)
+        return [name for _, name in pk_rows]
+
+    def _migrate_legacy_primary_key(self, con: sqlite3.Connection) -> None:
+        pk_columns = self._primary_key_columns(con, "results")
+        if "evaluation_mode" in pk_columns and "mode_config_hash" in pk_columns:
+            return
+        con.execute("ALTER TABLE results RENAME TO results_legacy")
+        self._create_results_table(con)
+        con.execute(
+            """
+            INSERT INTO results
+            (
+                collection,
+                symbol,
+                timeframe,
+                strategy,
+                params_json,
+                metric_name,
+                metric_value,
+                stats_json,
+                data_fingerprint,
+                fees,
+                slippage,
+                run_id,
+                evaluation_mode,
+                mode_config_hash,
+                engine_version,
+                created_at
+            )
+            SELECT
+                collection,
+                symbol,
+                timeframe,
+                strategy,
+                params_json,
+                metric_name,
+                metric_value,
+                stats_json,
+                data_fingerprint,
+                fees,
+                slippage,
+                run_id,
+                COALESCE(evaluation_mode, 'backtest'),
+                COALESCE(mode_config_hash, ''),
+                engine_version,
+                created_at
+            FROM results_legacy
+            """
+        )
+        con.execute("DROP TABLE results_legacy")
 
     def get(
         self,
