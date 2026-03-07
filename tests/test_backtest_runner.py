@@ -226,11 +226,18 @@ def _make_runner(
 def test_bars_per_year_various_units():
     assert BacktestRunner._bars_per_year("1d") == 252
     assert BacktestRunner._bars_per_year("2w") == 26
+    assert BacktestRunner._bars_per_year("1wk") == 52
+    assert BacktestRunner._bars_per_year("1mo") == 12
     assert BacktestRunner._bars_per_year("4h") == pytest.approx(int(round(24 * 365 / 4)))
     assert BacktestRunner._bars_per_year("15m") == pytest.approx(int(round(60 * 24 * 365 / 15)))
     assert BacktestRunner._bars_per_year("10s") == pytest.approx(
         int(round(60 * 60 * 24 * 365 / 10))
     )
+
+
+def test_timeframe_to_timedelta_supports_common_aliases():
+    assert BacktestRunner._timeframe_to_timedelta("1wk") == pd.Timedelta(weeks=1)
+    assert BacktestRunner._timeframe_to_timedelta("1mo") == pd.Timedelta(days=30)
 
 
 @pytest.mark.parametrize(
@@ -295,7 +302,7 @@ def test_compute_continuity_score_scenarios(idx, values, expected):
         ),
         (
             pd.DataFrame({"Close": [1, 2, 3]}, index=pd.date_range("2024-01-01", periods=3, freq="D")),
-            "1mo",
+            "1quarter",
             "unsupported_timeframe_for_continuity",
         ),
     ],
@@ -489,6 +496,25 @@ def test_run_all_produces_best_result(tmp_path, monkeypatch):
     assert best.stats["data_reliability"]["continuity"]["score"] == pytest.approx(1.0)
     assert runner.metrics["result_cache_misses"] >= 1
     assert runner.metrics["fresh_metric_evals"] >= 1
+
+
+def test_run_all_accepts_weekly_timeframe_alias(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.timeframes = ["1wk"]
+
+    results = runner.run_all()
+    assert len(results) == 1
+
+
+def test_evaluation_cache_persists_raw_stats_only(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    assert runner.evaluation_cache.saved
+    cached_stats = runner.evaluation_cache.saved[0]["stats"]
+    assert "data_reliability" not in cached_stats
+    assert "optimization" not in cached_stats
 
 
 def test_run_all_skips_strategy_when_plan_gate_fails(tmp_path, monkeypatch):
