@@ -226,6 +226,8 @@ def _make_runner(
 def test_bars_per_year_various_units():
     assert BacktestRunner._bars_per_year("1d") == 252
     assert BacktestRunner._bars_per_year("2w") == 26
+    assert BacktestRunner._bars_per_year("1wk") == 52
+    assert BacktestRunner._bars_per_year("1mo") == 12
     assert BacktestRunner._bars_per_year("4h") == pytest.approx(int(round(24 * 365 / 4)))
     assert BacktestRunner._bars_per_year("15m") == pytest.approx(int(round(60 * 24 * 365 / 15)))
     assert BacktestRunner._bars_per_year("10s") == pytest.approx(

@@ -317,8 +317,10 @@ class BacktestRunner:
         value = max(1, value)
         if unit in {"d", "day", "days"}:
             return max(1, int(round(252 / value)))
-        if unit in {"w", "week", "weeks"}:
+        if unit in {"w", "wk", "wks", "week", "weeks"}:
             return max(1, int(round(52 / value)))
+        if unit in {"mo", "mon", "month", "months"}:
+            return max(1, int(round(12 / value)))
         if unit in {"h", "hour", "hours"}:
             return max(1, int(round((24 * 365) / value)))
         if unit in {"m", "min", "minute", "minutes"}:
