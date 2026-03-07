@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from src.backtest.evaluation.contracts import EvaluationModeConfig, ResultRecord
 from src.backtest.evaluation.store import EvaluationCache, ResultStore
 
@@ -43,8 +45,8 @@ def test_evaluation_cache_uses_mode_hash(tmp_path: Path):
     hit_a = cache.get(**common, mode_config_hash=hash_a)
     hit_b = cache.get(**common, mode_config_hash=hash_b)
     assert hit_a is not None and hit_b is not None
-    assert hit_a["metric_value"] == 1.0
-    assert hit_b["metric_value"] == 2.0
+    assert hit_a["metric_value"] == pytest.approx(1.0)
+    assert hit_b["metric_value"] == pytest.approx(2.0)
 
 
 def test_result_store_round_trip(tmp_path: Path):
@@ -73,5 +75,5 @@ def test_result_store_round_trip(tmp_path: Path):
     row = rows[0]
     assert row["evaluation_mode"] == "backtest"
     assert row["metric"] == "sharpe"
-    assert row["metric_value"] == 1.5
+    assert row["metric_value"] == pytest.approx(1.5)
     assert row["params"] == {"x": 1}

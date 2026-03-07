@@ -42,7 +42,7 @@ from .metrics import (
     tail_ratio,
     total_return,
 )
-from .results_cache import ResultsCache
+from .results_cache import ResultsCache, ResultsCacheRecord
 
 StageName = Literal[
     "created",
@@ -225,7 +225,11 @@ class BacktestRunner:
 
     def _cache_set(self, **kwargs: Any) -> None:
         try:
-            self.results_cache.set(**kwargs)
+            if isinstance(self.results_cache, ResultsCache):
+                record = ResultsCacheRecord.from_mapping(kwargs)
+                self.results_cache.set(record=record)
+            else:
+                self.results_cache.set(**kwargs)
         except Exception as exc:
             self._cache_write_failures += 1
             if self._cache_write_failures <= 3:

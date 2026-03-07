@@ -2,10 +2,64 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 ENGINE_VERSION = "1"
+
+
+@dataclass(frozen=True)
+class ResultsCacheRecord:
+    collection: str
+    symbol: str
+    timeframe: str
+    strategy: str
+    params: dict[str, Any]
+    metric_name: str
+    metric_value: float
+    stats: dict[str, Any]
+    data_fingerprint: str
+    fees: float
+    slippage: float
+    run_id: str | None = None
+    evaluation_mode: str = "backtest"
+    mode_config_hash: str = ""
+
+    @classmethod
+    def from_mapping(cls, payload: Mapping[str, Any]) -> "ResultsCacheRecord":
+        required = (
+            "collection",
+            "symbol",
+            "timeframe",
+            "strategy",
+            "params",
+            "metric_name",
+            "metric_value",
+            "stats",
+            "data_fingerprint",
+            "fees",
+            "slippage",
+        )
+        missing = [key for key in required if key not in payload]
+        if missing:
+            raise ValueError(f"Missing cache record fields: {', '.join(sorted(missing))}")
+        return cls(
+            collection=str(payload["collection"]),
+            symbol=str(payload["symbol"]),
+            timeframe=str(payload["timeframe"]),
+            strategy=str(payload["strategy"]),
+            params=dict(payload["params"]),
+            metric_name=str(payload["metric_name"]),
+            metric_value=float(payload["metric_value"]),
+            stats=dict(payload["stats"]),
+            data_fingerprint=str(payload["data_fingerprint"]),
+            fees=float(payload["fees"]),
+            slippage=float(payload["slippage"]),
+            run_id=str(payload["run_id"]) if payload.get("run_id") is not None else None,
+            evaluation_mode=str(payload.get("evaluation_mode", "backtest")),
+            mode_config_hash=str(payload.get("mode_config_hash", "")),
+        )
 
 
 class ResultsCache:
@@ -117,22 +171,14 @@ class ResultsCache:
     def set(
         self,
         *,
-        collection: str,
-        symbol: str,
-        timeframe: str,
-        strategy: str,
-        params: dict[str, Any],
-        metric_name: str,
-        metric_value: float,
-        stats: dict[str, Any],
-        data_fingerprint: str,
-        fees: float,
-        slippage: float,
-        run_id: str | None = None,
-        evaluation_mode: str = "backtest",
-        mode_config_hash: str = "",
+        record: ResultsCacheRecord | None = None,
+        **payload: Any,
     ) -> None:
-        params_json = json.dumps(params, sort_keys=True)
+        if record is None:
+            record = ResultsCacheRecord.from_mapping(payload)
+        elif payload:
+            raise ValueError("Pass either record or keyword payload to ResultsCache.set, not both")
+        params_json = json.dumps(record.params, sort_keys=True)
         con = sqlite3.connect(self.db_path)
         try:
             con.execute(
@@ -158,20 +204,20 @@ class ResultsCache:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    collection,
-                    symbol,
-                    timeframe,
-                    strategy,
+                    record.collection,
+                    record.symbol,
+                    record.timeframe,
+                    record.strategy,
                     params_json,
-                    metric_name,
-                    float(metric_value),
-                    json.dumps(stats, sort_keys=True),
-                    data_fingerprint,
-                    fees,
-                    slippage,
-                    run_id,
-                    evaluation_mode,
-                    mode_config_hash,
+                    record.metric_name,
+                    float(record.metric_value),
+                    json.dumps(record.stats, sort_keys=True),
+                    record.data_fingerprint,
+                    record.fees,
+                    record.slippage,
+                    record.run_id,
+                    record.evaluation_mode,
+                    record.mode_config_hash,
                     ENGINE_VERSION,
                 ),
             )
