@@ -338,8 +338,10 @@ class BacktestRunner:
         value = max(1, value)
         if unit in {"d", "day", "days"}:
             return pd.Timedelta(days=value)
-        if unit in {"w", "week", "weeks"}:
+        if unit in {"w", "wk", "wks", "week", "weeks"}:
             return pd.Timedelta(weeks=value)
+        if unit in {"mo", "mon", "month", "months"}:
+            return pd.Timedelta(days=30 * value)
         if unit in {"h", "hour", "hours"}:
             return pd.Timedelta(hours=value)
         if unit in {"m", "min", "minute", "minutes"}:
@@ -1313,7 +1315,8 @@ class BacktestRunner:
             exits,
             prepared.fractional,
         )
-        stats = self._enrich_evaluation_stats(outcome.stats, plan, validated_data)
+        raw_stats = dict(outcome.stats)
+        stats = self._enrich_evaluation_stats(raw_stats, plan, validated_data)
         plan.evaluations += 1
         # Evaluator owns execution-state flags; runner only aggregates.
         if outcome.simulation_executed:
@@ -1334,7 +1337,7 @@ class BacktestRunner:
             params=request.params,
             metric_name=request.metric_name,
             metric_value=metric_val,
-            stats=stats,
+            stats=raw_stats,
             data_fingerprint=request.data_fingerprint,
             fees=request.fees,
             slippage=request.slippage,
