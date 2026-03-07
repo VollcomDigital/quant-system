@@ -959,7 +959,8 @@ class BacktestRunner:
         min_data_points: int | None = None
         min_continuity_score: float | None = None
         if reliability_cfg is not None:
-            reliability_on_fail = str(reliability_cfg.on_fail).strip().lower()
+            if reliability_cfg.on_fail is not None:
+                reliability_on_fail = str(reliability_cfg.on_fail).strip().lower()
             min_data_points = reliability_cfg.min_data_points
             min_continuity_score = reliability_cfg.min_continuity_score
         return reliability_on_fail, min_data_points, min_continuity_score
