@@ -86,6 +86,7 @@ class EvaluationCache:
     ) -> dict[str, Any] | None:
         params_json = json.dumps(params, sort_keys=True)
         con = sqlite3.connect(self.db_path)
+        con.row_factory = sqlite3.Row
         try:
             cur = con.execute(
                 """
@@ -114,10 +115,9 @@ class EvaluationCache:
             row = cur.fetchone()
             if row is None:
                 return None
-            metric_value, stats_json = row
             return {
-                "metric_value": float(metric_value),
-                "stats": json.loads(stats_json),
+                "metric_value": float(row["metric_value"]),
+                "stats": json.loads(row["stats_json"]),
             }
         finally:
             con.close()
@@ -276,6 +276,7 @@ class ResultStore:
 
     def list_by_run(self, run_id: str) -> list[dict[str, Any]]:
         con = sqlite3.connect(self.db_path)
+        con.row_factory = sqlite3.Row
         try:
             cur = con.execute(
                 """
@@ -301,44 +302,25 @@ class ResultStore:
                 """,
                 (run_id,),
             )
-            rows: list[dict[str, Any]] = []
-            for r in cur.fetchall():
-                (
-                    run_id_val,
-                    evaluation_mode,
-                    collection,
-                    symbol,
-                    timeframe,
-                    source,
-                    strategy,
-                    params_json,
-                    metric_name,
-                    metric_value,
-                    stats_json,
-                    data_fingerprint,
-                    fees,
-                    slippage,
-                    mode_config_hash,
-                ) = r
-                rows.append(
-                    {
-                        "run_id": run_id_val,
-                        "evaluation_mode": evaluation_mode,
-                        "collection": collection,
-                        "symbol": symbol,
-                        "timeframe": timeframe,
-                        "source": source,
-                        "strategy": strategy,
-                        "params": json.loads(params_json),
-                        "metric": metric_name,
-                        "metric_value": float(metric_value),
-                        "stats": json.loads(stats_json),
-                        "data_fingerprint": data_fingerprint,
-                        "fees": float(fees),
-                        "slippage": float(slippage),
-                        "mode_config_hash": mode_config_hash,
-                    }
-                )
-            return rows
+            return [
+                {
+                    "run_id": row["run_id"],
+                    "evaluation_mode": row["evaluation_mode"],
+                    "collection": row["collection"],
+                    "symbol": row["symbol"],
+                    "timeframe": row["timeframe"],
+                    "source": row["source"],
+                    "strategy": row["strategy"],
+                    "params": json.loads(row["params_json"]),
+                    "metric": row["metric_name"],
+                    "metric_value": float(row["metric_value"]),
+                    "stats": json.loads(row["stats_json"]),
+                    "data_fingerprint": row["data_fingerprint"],
+                    "fees": float(row["fees"]),
+                    "slippage": float(row["slippage"]),
+                    "mode_config_hash": row["mode_config_hash"],
+                }
+                for row in cur.fetchall()
+            ]
         finally:
             con.close()
