@@ -367,17 +367,20 @@ class BacktestRunner:
         if expected_delta is None:
             raise ValueError(f"unsupported_timeframe_for_continuity: {timeframe}")
 
-        diffs = pd.Series(idx[1:] - idx[:-1])
-        missing_bars = 0
-        largest_gap_bars = 0
-        for diff in diffs:
-            if diff <= expected_delta:
-                continue
-            gap_bars = int(diff / expected_delta) - 1
-            if gap_bars <= 0:
-                continue
-            missing_bars += gap_bars
-            largest_gap_bars = max(largest_gap_bars, gap_bars)
+        diffs = idx[1:] - idx[:-1]
+        gap_diffs = diffs[diffs > expected_delta]
+        if len(gap_diffs) == 0:
+            missing_bars = 0
+            largest_gap_bars = 0
+        else:
+            gap_bars = (gap_diffs // expected_delta) - 1
+            positive_gap_bars = gap_bars[gap_bars > 0]
+            if len(positive_gap_bars) == 0:
+                missing_bars = 0
+                largest_gap_bars = 0
+            else:
+                missing_bars = int(positive_gap_bars.sum())
+                largest_gap_bars = int(positive_gap_bars.max())
 
         expected_bars = unique_bars + missing_bars
         coverage_ratio = 1.0 if expected_bars <= 0 else float(unique_bars / expected_bars)
@@ -399,6 +402,21 @@ class BacktestRunner:
             "missing_bars": int(missing_bars),
             "largest_gap_bars": int(largest_gap_bars),
         }
+
+    @staticmethod
+    def _enrich_evaluation_stats(
+        stats: dict[str, Any],
+        plan: StrategyPlan,
+        validated_data: ValidatedData,
+    ) -> dict[str, Any]:
+        enriched_stats = dict(stats)
+        enriched_stats.pop("optimization", None)
+        if plan.optimization_details is not None:
+            enriched_stats["optimization"] = dict(plan.optimization_details)
+        reliability = dict(enriched_stats.get("data_reliability", {}))
+        reliability["continuity"] = validated_data.continuity
+        enriched_stats["data_reliability"] = reliability
+        return enriched_stats
 
     @staticmethod
     def _sample_series(series: pd.Series, max_points: int = 500) -> list[dict[str, float]]:
@@ -1233,7 +1251,7 @@ class BacktestRunner:
             self.metrics["result_cache_hits"] += 1
             plan.evaluations += 1
             val_cached = float(cached["metric_value"])
-            cached_stats = dict(cached["stats"])
+            cached_stats = self._enrich_evaluation_stats(cached["stats"], plan, validated_data)
             # Legacy cache continues to be written for reporting compatibility.
             self._cache_set(
                 collection=request.collection,
@@ -1266,12 +1284,7 @@ class BacktestRunner:
             exits,
             prepared.fractional,
         )
-        stats = dict(outcome.stats)
-        if plan.optimization_details is not None:
-            stats["optimization"] = plan.optimization_details
-        reliability = dict(stats.get("data_reliability", {}))
-        reliability["continuity"] = validated_data.continuity
-        stats["data_reliability"] = reliability
+        stats = self._enrich_evaluation_stats(outcome.stats, plan, validated_data)
         plan.evaluations += 1
         # Evaluator owns execution-state flags; runner only aggregates.
         if outcome.simulation_executed:
