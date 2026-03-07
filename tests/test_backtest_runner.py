@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from src.backtest.runner import BacktestRunner, BestResult
+from src.backtest.runner import BacktestRunner, BestResult, GateDecision
 from src.config import CollectionConfig, Config, ReliabilityThresholdsConfig, StrategyConfig
 from src.strategies.base import BaseStrategy
 
@@ -489,6 +489,26 @@ def test_run_all_produces_best_result(tmp_path, monkeypatch):
     assert best.stats["data_reliability"]["continuity"]["score"] == pytest.approx(1.0)
     assert runner.metrics["result_cache_misses"] >= 1
     assert runner.metrics["fresh_metric_evals"] >= 1
+
+
+def test_run_all_skips_strategy_when_plan_gate_fails(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+
+    def _skip_plan(self, state, validated_data, plan):
+        return GateDecision(False, "skip_job", ["plan_gate_blocked"], "strategy_optimization")
+
+    def _fail_strategy_run(*args, **kwargs):  # pragma: no cover - defensive assertion
+        raise AssertionError("strategy should not execute when plan gate fails")
+
+    monkeypatch.setattr(BacktestRunner, "_strategy_validate_plan", _skip_plan)
+    monkeypatch.setattr(BacktestRunner, "_strategy_run", _fail_strategy_run)
+
+    results = runner.run_all()
+    assert results == []
+    assert runner.metrics["symbols_tested"] == 0
+    assert runner.failures
+    assert runner.failures[0]["stage"] == "strategy_optimization"
+    assert runner.failures[0]["error"] == "plan_gate_blocked"
 
 
 def test_run_all_uses_cached_results(tmp_path, monkeypatch):

@@ -1532,14 +1532,17 @@ class BacktestRunner:
                 plan = self._strategy_create_plan(state, strat_name)
                 self._apply_policy_constraints_to_plan(state, validated_data, plan)
                 plan_decision = self._strategy_validate_plan(state, validated_data, plan)
-                _ = self._handle_gate_decision(
+                plan_decision = self._handle_gate_decision(
                     state,
                     plan_decision,
                     context_extra={
                         "strategy": plan.strategy.name,
                         "search_method": plan.search_method,
                     },
-                )  # routing handled by plan.optimization_skip_reason in _strategy_run
+                    blocked_collections=blocked_collections,
+                )
+                if not plan_decision.passed:
+                    continue
                 self.metrics["symbols_tested"] += 1
                 self.metrics["strategies_used"].add(plan.strategy.name)
                 outcome = self._strategy_run(plan, state, validated_data, prepared)
