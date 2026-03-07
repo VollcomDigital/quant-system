@@ -1347,47 +1347,16 @@ class BacktestRunner:
     ) -> StrategyEvalOutcome | None:
         """Run optimization/baseline evaluation and return the best strategy outcome."""
         try:
-            space_items = list(plan.search_space.items())
-            if plan.search_space and not plan.skip_optimization:
-                search_method = plan.search_method
+            if not plan.search_space or plan.skip_optimization:
+                self._strategy_evaluation(plan, state, validated_data, prepared, {})
+            else:
+                search_method = self._resolve_search_method(plan.search_method)
                 if search_method == "optuna":
-                    try:
-                        import optuna
-                    except Exception:
-                        search_method = "grid"
-                if search_method == "optuna":
-
-                    def objective(trial, space=space_items):
-                        var_params = {
-                            name: trial.suggest_categorical(name, options) for name, options in space
-                        }
-                        result = self._strategy_evaluation(plan, state, validated_data, prepared, var_params)
-                        return result if np.isfinite(result) else float("-inf")
-
-                    total_combos = 1
-                    for options in plan.search_space.values():
-                        total_combos *= max(1, len(options))
-                    n_trials = min(plan.trials_target, max(1, total_combos))
-                    study = optuna.create_study(direction="maximize")
-                    study.optimize(objective, n_trials=n_trials)
+                    self._run_optuna_strategy_search(plan, state, validated_data, prepared)
                 else:
                     for params in self._grid(plan.search_space):
                         self._strategy_evaluation(plan, state, validated_data, prepared, params)
-            else:
-                self._strategy_evaluation(plan, state, validated_data, prepared, {})
-            has_valid_candidate = plan.best_params is not None and isinstance(
-                plan.best_stats, dict
-            ) and bool(plan.best_stats)
-            return StrategyEvalOutcome(
-                best_val=float(plan.best_val),
-                best_params=plan.best_params,
-                best_stats=plan.best_stats,
-                has_valid_candidate=has_valid_candidate,
-                evaluations=plan.evaluations,
-                skipped_reason=plan.optimization_skip_reason,
-                strategy=plan.strategy.name,
-                job=state.job,
-            )
+            return self._build_strategy_eval_outcome(plan, state)
         except Exception as exc:
             self._failure_record(
                 self._strategy_failure_payload(
@@ -1398,6 +1367,61 @@ class BacktestRunner:
                 )
             )
             return None
+
+    @staticmethod
+    def _resolve_search_method(search_method: str) -> str:
+        if search_method != "optuna":
+            return search_method
+        try:
+            import optuna  # noqa: F401
+        except Exception:
+            return "grid"
+        return "optuna"
+
+    @staticmethod
+    def _total_search_combinations(search_space: dict[str, list[Any]]) -> int:
+        total_combos = 1
+        for options in search_space.values():
+            total_combos *= max(1, len(options))
+        return max(1, total_combos)
+
+    def _run_optuna_strategy_search(
+        self,
+        plan: StrategyPlan,
+        state: JobState,
+        validated_data: ValidatedData,
+        prepared: ExecutionPreparedData,
+    ) -> None:
+        import optuna
+
+        space_items = list(plan.search_space.items())
+
+        def objective(trial):
+            var_params = {
+                name: trial.suggest_categorical(name, options) for name, options in space_items
+            }
+            result = self._strategy_evaluation(plan, state, validated_data, prepared, var_params)
+            return result if np.isfinite(result) else float("-inf")
+
+        n_trials = min(plan.trials_target, self._total_search_combinations(plan.search_space))
+        study = optuna.create_study(direction="maximize")
+        study.optimize(objective, n_trials=n_trials)
+
+    @staticmethod
+    def _build_strategy_eval_outcome(plan: StrategyPlan, state: JobState) -> StrategyEvalOutcome:
+        has_valid_candidate = (
+            plan.best_params is not None and isinstance(plan.best_stats, dict) and bool(plan.best_stats)
+        )
+        return StrategyEvalOutcome(
+            best_val=float(plan.best_val),
+            best_params=plan.best_params,
+            best_stats=plan.best_stats,
+            has_valid_candidate=has_valid_candidate,
+            evaluations=plan.evaluations,
+            skipped_reason=plan.optimization_skip_reason,
+            strategy=plan.strategy.name,
+            job=state.job,
+        )
 
     def _strategy_validate_results(self, state: JobState, outcome: StrategyEvalOutcome) -> GateDecision:
         context = ValidationContext(
