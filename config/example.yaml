@@ -1,5 +1,7 @@
 metric: sortino  # sharpe | sortino | profit
 engine: pybroker  # single engine for simulations and param sweeps
+param_search: grid  # grid | optuna
+param_trials: 25
 asset_workers: 4
 param_workers: 2
 max_fetch_concurrency: 2
@@ -16,16 +18,38 @@ param_min_bars: 2000
 
 # Optional Reliability policy
 reliability_thresholds:
-  min_data_points: 1000
+  min_data_points: 2000
   min_continuity_score: 0.98
-  on_fail: skip_job  # skip_optimization | skip_job | skip_collection
+  on_fail: skip_job  # skip_optimization | skip_job
 
 collections:
+  # Stocks (large-cap growth)
+  - name: stocks_large_cap_growth
+    source: yfinance
+    symbols: ["CNDX.L", "AAPL", "MSFT", "NVDA"]
+    fees: 0.0005  # approx IBKR
+    slippage: 0.0005
+
+  # Bonds (global aggregate)
+  - name: bonds_global
+    source: yfinance
+    symbols: ["AGGH.L", "VAGP.L", "IGLA.L"]
+    fees: 0.0005
+    slippage: 0.0005
+
+  # Commodities (ETC mix)
+  - name: commodities
+    source: yfinance
+    symbols: ["SGLN.L", "PHAG.L", "CRUD.L", "CMOD.L"]
+    fees: 0.0005
+    slippage: 0.0005
+
+  # Crypto (Binance via ccxt)
   - name: crypto
     source: binance
     exchange: binance
     quote: USDT
-    symbols: ["BTC/USDT"]
+    symbols: ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT"]
     fees: 0.0006  # approx Bybit/Binance taker
     slippage: 0.0005
     # Optional per-collection reliability override (falls back to global thresholds above).
@@ -41,7 +65,11 @@ strategies:
   # Example: replace with your external strategy name and optionally module/class.
   # If module/class are omitted, loader tries to find a BaseStrategy subclass matching `name`.
   # Replace placeholders with your external strategy names and optional module/class.
-  - name: RSIStrategy
+  - name: YourStrategyName
     # module: your_package.module
     # class: YourStrategyClass
     params: {}
+  # - name: AnotherStrategy
+  #   module: your_package.other_module
+  #   class: AnotherStrategyClass
+  #   params: {}
