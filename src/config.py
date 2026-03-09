@@ -43,11 +43,6 @@ class NotificationsConfig:
 
 
 @dataclass
-class ValidationPolicyConfig:
-    on_fail: str | None = None
-
-
-@dataclass
 class ValidationDataQualityConfig:
     min_data_points: int | None = None
     max_missing_bar_pct: float | None = None
@@ -58,8 +53,14 @@ class ValidationDataQualityConfig:
 
 @dataclass
 class ValidationConfig:
-    policy: ValidationPolicyConfig | None = None
     data_quality: ValidationDataQualityConfig | None = None
+
+
+@dataclass
+class OptimizationPolicyConfig:
+    on_fail: str = "baseline_only"
+    min_bars: int | None = None
+    dof_multiplier: int | None = None
 
 
 @dataclass
@@ -84,13 +85,17 @@ class Config:
     evaluation_mode: str = "backtest"
     notifications: NotificationsConfig | None = None
     validation: ValidationConfig | None = None
+    optimization_policy: OptimizationPolicyConfig | None = None
 
 
-def _parse_on_fail(raw_value: Any, field_path: str) -> str | None:
+def _parse_on_fail(
+    raw_value: Any,
+    field_path: str,
+    allowed_on_fail: set[str],
+) -> str | None:
     if raw_value is None:
         return None
     on_fail = str(raw_value).strip().lower()
-    allowed_on_fail = {"skip_optimization", "skip_job", "skip_collection"}
     if on_fail not in allowed_on_fail:
         raise ValueError(
             f"Invalid `{field_path}`: expected one of {sorted(allowed_on_fail)}, got '{on_fail}'"
@@ -106,7 +111,11 @@ def _parse_validation_data_quality_thresholds(
     if not isinstance(raw, dict):
         raise ValueError(f"Invalid `{prefix}`: expected a mapping")
 
-    on_fail = _parse_on_fail(raw.get("on_fail"), f"{prefix}.on_fail")
+    on_fail = _parse_on_fail(
+        raw.get("on_fail"),
+        f"{prefix}.on_fail",
+        {"skip_optimization", "skip_job", "skip_collection"},
+    )
 
     def _as_optional_int(value: Any, field: str) -> int | None:
         if value is None:
@@ -144,40 +153,48 @@ def _parse_validation(raw: Any, prefix: str) -> ValidationConfig | None:
     if not isinstance(raw, dict):
         raise ValueError(f"Invalid `{prefix}`: expected a mapping")
 
-    policy_raw = raw.get("policy")
-    if policy_raw is not None and not isinstance(policy_raw, dict):
-        raise ValueError(f"Invalid `{prefix}.policy`: expected a mapping")
-
     data_quality_raw = raw.get("data_quality")
     if data_quality_raw is not None and not isinstance(data_quality_raw, dict):
         raise ValueError(f"Invalid `{prefix}.data_quality`: expected a mapping")
 
-    policy_cfg = ValidationPolicyConfig(
-        on_fail=_parse_on_fail(
-            policy_raw.get("on_fail") if isinstance(policy_raw, dict) else None,
-            f"{prefix}.policy.on_fail",
-        )
-    )
     data_quality_cfg = None
     if isinstance(data_quality_raw, dict):
-        parsed_reliability = _parse_validation_data_quality_thresholds(
+        parsed_data_quality = _parse_validation_data_quality_thresholds(
             data_quality_raw, f"{prefix}.data_quality"
         )
-        assert parsed_reliability is not None  # data_quality_raw is dict
-        data_quality_cfg = ValidationDataQualityConfig(
-            min_data_points=parsed_reliability.min_data_points,
-            max_missing_bar_pct=parsed_reliability.max_missing_bar_pct,
-            max_kurtosis=parsed_reliability.max_kurtosis,
-            min_continuity_score=parsed_reliability.min_continuity_score,
-            on_fail=_parse_on_fail(
-                data_quality_raw.get("on_fail"),
-                f"{prefix}.data_quality.on_fail",
-            ),
-        )
+        assert parsed_data_quality is not None  # data_quality_raw is dict
+        data_quality_cfg = parsed_data_quality
 
-    if policy_cfg.on_fail is None and data_quality_cfg is None:
+    if data_quality_cfg is None:
         return None
-    return ValidationConfig(policy=policy_cfg, data_quality=data_quality_cfg)
+    return ValidationConfig(data_quality=data_quality_cfg)
+
+
+def _parse_optimization_policy(raw: Any, prefix: str) -> OptimizationPolicyConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid `{prefix}`: expected a mapping")
+
+    on_fail = _parse_on_fail(
+        raw.get("on_fail"),
+        f"{prefix}.on_fail",
+        {"baseline_only", "skip_job"},
+    ) or "baseline_only"
+
+    def _as_optional_int(value: Any, field: str) -> int | None:
+        if value is None:
+            return None
+        parsed = int(value)
+        if parsed < 0:
+            raise ValueError(f"`{prefix}.{field}` must be >= 0")
+        return parsed
+
+    return OptimizationPolicyConfig(
+        on_fail=on_fail,
+        min_bars=_as_optional_int(raw.get("min_bars"), "min_bars"),
+        dof_multiplier=_as_optional_int(raw.get("dof_multiplier"), "dof_multiplier"),
+    )
 
 
 def load_config(path: str | Path) -> Config:
@@ -242,6 +259,9 @@ def load_config(path: str | Path) -> Config:
             notifications_cfg = NotificationsConfig(slack=slack_cfg)
 
     validation_cfg = _parse_validation(raw.get("validation"), "validation")
+    optimization_policy_cfg = _parse_optimization_policy(
+        raw.get("optimization_policy"), "optimization_policy"
+    )
 
     evaluation_mode = str(raw.get("evaluation_mode", "backtest")).strip().lower()
     allowed_modes = {"backtest", "walk_forward"}
@@ -271,5 +291,6 @@ def load_config(path: str | Path) -> Config:
         evaluation_mode=evaluation_mode,
         notifications=notifications_cfg,
         validation=validation_cfg,
+        optimization_policy=optimization_policy_cfg,
     )
     return cfg

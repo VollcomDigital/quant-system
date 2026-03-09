@@ -195,6 +195,19 @@ See new collection examples under `config/collections/` for FX intraday via Finn
   poetry run quant-system clean-cache --cache-dir .cache/data --dry-run
   ```
 
+### Validation & Optimization Policy
+
+- `validation.data_quality` controls job-level data gates (for collection/symbol/timeframe):
+  - `on_fail: skip_job | skip_collection | skip_optimization`
+  - `skip_optimization` means optimization is disabled for all strategies on that job.
+- `optimization_policy` controls strategy-level search feasibility:
+  - `on_fail: baseline_only | skip_job`
+  - `baseline_only` runs a single baseline evaluation without parameter search.
+
+Structured logs reflect this directly via gate actions:
+- `data_validation_gate` can emit `skip_optimization` (job-level optimization disable).
+- `strategy_optimization_gate` can emit `baseline_only` (strategy-level baseline fallback) or `skip_job`.
+
 ### Dashboard
 
 Spin up a lightweight FastAPI dashboard to browse runs and open existing HTML reports:

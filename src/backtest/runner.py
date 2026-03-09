@@ -78,7 +78,14 @@ class JobContext:
 @dataclass
 class GateDecision:
     passed: bool
-    action: Literal["continue", "skip_job", "skip_collection", "skip_optimization", "reject_result"]
+    action: Literal[
+        "continue",
+        "baseline_only",
+        "skip_job",
+        "skip_collection",
+        "skip_optimization",
+        "reject_result",
+    ]
     reasons: list[str]
     stage: StageName
 
@@ -742,13 +749,9 @@ class BacktestRunner:
         state.current_stage = decision.stage
         state.decisions[decision.stage] = decision
         state.reasons_by_stage[decision.stage] = list(decision.reasons)
-        if self._is_job_level_skip_optimization(decision):
+        # Job-level data-quality gate can disable optimization for all strategies on this job.
+        if decision.action == "skip_optimization":
             state.policy_skip_optimization = True
-
-    @staticmethod
-    def _is_job_level_skip_optimization(decision: GateDecision) -> bool:
-        # Only data-level reliability gates should persist as job-wide optimization policy.
-        return decision.action == "skip_optimization" and decision.stage == "data_validation"
 
     def _handle_gate_decision(
         self,
@@ -815,10 +818,11 @@ class BacktestRunner:
     def _gate_action_rank(action: str) -> int:
         order = {
             "continue": 0,
-            "skip_optimization": 1,
-            "skip_job": 2,
-            "skip_collection": 3,
-            "reject_result": 4,
+            "baseline_only": 1,
+            "skip_optimization": 2,
+            "skip_job": 3,
+            "skip_collection": 4,
+            "reject_result": 5,
         }
         return order.get(action, -1)
 
@@ -834,7 +838,7 @@ class BacktestRunner:
                 if reason not in reasons:
                     reasons.append(reason)
         action = chosen.action
-        passed = action in {"continue", "skip_optimization"}
+        passed = action in {"continue", "skip_optimization", "baseline_only"}
         return GateDecision(passed=passed, action=action, reasons=reasons, stage=stage)
 
     def _collection_validation(self, state: JobState) -> GateDecision:
@@ -918,7 +922,7 @@ class BacktestRunner:
     def _data_validation_common(
         self, context: ValidationContext
     ) -> tuple[GateDecision, ValidatedData | None]:
-        # Compute continuity and reliability policy decisions shared by all evaluation modes.
+        # `validation.data_quality` drives the job-level data gate decisions.
         fetched_data = context.fetched_data
         if fetched_data is None:
             return GateDecision(False, "skip_job", ["missing_fetched_data"], "data_validation"), None
@@ -961,23 +965,15 @@ class BacktestRunner:
     ) -> tuple[str, int | None, float | None]:
         global_validation = getattr(self.cfg, "validation", None)
         collection_validation = getattr(collection, "validation", None)
-
-        global_policy = getattr(global_validation, "policy", None)
         global_dq = getattr(global_validation, "data_quality", None)
-        collection_policy = getattr(collection_validation, "policy", None)
         collection_dq = getattr(collection_validation, "data_quality", None)
-
-        on_fail_candidates = (
-            getattr(collection_dq, "on_fail", None),
-            getattr(collection_policy, "on_fail", None),
-            getattr(global_dq, "on_fail", None),
-            getattr(global_policy, "on_fail", None),
+        # Collection override takes precedence over global validation defaults.
+        on_fail = (
+            getattr(collection_dq, "on_fail", None)
+            if collection_dq is not None and getattr(collection_dq, "on_fail", None) is not None
+            else getattr(global_dq, "on_fail", None)
         )
-        on_fail = "skip_optimization"
-        for candidate in on_fail_candidates:
-            if candidate is not None:
-                on_fail = str(candidate).strip().lower()
-                break
+        on_fail = str(on_fail).strip().lower() if on_fail is not None else "skip_optimization"
 
         min_data_points = (
             getattr(collection_dq, "min_data_points", None)
@@ -991,6 +987,26 @@ class BacktestRunner:
             else getattr(global_dq, "min_continuity_score", None)
         )
         return on_fail, min_data_points, min_continuity_score
+
+    def _resolve_optimization_policy(self) -> tuple[str, int, int]:
+        # `optimization_policy` drives strategy-plan feasibility decisions.
+        policy = getattr(self.cfg, "optimization_policy", None)
+        on_fail = (
+            str(getattr(policy, "on_fail", "baseline_only")).strip().lower()
+            if policy is not None
+            else "baseline_only"
+        )
+        min_bars = (
+            int(getattr(policy, "min_bars"))
+            if policy is not None and getattr(policy, "min_bars", None) is not None
+            else int(self.cfg.param_min_bars)
+        )
+        dof_multiplier = (
+            int(getattr(policy, "dof_multiplier"))
+            if policy is not None and getattr(policy, "dof_multiplier", None) is not None
+            else int(self.cfg.param_dof_multiplier)
+        )
+        return on_fail, min_bars, dof_multiplier
 
     @staticmethod
     def _collect_reliability_reasons(
@@ -1159,13 +1175,14 @@ class BacktestRunner:
         return self._compose_gate_decisions("strategy_optimization", common_decision, mode_decision)
 
     def _strategy_validate_plan_common(self, context: ValidationContext) -> GateDecision:
-        # Decide whether to skip optimization for this strategy plan.
+        # `optimization_policy` decides strategy-level action when search is infeasible.
         plan = context.plan
         validated_data = context.validated_data
         if plan is None or validated_data is None:
             return GateDecision(False, "skip_job", ["missing_strategy_plan_context"], "strategy_optimization")
+        optimization_on_fail, min_bars_cfg, dof_multiplier = self._resolve_optimization_policy()
         n_params = len(plan.search_space)
-        min_bars_for_optimization = max(self.cfg.param_min_bars, self.cfg.param_dof_multiplier * n_params)
+        min_bars_for_optimization = max(min_bars_cfg, dof_multiplier * n_params)
         insufficient_bars = (
             bool(plan.search_space) and len(validated_data.raw_df) < min_bars_for_optimization
         )
@@ -1187,8 +1204,8 @@ class BacktestRunner:
                 plan.optimization_details["min_bars_required"] = min_bars_for_optimization
                 plan.optimization_details["bars_available"] = len(validated_data.raw_df)
             return GateDecision(
-                passed=True,
-                action="skip_optimization",
+                passed=(optimization_on_fail == "baseline_only"),
+                action=optimization_on_fail,
                 reasons=skip_reasons,
                 stage="strategy_optimization",
             )

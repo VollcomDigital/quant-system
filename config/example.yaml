@@ -18,11 +18,16 @@ param_min_bars: 2000
 
 # Optional validation policy
 validation:
-  policy:
-    on_fail: skip_job  # skip_optimization | skip_job | skip_collection
   data_quality:
-    min_data_points: 2000
+    min_data_points: 1000
     min_continuity_score: 0.98
+    on_fail: skip_job  # skip_optimization | skip_job | skip_collection
+
+# Optional optimization policy (strategy-level feasibility gates)
+optimization_policy:
+  on_fail: baseline_only  # baseline_only | skip_job
+  min_bars: 2000
+  dof_multiplier: 100
 
 collections:
   # Stocks (large-cap growth)
@@ -56,11 +61,10 @@ collections:
     slippage: 0.0005
     # Optional per-collection validation override (falls back to global settings above).
     # validation:
-    #   policy:
-    #     on_fail: skip_optimization
     #   data_quality:
     #     min_data_points: 1500
     #     min_continuity_score: 0.99
+    #     on_fail: skip_optimization
 
 # Choose timeframes compatible across sources for full history
 timeframes: ["1d"]

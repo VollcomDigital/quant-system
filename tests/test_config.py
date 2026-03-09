@@ -67,11 +67,10 @@ collections:
 timeframes: ['1d']
 metric: sharpe
 validation:
-  policy:
-    on_fail: skip_job
   data_quality:
     min_data_points: 500
     min_continuity_score: 0.98
+    on_fail: skip_job
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -81,8 +80,7 @@ validation:
     assert cfg.validation.data_quality is not None
     assert cfg.validation.data_quality.min_data_points == 500
     assert cfg.validation.data_quality.min_continuity_score == pytest.approx(0.98)
-    assert cfg.validation.policy is not None
-    assert cfg.validation.policy.on_fail == "skip_job"
+    assert cfg.validation.data_quality.on_fail == "skip_job"
 
 
 def test_load_config_collection_reliability_thresholds_override(tmp_path: Path):
@@ -92,19 +90,17 @@ collections:
     source: yfinance
     symbols: ['AAPL']
     validation:
-      policy:
-        on_fail: skip_optimization
       data_quality:
         min_data_points: 250
         min_continuity_score: 0.95
+        on_fail: skip_optimization
 timeframes: ['1d']
 metric: sharpe
 validation:
-  policy:
-    on_fail: skip_job
   data_quality:
     min_data_points: 500
     min_continuity_score: 0.98
+    on_fail: skip_job
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -117,8 +113,7 @@ validation:
     assert col.validation.data_quality is not None
     assert col.validation.data_quality.min_data_points == 250
     assert col.validation.data_quality.min_continuity_score == pytest.approx(0.95)
-    assert col.validation.policy is not None
-    assert col.validation.policy.on_fail == "skip_optimization"
+    assert col.validation.data_quality.on_fail == "skip_optimization"
 
 
 @pytest.mark.parametrize(
@@ -138,7 +133,7 @@ collections:
 timeframes: ['1d']
 metric: sharpe
 validation:
-  policy:
+  data_quality:
     on_fail: {on_fail_input}
 """
     path = tmp_path / "config.yaml"
@@ -146,8 +141,8 @@ validation:
 
     cfg = load_config(path)
     assert cfg.validation is not None
-    assert cfg.validation.policy is not None
-    assert cfg.validation.policy.on_fail == on_fail_input
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.on_fail == on_fail_input
 
 
 @pytest.mark.parametrize(
@@ -184,10 +179,51 @@ collections:
     source: yfinance
     symbols: ['AAPL']
     validation:
-      policy:
+      data_quality:
         on_fail: abort_run
 timeframes: ['1d']
 metric: sharpe
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_optimization_policy(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+optimization_policy:
+  on_fail: skip_job
+  min_bars: 123
+  dof_multiplier: 7
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.optimization_policy is not None
+    assert cfg.optimization_policy.on_fail == "skip_job"
+    assert cfg.optimization_policy.min_bars == 123
+    assert cfg.optimization_policy.dof_multiplier == 7
+
+
+def test_load_config_optimization_policy_invalid_on_fail(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+optimization_policy:
+  on_fail: skip_optimization
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)

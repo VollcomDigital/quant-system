@@ -11,10 +11,10 @@ from src.backtest.runner import BacktestRunner, BestResult, GateDecision
 from src.config import (
     CollectionConfig,
     Config,
+    OptimizationPolicyConfig,
     StrategyConfig,
     ValidationConfig,
     ValidationDataQualityConfig,
-    ValidationPolicyConfig,
 )
 from src.strategies.base import BaseStrategy
 
@@ -857,11 +857,29 @@ def test_run_all_min_bars_and_dof_guard_behavior(
         assert optimization is None
 
 
+def test_run_all_optimization_policy_skip_job_on_infeasible_search(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.param_search = "grid"
+    runner.cfg.optimization_policy = OptimizationPolicyConfig(
+        on_fail="skip_job",
+        min_bars=60,
+        dof_multiplier=1,
+    )
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert len(runner.failures) == 1
+    assert runner.failures[0]["stage"] == "strategy_optimization"
+    assert "insufficient_bars_for_optimization" in runner.failures[0]["error"]
+
+
 def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
-        policy=ValidationPolicyConfig(on_fail="skip_optimization"),
-        data_quality=ValidationDataQualityConfig(min_data_points=10),
+        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_optimization"),
     )
     _patch_source_with_bars(monkeypatch, bars=5)
     eval_calls = _patch_pybroker_simulation(monkeypatch)
@@ -879,8 +897,7 @@ def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkey
 def test_run_all_reliability_skip_evaluation_on_continuity_threshold(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
-        policy=ValidationPolicyConfig(on_fail="skip_job"),
-        data_quality=ValidationDataQualityConfig(min_continuity_score=0.95),
+        data_quality=ValidationDataQualityConfig(min_continuity_score=0.95, on_fail="skip_job"),
     )
 
     class _GappySource:
@@ -960,8 +977,7 @@ def test_run_all_skip_evaluation_adds_single_failure_for_multiple_strategies(tmp
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.strategies = []
     runner.cfg.validation = ValidationConfig(
-        policy=ValidationPolicyConfig(on_fail="skip_job"),
-        data_quality=ValidationDataQualityConfig(min_data_points=10),
+        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_job"),
     )
     monkeypatch.setattr(
         "src.backtest.runner.discover_external_strategies",
@@ -994,8 +1010,7 @@ def test_run_all_skip_optimization_still_evaluates_each_strategy(tmp_path, monke
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.strategies = []
     runner.cfg.validation = ValidationConfig(
-        policy=ValidationPolicyConfig(on_fail="skip_optimization"),
-        data_quality=ValidationDataQualityConfig(min_data_points=10),
+        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_optimization"),
     )
     monkeypatch.setattr(
         "src.backtest.runner.discover_external_strategies",
@@ -1088,14 +1103,12 @@ def test_run_all_collection_reliability_override_takes_precedence(tmp_path, monk
         fees=0.0004,
         slippage=0.0003,
         validation=ValidationConfig(
-            policy=ValidationPolicyConfig(on_fail="skip_optimization"),
-            data_quality=ValidationDataQualityConfig(min_data_points=10),
+            data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_optimization"),
         ),
     )
     runner = _make_runner(tmp_path, monkeypatch, collections=[collection])
     runner.cfg.validation = ValidationConfig(
-        policy=ValidationPolicyConfig(on_fail="skip_job"),
-        data_quality=ValidationDataQualityConfig(min_data_points=10),
+        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_job"),
     )
     _patch_source_with_bars(monkeypatch, bars=5)
     eval_calls = _patch_pybroker_simulation(monkeypatch)
@@ -1131,8 +1144,7 @@ def test_run_all_reliability_skip_collection_blocks_remaining_jobs_in_collection
     ]
     runner = _make_runner(tmp_path, monkeypatch, collections=collections)
     runner.cfg.validation = ValidationConfig(
-        policy=ValidationPolicyConfig(on_fail="skip_collection"),
-        data_quality=ValidationDataQualityConfig(min_data_points=10),
+        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_collection"),
     )
 
     fetch_calls = {"bad_col": 0, "good_col": 0}
