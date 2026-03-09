@@ -230,3 +230,71 @@ optimization_policy:
 
     with pytest.raises(ValueError):
         load_config(path)
+
+
+def test_load_config_data_quality_calendar(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    calendar:
+      kind: exchange
+      exchange: XNYS
+      timezone: UTC-05:00
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.calendar is not None
+    assert cfg.validation.data_quality.calendar.kind == "exchange"
+    assert cfg.validation.data_quality.calendar.exchange == "XNYS"
+    assert cfg.validation.data_quality.calendar.timezone == "UTC-05:00"
+
+
+def test_load_config_data_quality_calendar_invalid_kind(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    calendar:
+      kind: invalid
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_data_quality_calendar_invalid_timezone(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    calendar:
+      kind: exchange
+      timezone: America/New_York
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)

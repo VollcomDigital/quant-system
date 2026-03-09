@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
@@ -43,12 +44,20 @@ class NotificationsConfig:
 
 
 @dataclass
+class ValidationCalendarConfig:
+    kind: str = "auto"
+    exchange: str | None = None
+    timezone: str | None = None
+
+
+@dataclass
 class ValidationDataQualityConfig:
     min_data_points: int | None = None
     max_missing_bar_pct: float | None = None
     max_kurtosis: float | None = None
     min_continuity_score: float | None = None
     on_fail: str | None = None
+    calendar: ValidationCalendarConfig | None = None
 
 
 @dataclass
@@ -103,6 +112,19 @@ def _parse_on_fail(
     return on_fail
 
 
+def _parse_utc_timezone(raw_value: Any, field_path: str) -> str | None:
+    if raw_value is None:
+        return None
+    timezone = str(raw_value).strip().upper()
+    if timezone == "UTC":
+        return timezone
+    if not re.fullmatch(r"UTC[+-](?:0\d|1[0-4]):[0-5]\d", timezone):
+        raise ValueError(
+            f"Invalid `{field_path}`: expected UTC or UTC±HH:MM (e.g. UTC+00:00)"
+        )
+    return timezone
+
+
 def _parse_validation_data_quality_thresholds(
     raw: Any, prefix: str
 ) -> ValidationDataQualityConfig | None:
@@ -116,6 +138,23 @@ def _parse_validation_data_quality_thresholds(
         f"{prefix}.on_fail",
         {"skip_optimization", "skip_job", "skip_collection"},
     )
+    calendar_raw = raw.get("calendar")
+    if calendar_raw is not None and not isinstance(calendar_raw, dict):
+        raise ValueError(f"Invalid `{prefix}.calendar`: expected a mapping")
+    calendar_cfg = None
+    if isinstance(calendar_raw, dict):
+        kind = str(calendar_raw.get("kind", "auto")).strip().lower()
+        allowed_kinds = {"auto", "crypto_24_7", "weekday", "exchange"}
+        if kind not in allowed_kinds:
+            raise ValueError(
+                f"Invalid `{prefix}.calendar.kind`: expected one of {sorted(allowed_kinds)}, got '{kind}'"
+            )
+        exchange = calendar_raw.get("exchange")
+        calendar_cfg = ValidationCalendarConfig(
+            kind=kind,
+            exchange=str(exchange).strip() if exchange is not None else None,
+            timezone=_parse_utc_timezone(calendar_raw.get("timezone"), f"{prefix}.calendar.timezone"),
+        )
 
     def _as_optional_int(value: Any, field: str) -> int | None:
         if value is None:
@@ -141,6 +180,7 @@ def _parse_validation_data_quality_thresholds(
             raw.get("min_continuity_score"), "min_continuity_score"
         ),
         on_fail=on_fail,
+        calendar=calendar_cfg,
     )
     if cfg.min_continuity_score is not None and not 0.0 <= cfg.min_continuity_score <= 1.0:
         raise ValueError(f"`{prefix}.min_continuity_score` must be between 0 and 1")

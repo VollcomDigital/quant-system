@@ -166,6 +166,8 @@ class ValidationContext:
 
 
 class BacktestRunner:
+    _CRYPTO_SOURCE_NAMES = {"binance", "bybit", "ccxt", "coinbase", "kraken", "okx", "kucoin"}
+
     def __init__(
         self,
         cfg: Config,
@@ -359,11 +361,83 @@ class BacktestRunner:
             return pd.Timedelta(seconds=value)
         return None
 
+    @staticmethod
+    def _parse_timeframe_shape(timeframe: str) -> tuple[int, str, bool, bool]:
+        tf = (timeframe or "").strip().lower()
+        digits = "".join(ch for ch in tf if ch.isdigit())
+        unit = tf[len(digits) :].strip() or "d"
+        value = int(digits) if digits else 1
+        value = max(1, value)
+        is_eod_like = unit in {
+            "d",
+            "day",
+            "days",
+            "w",
+            "wk",
+            "wks",
+            "week",
+            "weeks",
+            "mo",
+            "mon",
+            "month",
+            "months",
+        }
+        is_daily = unit in {"d", "day", "days"}
+        return value, unit, is_eod_like, is_daily
+
+    @staticmethod
+    def _count_missing_from_expected_index(
+        expected_idx: pd.DatetimeIndex,
+        actual_idx: pd.DatetimeIndex,
+        *,
+        normalize_before_compare: bool = False,
+    ) -> tuple[int, int, int]:
+        expected_bars = int(len(expected_idx))
+        if expected_bars <= 0:
+            return 0, 0, 0
+        lhs = expected_idx.normalize() if normalize_before_compare else expected_idx
+        rhs = actual_idx.normalize() if normalize_before_compare else actual_idx
+        present_mask = lhs.isin(rhs)
+        missing_mask = ~present_mask
+        missing_bars = int(missing_mask.sum())
+        largest_gap_bars = 0
+        current_gap = 0
+        for is_missing in missing_mask:
+            if bool(is_missing):
+                current_gap += 1
+                largest_gap_bars = max(largest_gap_bars, current_gap)
+            else:
+                current_gap = 0
+        return expected_bars, missing_bars, largest_gap_bars
+
+    @staticmethod
+    def _count_missing_by_fixed_delta(
+        idx: pd.DatetimeIndex, expected_delta: pd.Timedelta
+    ) -> tuple[int, int]:
+        diffs = idx[1:] - idx[:-1]
+        gap_diffs = diffs[diffs > expected_delta]
+        if len(gap_diffs) == 0:
+            return 0, 0
+        gap_bars = np.asarray(gap_diffs // expected_delta, dtype=int) - 1
+        positive_gap_bars = gap_bars[gap_bars > 0]
+        if positive_gap_bars.size == 0:
+            return 0, 0
+        return int(positive_gap_bars.sum()), int(positive_gap_bars.max())
+
+    @staticmethod
+    def _weekday_expected_index(
+        idx: pd.DatetimeIndex, expected_delta: pd.Timedelta
+    ) -> pd.DatetimeIndex:
+        expected_idx = pd.date_range(start=idx[0], end=idx[-1], freq=expected_delta)
+        return expected_idx[expected_idx.dayofweek < 5]
+
     @classmethod
     def compute_continuity_score(
         cls,
         df: pd.DataFrame,
         timeframe: str,
+        calendar_kind: str = "crypto_24_7",
+        exchange_calendar: str | None = None,
     ) -> dict[str, float | int]:
         raw_idx = pd.DatetimeIndex(pd.to_datetime(df.index)).sort_values()
         actual_bars = int(len(raw_idx))
@@ -382,22 +456,45 @@ class BacktestRunner:
         if expected_delta is None:
             raise ValueError(f"unsupported_timeframe_for_continuity: {timeframe}")
 
-        diffs = idx[1:] - idx[:-1]
-        gap_diffs = diffs[diffs > expected_delta]
-        if len(gap_diffs) == 0:
-            missing_bars = 0
-            largest_gap_bars = 0
-        else:
-            gap_bars = np.asarray(gap_diffs // expected_delta, dtype=int) - 1
-            positive_gap_bars = gap_bars[gap_bars > 0]
-            if positive_gap_bars.size == 0:
-                missing_bars = 0
-                largest_gap_bars = 0
-            else:
-                missing_bars = int(positive_gap_bars.sum())
-                largest_gap_bars = int(positive_gap_bars.max())
+        value, _, is_eod_like, is_daily = cls._parse_timeframe_shape(timeframe)
+        if calendar_kind == "exchange" and is_daily and exchange_calendar:
+            try:
+                import exchange_calendars as xcals
 
-        expected_bars = unique_bars + missing_bars
+                calendar = xcals.get_calendar(exchange_calendar)
+                start_date = pd.Timestamp(idx[0]).date().isoformat()
+                end_date = pd.Timestamp(idx[-1]).date().isoformat()
+                expected_idx = pd.DatetimeIndex(calendar.sessions_in_range(start_date, end_date))
+                if expected_idx.tz is not None:
+                    expected_idx = expected_idx.tz_localize(None)
+                if value > 1 and len(expected_idx) > 0:
+                    expected_idx = expected_idx[::value]
+                actual_idx = idx
+                if actual_idx.tz is not None:
+                    actual_idx = actual_idx.tz_localize(None)
+                expected_bars, missing_bars, largest_gap_bars = cls._count_missing_from_expected_index(
+                    expected_idx,
+                    actual_idx,
+                    normalize_before_compare=True,
+                )
+            except ModuleNotFoundError:
+                # Fallback keeps continuity gate functional when exchange_calendars
+                # is not installed; behaves like weekday expectations.
+                expected_idx = cls._weekday_expected_index(idx, expected_delta)
+                expected_bars, missing_bars, largest_gap_bars = cls._count_missing_from_expected_index(
+                    expected_idx, idx
+                )
+        elif calendar_kind in {"weekday", "exchange"} and is_eod_like:
+            expected_idx = cls._weekday_expected_index(idx, expected_delta)
+            expected_bars, missing_bars, largest_gap_bars = cls._count_missing_from_expected_index(
+                expected_idx, idx
+            )
+        else:
+            missing_bars, largest_gap_bars = cls._count_missing_by_fixed_delta(idx, expected_delta)
+            expected_bars = unique_bars + missing_bars
+
+        if expected_bars <= 0:
+            expected_bars = unique_bars
         coverage_ratio = 1.0 if expected_bars <= 0 else float(unique_bars / expected_bars)
         coverage_ratio = max(0.0, min(1.0, coverage_ratio))
         missing_ratio = 0.0 if expected_bars <= 0 else (missing_bars / expected_bars)
@@ -929,20 +1026,26 @@ class BacktestRunner:
         if fetched_data.raw_df.empty:
             return GateDecision(False, "skip_job", ["empty_dataframe"], "data_validation"), None
 
-        try:
-            continuity = self.compute_continuity_score(fetched_data.raw_df, context.job.timeframe)
-        except ValueError as exc:
-            return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
-
         (
             reliability_on_fail,
             min_data_points,
             min_continuity_score,
             max_missing_bar_pct,
             max_kurtosis,
+            calendar_kind,
+            calendar_exchange,
         ) = (
             self._resolve_data_quality_policy(context.job.collection)
         )
+        try:
+            continuity = self.compute_continuity_score(
+                fetched_data.raw_df,
+                context.job.timeframe,
+                calendar_kind=calendar_kind,
+                exchange_calendar=calendar_exchange,
+            )
+        except ValueError as exc:
+            return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
         reliability_reasons = self._collect_reliability_reasons(
             raw_df=fetched_data.raw_df,
             continuity=continuity,
@@ -970,7 +1073,7 @@ class BacktestRunner:
 
     def _resolve_data_quality_policy(
         self, collection: CollectionConfig
-    ) -> tuple[str, int | None, float | None, float | None, float | None]:
+    ) -> tuple[str, int | None, float | None, float | None, float | None, str, str | None]:
         global_validation = getattr(self.cfg, "validation", None)
         collection_validation = getattr(collection, "validation", None)
         global_dq = getattr(global_validation, "data_quality", None)
@@ -1004,7 +1107,32 @@ class BacktestRunner:
             if collection_dq is not None and getattr(collection_dq, "max_kurtosis", None) is not None
             else getattr(global_dq, "max_kurtosis", None)
         )
-        return on_fail, min_data_points, min_continuity_score, max_missing_bar_pct, max_kurtosis
+        calendar_cfg = (
+            getattr(collection_dq, "calendar", None)
+            if collection_dq is not None and getattr(collection_dq, "calendar", None) is not None
+            else getattr(global_dq, "calendar", None)
+        )
+        calendar_kind = str(getattr(calendar_cfg, "kind", "auto")).strip().lower()
+        calendar_exchange = (
+            str(getattr(calendar_cfg, "exchange", "")).strip()
+            if calendar_cfg is not None and getattr(calendar_cfg, "exchange", None) is not None
+            else None
+        )
+        if calendar_kind == "auto":
+            calendar_kind = (
+                "crypto_24_7"
+                if collection.source.strip().lower() in self._CRYPTO_SOURCE_NAMES
+                else "weekday"
+            )
+        return (
+            on_fail,
+            min_data_points,
+            min_continuity_score,
+            max_missing_bar_pct,
+            max_kurtosis,
+            calendar_kind,
+            calendar_exchange,
+        )
 
     def _resolve_optimization_policy(self) -> tuple[str, int, int]:
         # `optimization_policy` drives strategy-plan feasibility decisions.

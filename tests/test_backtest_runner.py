@@ -320,6 +320,36 @@ def test_compute_continuity_score_invalid_inputs(df, timeframe, error_match):
         BacktestRunner.compute_continuity_score(df, timeframe)
 
 
+def test_compute_continuity_score_weekend_gap_not_missing_for_weekday_calendar():
+    idx = pd.to_datetime(["2024-01-05", "2024-01-08"])  # Friday -> Monday
+    df = pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
+    continuity = BacktestRunner.compute_continuity_score(df, "1d", calendar_kind="weekday")
+    assert continuity["missing_bars"] == 0
+    assert continuity["score"] == pytest.approx(1.0)
+
+
+def test_compute_continuity_score_weekend_gap_missing_for_24_7_calendar():
+    idx = pd.to_datetime(["2024-01-05", "2024-01-08"])  # Friday -> Monday
+    df = pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
+    continuity = BacktestRunner.compute_continuity_score(df, "1d", calendar_kind="crypto_24_7")
+    assert continuity["missing_bars"] == 2
+    assert continuity["score"] < 1.0
+
+
+def test_compute_continuity_score_exchange_calendar_ignores_market_holiday():
+    pytest.importorskip("exchange_calendars")
+    idx = pd.to_datetime(["2023-12-22", "2023-12-26"])  # Dec 25th is NYSE holiday
+    df = pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
+    weekday_continuity = BacktestRunner.compute_continuity_score(df, "1d", calendar_kind="weekday")
+    exchange_continuity = BacktestRunner.compute_continuity_score(
+        df, "1d", calendar_kind="exchange", exchange_calendar="XNYS"
+    )
+    assert weekday_continuity["missing_bars"] == 1
+    assert exchange_continuity["missing_bars"] == 0
+    assert weekday_continuity["score"] < 1.0
+    assert exchange_continuity["score"] == pytest.approx(1.0)
+
+
 def test_sample_series_preserves_last_point():
     idx = pd.date_range("2024-01-01", periods=3, freq="D")
     series = pd.Series([1.0, 2.0, 3.0], index=idx)

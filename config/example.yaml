@@ -13,6 +13,10 @@ cache_dir: .cache/data
 # Optional validation policy
 validation:
   data_quality:
+    calendar:
+      kind: auto  # auto | crypto_24_7 | weekday | exchange
+      # exchange: XNYS
+      # timezone: UTC-05:00
     min_data_points: 1000
     min_continuity_score: 0.98
     max_missing_bar_pct: 5.0  # max percent of missing bars vs expected timeline

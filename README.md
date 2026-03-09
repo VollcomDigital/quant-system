@@ -198,6 +198,12 @@ See new collection examples under `config/collections/` for FX intraday via Finn
 ### Validation & Optimization Policy
 
 - `validation.data_quality` controls job-level data gates (for collection/symbol/timeframe):
+  - `calendar` controls continuity expectations:
+    - `kind: auto | crypto_24_7 | weekday | exchange`
+    - `timezone: UTC or UTC±HH:MM`
+    - `auto` resolves to `crypto_24_7` for crypto sources and `weekday` otherwise
+    - `exchange` uses `exchange_calendars` for daily session-aware continuity (holidays excluded)
+    - non-daily exchange checks currently fall back to weekday-style expectations
   - `min_data_points`: minimum number of bars required
   - `min_continuity_score`: minimum continuity score (0..1)
   - `max_missing_bar_pct`: maximum missing bars percentage across expected bars
