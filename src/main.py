@@ -164,13 +164,19 @@ def run(
     dashboard_cache = runner.results_cache
     if os.environ.get("EVALUATION_RESULTS_SOURCE", "").strip().lower() == "result_store":
         class _ResultStoreCacheAdapter:
-            def __init__(self, rows: list[dict[str, Any]]):
+            def __init__(self, rows: list[dict[str, Any]], fallback_cache: Any):
                 self._rows = rows
+                self._fallback_cache = fallback_cache
 
             def list_by_run(self, _run_id: str) -> list[dict[str, Any]]:
                 return list(self._rows)
 
-        dashboard_cache = _ResultStoreCacheAdapter(runner.list_result_rows_for_run(run_id))
+            def __getattr__(self, name: str) -> Any:
+                return getattr(self._fallback_cache, name)
+
+        dashboard_cache = _ResultStoreCacheAdapter(
+            runner.list_result_rows_for_run(run_id), runner.results_cache
+        )
 
     dashboard_payload = build_dashboard_payload(dashboard_cache, run_id, results)
     dashboard_payload.update(
