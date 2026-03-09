@@ -25,7 +25,7 @@ class CollectionConfig:
     quote: str | None = None  # for ccxt symbols e.g., USDT
     fees: float | None = None
     slippage: float | None = None
-    reliability_thresholds: "ReliabilityThresholdsConfig | None" = None
+    validation: "ValidationConfig | None" = None
 
 
 @dataclass
@@ -43,12 +43,23 @@ class NotificationsConfig:
 
 
 @dataclass
-class ReliabilityThresholdsConfig:
+class ValidationPolicyConfig:
+    on_fail: str | None = None
+
+
+@dataclass
+class ValidationDataQualityConfig:
     min_data_points: int | None = None
     max_missing_bar_pct: float | None = None
     max_kurtosis: float | None = None
     min_continuity_score: float | None = None
     on_fail: str | None = None
+
+
+@dataclass
+class ValidationConfig:
+    policy: ValidationPolicyConfig | None = None
+    data_quality: ValidationDataQualityConfig | None = None
 
 
 @dataclass
@@ -72,24 +83,30 @@ class Config:
     cache_dir: str = ".cache/data"
     evaluation_mode: str = "backtest"
     notifications: NotificationsConfig | None = None
-    reliability_thresholds: ReliabilityThresholdsConfig | None = None
+    validation: ValidationConfig | None = None
 
 
-def _parse_reliability_thresholds(raw: Any, prefix: str) -> ReliabilityThresholdsConfig | None:
+def _parse_on_fail(raw_value: Any, field_path: str) -> str | None:
+    if raw_value is None:
+        return None
+    on_fail = str(raw_value).strip().lower()
+    allowed_on_fail = {"skip_optimization", "skip_job", "skip_collection"}
+    if on_fail not in allowed_on_fail:
+        raise ValueError(
+            f"Invalid `{field_path}`: expected one of {sorted(allowed_on_fail)}, got '{on_fail}'"
+        )
+    return on_fail
+
+
+def _parse_validation_data_quality_thresholds(
+    raw: Any, prefix: str
+) -> ValidationDataQualityConfig | None:
     if raw is None:
         return None
     if not isinstance(raw, dict):
         raise ValueError(f"Invalid `{prefix}`: expected a mapping")
 
-    on_fail_raw = raw.get("on_fail")
-    on_fail: str | None = None
-    if on_fail_raw is not None:
-        on_fail = str(on_fail_raw).strip().lower()
-        allowed_on_fail = {"skip_optimization", "skip_job", "skip_collection"}
-        if on_fail not in allowed_on_fail:
-            raise ValueError(
-                f"Invalid `{prefix}.on_fail`: expected one of {sorted(allowed_on_fail)}, got '{on_fail}'"
-            )
+    on_fail = _parse_on_fail(raw.get("on_fail"), f"{prefix}.on_fail")
 
     def _as_optional_int(value: Any, field: str) -> int | None:
         if value is None:
@@ -107,7 +124,7 @@ def _parse_reliability_thresholds(raw: Any, prefix: str) -> ReliabilityThreshold
             raise ValueError(f"`{prefix}.{field}` must be >= 0")
         return parsed
 
-    cfg = ReliabilityThresholdsConfig(
+    cfg = ValidationDataQualityConfig(
         min_data_points=_as_optional_int(raw.get("min_data_points"), "min_data_points"),
         max_missing_bar_pct=_as_optional_float(raw.get("max_missing_bar_pct"), "max_missing_bar_pct"),
         max_kurtosis=_as_optional_float(raw.get("max_kurtosis"), "max_kurtosis"),
@@ -119,6 +136,48 @@ def _parse_reliability_thresholds(raw: Any, prefix: str) -> ReliabilityThreshold
     if cfg.min_continuity_score is not None and not 0.0 <= cfg.min_continuity_score <= 1.0:
         raise ValueError(f"`{prefix}.min_continuity_score` must be between 0 and 1")
     return cfg
+
+
+def _parse_validation(raw: Any, prefix: str) -> ValidationConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid `{prefix}`: expected a mapping")
+
+    policy_raw = raw.get("policy")
+    if policy_raw is not None and not isinstance(policy_raw, dict):
+        raise ValueError(f"Invalid `{prefix}.policy`: expected a mapping")
+
+    data_quality_raw = raw.get("data_quality")
+    if data_quality_raw is not None and not isinstance(data_quality_raw, dict):
+        raise ValueError(f"Invalid `{prefix}.data_quality`: expected a mapping")
+
+    policy_cfg = ValidationPolicyConfig(
+        on_fail=_parse_on_fail(
+            policy_raw.get("on_fail") if isinstance(policy_raw, dict) else None,
+            f"{prefix}.policy.on_fail",
+        )
+    )
+    data_quality_cfg = None
+    if isinstance(data_quality_raw, dict):
+        parsed_reliability = _parse_validation_data_quality_thresholds(
+            data_quality_raw, f"{prefix}.data_quality"
+        )
+        assert parsed_reliability is not None  # data_quality_raw is dict
+        data_quality_cfg = ValidationDataQualityConfig(
+            min_data_points=parsed_reliability.min_data_points,
+            max_missing_bar_pct=parsed_reliability.max_missing_bar_pct,
+            max_kurtosis=parsed_reliability.max_kurtosis,
+            min_continuity_score=parsed_reliability.min_continuity_score,
+            on_fail=_parse_on_fail(
+                data_quality_raw.get("on_fail"),
+                f"{prefix}.data_quality.on_fail",
+            ),
+        )
+
+    if policy_cfg.on_fail is None and data_quality_cfg is None:
+        return None
+    return ValidationConfig(policy=policy_cfg, data_quality=data_quality_cfg)
 
 
 def load_config(path: str | Path) -> Config:
@@ -139,23 +198,22 @@ def load_config(path: str | Path) -> Config:
         )
         raise ValueError(example)
 
-    collections = [
-        CollectionConfig(
-            name=c["name"],
-            source=c["source"],
-            symbols=c["symbols"],
-            exchange=c.get("exchange"),
-            currency=c.get("currency"),
-            quote=c.get("quote"),
-            fees=c.get("fees"),
-            slippage=c.get("slippage"),
-            reliability_thresholds=_parse_reliability_thresholds(
-                c.get("reliability_thresholds"),
-                f"collections[{idx}].reliability_thresholds",
-            ),
+    collections: list[CollectionConfig] = []
+    for idx, c in enumerate(raw["collections"]):
+        collection_validation = _parse_validation(c.get("validation"), f"collections[{idx}].validation")
+        collections.append(
+            CollectionConfig(
+                name=c["name"],
+                source=c["source"],
+                symbols=c["symbols"],
+                exchange=c.get("exchange"),
+                currency=c.get("currency"),
+                quote=c.get("quote"),
+                fees=c.get("fees"),
+                slippage=c.get("slippage"),
+                validation=collection_validation,
+            )
         )
-        for idx, c in enumerate(raw["collections"])
-    ]
 
     strategies = [
         StrategyConfig(
@@ -183,9 +241,7 @@ def load_config(path: str | Path) -> Config:
         if slack_cfg is not None:
             notifications_cfg = NotificationsConfig(slack=slack_cfg)
 
-    reliability_cfg = _parse_reliability_thresholds(
-        raw.get("reliability_thresholds"), "reliability_thresholds"
-    )
+    validation_cfg = _parse_validation(raw.get("validation"), "validation")
 
     evaluation_mode = str(raw.get("evaluation_mode", "backtest")).strip().lower()
     allowed_modes = {"backtest", "walk_forward"}
@@ -214,6 +270,6 @@ def load_config(path: str | Path) -> Config:
         cache_dir=raw.get("cache_dir", ".cache/data"),
         evaluation_mode=evaluation_mode,
         notifications=notifications_cfg,
-        reliability_thresholds=reliability_cfg,
+        validation=validation_cfg,
     )
     return cfg

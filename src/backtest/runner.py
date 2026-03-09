@@ -930,9 +930,8 @@ class BacktestRunner:
         except ValueError as exc:
             return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
 
-        reliability_cfg = self._resolve_reliability_thresholds(context.job.collection)
-        reliability_on_fail, min_data_points, min_continuity_score = self._read_reliability_policy(
-            reliability_cfg
+        reliability_on_fail, min_data_points, min_continuity_score = (
+            self._resolve_data_quality_policy(context.job.collection)
         )
         reliability_reasons = self._collect_reliability_reasons(
             raw_df=fetched_data.raw_df,
@@ -957,17 +956,41 @@ class BacktestRunner:
         )
         return decision, validated_data
 
-    @staticmethod
-    def _read_reliability_policy(reliability_cfg: Any) -> tuple[str, int | None, float | None]:
-        reliability_on_fail = "skip_optimization"
-        min_data_points: int | None = None
-        min_continuity_score: float | None = None
-        if reliability_cfg is not None:
-            if reliability_cfg.on_fail is not None:
-                reliability_on_fail = str(reliability_cfg.on_fail).strip().lower()
-            min_data_points = reliability_cfg.min_data_points
-            min_continuity_score = reliability_cfg.min_continuity_score
-        return reliability_on_fail, min_data_points, min_continuity_score
+    def _resolve_data_quality_policy(
+        self, collection: CollectionConfig
+    ) -> tuple[str, int | None, float | None]:
+        global_validation = getattr(self.cfg, "validation", None)
+        collection_validation = getattr(collection, "validation", None)
+
+        global_policy = getattr(global_validation, "policy", None)
+        global_dq = getattr(global_validation, "data_quality", None)
+        collection_policy = getattr(collection_validation, "policy", None)
+        collection_dq = getattr(collection_validation, "data_quality", None)
+
+        on_fail_candidates = (
+            getattr(collection_dq, "on_fail", None),
+            getattr(collection_policy, "on_fail", None),
+            getattr(global_dq, "on_fail", None),
+            getattr(global_policy, "on_fail", None),
+        )
+        on_fail = "skip_optimization"
+        for candidate in on_fail_candidates:
+            if candidate is not None:
+                on_fail = str(candidate).strip().lower()
+                break
+
+        min_data_points = (
+            getattr(collection_dq, "min_data_points", None)
+            if collection_dq is not None and getattr(collection_dq, "min_data_points", None) is not None
+            else getattr(global_dq, "min_data_points", None)
+        )
+        min_continuity_score = (
+            getattr(collection_dq, "min_continuity_score", None)
+            if collection_dq is not None
+            and getattr(collection_dq, "min_continuity_score", None) is not None
+            else getattr(global_dq, "min_continuity_score", None)
+        )
+        return on_fail, min_data_points, min_continuity_score
 
     @staticmethod
     def _collect_reliability_reasons(
@@ -1006,42 +1029,6 @@ class BacktestRunner:
             "skip_job",
             ["walk_forward_data_validation_not_implemented"],
             "data_validation",
-        )
-
-    def _resolve_reliability_thresholds(self, collection: CollectionConfig):
-        """Resolve reliability policy with collection-level overrides over global defaults."""
-        global_cfg = self.cfg.reliability_thresholds
-        override_cfg = getattr(collection, "reliability_thresholds", None)
-        if override_cfg is None:
-            return global_cfg
-        if global_cfg is None:
-            return override_cfg
-        return type(global_cfg)(
-            min_data_points=(
-                override_cfg.min_data_points
-                if override_cfg.min_data_points is not None
-                else global_cfg.min_data_points
-            ),
-            max_missing_bar_pct=(
-                override_cfg.max_missing_bar_pct
-                if override_cfg.max_missing_bar_pct is not None
-                else global_cfg.max_missing_bar_pct
-            ),
-            max_kurtosis=(
-                override_cfg.max_kurtosis
-                if override_cfg.max_kurtosis is not None
-                else global_cfg.max_kurtosis
-            ),
-            min_continuity_score=(
-                override_cfg.min_continuity_score
-                if override_cfg.min_continuity_score is not None
-                else global_cfg.min_continuity_score
-            ),
-            on_fail=(
-                override_cfg.on_fail
-                if override_cfg.on_fail is not None
-                else global_cfg.on_fail
-            ),
         )
 
     def _execution_context_prepare(
