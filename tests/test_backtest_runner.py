@@ -577,6 +577,54 @@ def test_run_all_uses_cached_results(tmp_path, monkeypatch):
     assert runner.results_cache.set_calls == runner.metrics["result_cache_hits"]
 
 
+def test_run_all_falls_back_to_legacy_results_cache_on_eval_cache_miss(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+
+    class _LegacyHitResults(_StubResultsCache):
+        def get(
+            self,
+            *,
+            collection: str,
+            symbol: str,
+            timeframe: str,
+            strategy: str,
+            params: dict,
+            data_fingerprint: str,
+            fees: float,
+            slippage: float,
+            metric_name: str,
+        ):
+            super().get(
+                collection=collection,
+                symbol=symbol,
+                timeframe=timeframe,
+                strategy=strategy,
+                params=params,
+                data_fingerprint=data_fingerprint,
+                fees=fees,
+                slippage=slippage,
+                metric_name=metric_name,
+            )
+            return {"metric_value": 3.0, "stats": {"legacy_cached": True}}
+
+    runner.results_cache = _LegacyHitResults()
+    runner.evaluation_cache = _StubEvaluationCache()
+    runner.mode_config_hash = runner.evaluation_cache.hash_mode_config(runner.mode_config)
+
+    def _fail_sim(*args, **kwargs):  # pragma: no cover - defensive assertion
+        raise AssertionError("Simulation should not execute when legacy cache hits")
+
+    monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _fail_sim)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    assert runner.metrics["result_cache_hits"] >= 1
+    assert runner.metrics["result_cache_misses"] == 0
+    assert runner.metrics["fresh_metric_evals"] == 0
+    assert len(runner.evaluation_cache.saved) == 1
+    assert len(runner.results_cache.retrieved) >= 1
+
+
 def test_run_all_handles_failed_and_nan_metrics(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.min_bars = 1
@@ -1094,6 +1142,42 @@ def test_run_all_skip_optimization_still_evaluates_each_strategy(tmp_path, monke
         assert optimization["reason"] == "reliability_threshold_skip_optimization"
         reasons = optimization.get("reliability_reasons", [])
         assert any("min_data_points_not_met" in reason for reason in reasons)
+
+
+def test_run_all_skip_optimization_does_not_skip_no_param_strategy(tmp_path, monkeypatch):
+    class _NoParamStrategy(BaseStrategy):
+        name = "no_param"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.cfg.optimization_policy = OptimizationPolicyConfig(
+        on_fail="skip_job",
+        min_bars=60,
+        dof_multiplier=1,
+    )
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_optimization"),
+    )
+    monkeypatch.setattr(
+        "src.backtest.runner.discover_external_strategies",
+        lambda root: {"no_param": _NoParamStrategy},
+    )
+    runner.external_index = {"no_param": _NoParamStrategy}
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    assert eval_calls["count"] == 1
+    assert not any(failure["stage"] == "strategy_optimization" for failure in runner.failures)
 
 
 def test_strategy_plan_skip_optimization_does_not_leak_to_next_strategy(tmp_path, monkeypatch):

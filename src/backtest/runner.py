@@ -247,6 +247,14 @@ class BacktestRunner:
                     "results cache write failures continuing; suppressing further warnings"
                 )
 
+    def _cache_get(self, **kwargs: Any) -> dict[str, Any] | None:
+        if isinstance(self.results_cache, ResultsCache):
+            return self.results_cache.get(**kwargs)
+        legacy_kwargs = dict(kwargs)
+        legacy_kwargs.pop("evaluation_mode", None)
+        legacy_kwargs.pop("mode_config_hash", None)
+        return self.results_cache.get(**legacy_kwargs)
+
     def _evaluation_cache_set(self, **kwargs: Any) -> None:
         try:
             self.evaluation_cache.set(**kwargs)
@@ -796,7 +804,7 @@ class BacktestRunner:
         validated_data: ValidatedData,
         plan: StrategyPlan,
     ) -> None:
-        if not state.policy_skip_optimization:
+        if not state.policy_skip_optimization or not plan.search_space:
             return
         self._plan_add_skip_reason(plan, "reliability_threshold_skip_optimization")
         if not isinstance(plan.optimization_details, dict):
@@ -1333,6 +1341,36 @@ class BacktestRunner:
             evaluation_mode=self.mode_config.mode,
             mode_config_hash=self.mode_config_hash,
         )
+        if cached is None:
+            cached = self._cache_get(
+                collection=request.collection,
+                symbol=request.symbol,
+                timeframe=request.timeframe,
+                strategy=request.strategy,
+                params=request.params,
+                metric_name=request.metric_name,
+                data_fingerprint=request.data_fingerprint,
+                fees=request.fees,
+                slippage=request.slippage,
+                evaluation_mode=self.mode_config.mode,
+                mode_config_hash=self.mode_config_hash,
+            )
+            if cached is not None:
+                self._evaluation_cache_set(
+                    collection=request.collection,
+                    symbol=request.symbol,
+                    timeframe=request.timeframe,
+                    strategy=request.strategy,
+                    params=request.params,
+                    metric_name=request.metric_name,
+                    metric_value=float(cached["metric_value"]),
+                    stats=dict(cached["stats"]),
+                    data_fingerprint=request.data_fingerprint,
+                    fees=request.fees,
+                    slippage=request.slippage,
+                    evaluation_mode=self.mode_config.mode,
+                    mode_config_hash=self.mode_config_hash,
+                )
         if cached is not None:
             self.metrics["result_cache_hits"] += 1
             plan.evaluations += 1
