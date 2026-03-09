@@ -198,6 +198,10 @@ See new collection examples under `config/collections/` for FX intraday via Finn
 ### Validation & Optimization Policy
 
 - `validation.data_quality` controls job-level data gates (for collection/symbol/timeframe):
+  - `min_data_points`: minimum number of bars required
+  - `min_continuity_score`: minimum continuity score (0..1)
+  - `max_missing_bar_pct`: maximum missing bars percentage across expected bars
+  - `max_kurtosis`: maximum kurtosis of close-to-close returns
   - `on_fail: skip_job | skip_collection | skip_optimization`
   - `skip_optimization` means optimization is disabled for all strategies on that job.
 - `optimization_policy` controls strategy-level search feasibility:

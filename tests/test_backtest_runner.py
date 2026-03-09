@@ -926,6 +926,71 @@ def test_run_all_reliability_skip_evaluation_on_continuity_threshold(tmp_path, m
     assert "min_continuity_score_not_met" in failure["error"]
 
 
+def test_run_all_reliability_skip_evaluation_on_missing_bar_pct_threshold(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(max_missing_bar_pct=10.0, on_fail="skip_job"),
+    )
+
+    class _GappySource:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            idx = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-04", "2024-01-05"])
+            return pd.DataFrame(
+                {
+                    "Open": [10, 11, 13, 14],
+                    "High": [11, 12, 14, 15],
+                    "Low": [9, 10, 12, 13],
+                    "Close": [10.5, 11.5, 13.5, 14.5],
+                    "Volume": [100, 110, 130, 140],
+                },
+                index=idx,
+            )
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _GappySource())
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert runner.failures
+    failure = runner.failures[0]
+    assert failure["stage"] == "data_validation"
+    assert "max_missing_bar_pct_exceeded" in failure["error"]
+
+
+def test_run_all_reliability_skip_evaluation_on_max_kurtosis(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(max_kurtosis=1.0, on_fail="skip_job"),
+    )
+
+    class _LeptokurticSource:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            idx = pd.date_range("2024-01-01", periods=13, freq="D")
+            closes = [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 400.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
+            return pd.DataFrame(
+                {
+                    "Open": closes,
+                    "High": closes,
+                    "Low": closes,
+                    "Close": closes,
+                    "Volume": [100] * len(closes),
+                },
+                index=idx,
+            )
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _LeptokurticSource())
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert runner.failures
+    failure = runner.failures[0]
+    assert failure["stage"] == "data_validation"
+    assert "max_kurtosis_exceeded" in failure["error"]
+
+
 def test_run_all_fetches_once_per_symbol_timeframe_with_multiple_strategies(tmp_path, monkeypatch):
     class _AltStrategy(BaseStrategy):
         name = "alt"

@@ -15,6 +15,8 @@ validation:
   data_quality:
     min_data_points: 1000
     min_continuity_score: 0.98
+    max_missing_bar_pct: 5.0  # max percent of missing bars vs expected timeline
+    max_kurtosis: 10.0  # max allowed kurtosis of close-to-close returns
     on_fail: skip_job  # skip_optimization | skip_job | skip_collection
 
 # Optional optimization policy (strategy-level feasibility gates)
@@ -58,6 +60,8 @@ collections:
     #   data_quality:
     #     min_data_points: 1500
     #     min_continuity_score: 0.99
+    #     max_missing_bar_pct: 2.0
+    #     max_kurtosis: 8.0
     #     on_fail: skip_optimization
 
 # Choose timeframes compatible across sources for full history

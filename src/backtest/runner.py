@@ -934,7 +934,13 @@ class BacktestRunner:
         except ValueError as exc:
             return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
 
-        reliability_on_fail, min_data_points, min_continuity_score = (
+        (
+            reliability_on_fail,
+            min_data_points,
+            min_continuity_score,
+            max_missing_bar_pct,
+            max_kurtosis,
+        ) = (
             self._resolve_data_quality_policy(context.job.collection)
         )
         reliability_reasons = self._collect_reliability_reasons(
@@ -942,6 +948,8 @@ class BacktestRunner:
             continuity=continuity,
             min_data_points=min_data_points,
             min_continuity_score=min_continuity_score,
+            max_missing_bar_pct=max_missing_bar_pct,
+            max_kurtosis=max_kurtosis,
         )
         if not reliability_reasons:
             decision = GateDecision(True, "continue", [], "data_validation")
@@ -962,7 +970,7 @@ class BacktestRunner:
 
     def _resolve_data_quality_policy(
         self, collection: CollectionConfig
-    ) -> tuple[str, int | None, float | None]:
+    ) -> tuple[str, int | None, float | None, float | None, float | None]:
         global_validation = getattr(self.cfg, "validation", None)
         collection_validation = getattr(collection, "validation", None)
         global_dq = getattr(global_validation, "data_quality", None)
@@ -986,7 +994,17 @@ class BacktestRunner:
             and getattr(collection_dq, "min_continuity_score", None) is not None
             else getattr(global_dq, "min_continuity_score", None)
         )
-        return on_fail, min_data_points, min_continuity_score
+        max_missing_bar_pct = (
+            getattr(collection_dq, "max_missing_bar_pct", None)
+            if collection_dq is not None and getattr(collection_dq, "max_missing_bar_pct", None) is not None
+            else getattr(global_dq, "max_missing_bar_pct", None)
+        )
+        max_kurtosis = (
+            getattr(collection_dq, "max_kurtosis", None)
+            if collection_dq is not None and getattr(collection_dq, "max_kurtosis", None) is not None
+            else getattr(global_dq, "max_kurtosis", None)
+        )
+        return on_fail, min_data_points, min_continuity_score, max_missing_bar_pct, max_kurtosis
 
     def _resolve_optimization_policy(self) -> tuple[str, int, int]:
         # `optimization_policy` drives strategy-plan feasibility decisions.
@@ -1015,6 +1033,8 @@ class BacktestRunner:
         continuity: dict[str, float | int],
         min_data_points: int | None,
         min_continuity_score: float | None,
+        max_missing_bar_pct: float | None,
+        max_kurtosis: float | None,
     ) -> list[str]:
         reasons: list[str] = []
         if min_continuity_score is not None:
@@ -1032,6 +1052,30 @@ class BacktestRunner:
                 reasons.append(
                     f"min_data_points_not_met(required={required}, available={available})"
                 )
+        if max_missing_bar_pct is not None:
+            threshold = float(max_missing_bar_pct)
+            expected_bars = int(continuity.get("expected_bars", 0))
+            missing_bars = int(continuity.get("missing_bars", 0))
+            missing_bar_pct = (
+                0.0 if expected_bars <= 0 else (float(missing_bars) / float(expected_bars)) * 100.0
+            )
+            if missing_bar_pct > threshold:
+                reasons.append(
+                    "max_missing_bar_pct_exceeded("
+                    f"max_allowed={threshold}, available={missing_bar_pct})"
+                )
+        if max_kurtosis is not None:
+            threshold = float(max_kurtosis)
+            close_col = "Close" if "Close" in raw_df.columns else "close" if "close" in raw_df.columns else None
+            if close_col is not None:
+                returns = raw_df[close_col].astype(float).pct_change().dropna()
+                if not returns.empty:
+                    sample_kurtosis = returns.kurt()
+                    if pd.notna(sample_kurtosis) and float(sample_kurtosis) > threshold:
+                        reasons.append(
+                            "max_kurtosis_exceeded("
+                            f"max_allowed={threshold}, available={float(sample_kurtosis)})"
+                        )
         return reasons
 
     @staticmethod
