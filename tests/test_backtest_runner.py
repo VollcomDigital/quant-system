@@ -579,8 +579,8 @@ def test_run_all_uses_cached_results(tmp_path, monkeypatch):
 
 def test_run_all_handles_failed_and_nan_metrics(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
-    runner.cfg.param_min_bars = 1
-    runner.cfg.param_dof_multiplier = 1
+    runner.cfg.min_bars = 1
+    runner.cfg.dof_multiplier = 1
     call_state = {"count": 0}
 
     def _sim_with_none(self, *args, **kwargs):
@@ -814,7 +814,7 @@ def _patch_pybroker_simulation(monkeypatch) -> dict[str, int]:
 
 
 @pytest.mark.parametrize(
-    ("param_dof_multiplier", "param_min_bars", "bars", "expected_eval_calls", "expect_skip"),
+    ("dof_multiplier", "min_bars", "bars", "expected_eval_calls", "expect_skip"),
     [
         (100, 2000, 50, 1, True),  # skip via min-bars floor
         (60, 1, 50, 1, True),  # skip via DoF threshold
@@ -826,15 +826,15 @@ def _patch_pybroker_simulation(monkeypatch) -> dict[str, int]:
 def test_run_all_min_bars_and_dof_guard_behavior(
     tmp_path,
     monkeypatch,
-    param_dof_multiplier,
-    param_min_bars,
+    dof_multiplier,
+    min_bars,
     bars,
     expected_eval_calls,
     expect_skip,
 ):
     runner = _make_runner(tmp_path, monkeypatch)
-    runner.cfg.param_dof_multiplier = param_dof_multiplier
-    runner.cfg.param_min_bars = param_min_bars
+    runner.cfg.dof_multiplier = dof_multiplier
+    runner.cfg.min_bars = min_bars
     runner.cfg.param_search = "grid"
 
     _patch_source_with_bars(monkeypatch, bars)
@@ -850,7 +850,7 @@ def test_run_all_min_bars_and_dof_guard_behavior(
         assert optimization["skipped"] is True
         assert optimization["reason"] == "insufficient_bars_for_optimization"
         # search_space has one dimension (`window`) in _make_runner, so n_params=1.
-        expected_min_bars = max(runner.cfg.param_min_bars, runner.cfg.param_dof_multiplier * 1)
+        expected_min_bars = max(runner.cfg.min_bars, runner.cfg.dof_multiplier * 1)
         assert optimization["min_bars_required"] == expected_min_bars
         assert optimization["bars_available"] == bars
     else:
@@ -1033,8 +1033,8 @@ def test_run_all_skip_optimization_still_evaluates_each_strategy(tmp_path, monke
 
 def test_strategy_plan_skip_optimization_does_not_leak_to_next_strategy(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
-    runner.cfg.param_min_bars = 1
-    runner.cfg.param_dof_multiplier = 3
+    runner.cfg.min_bars = 1
+    runner.cfg.dof_multiplier = 3
     runner.cfg.strategies = []
 
     class _WideStrategy(BaseStrategy):

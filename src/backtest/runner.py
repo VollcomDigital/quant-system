@@ -999,12 +999,12 @@ class BacktestRunner:
         min_bars = (
             int(getattr(policy, "min_bars"))
             if policy is not None and getattr(policy, "min_bars", None) is not None
-            else int(self.cfg.param_min_bars)
+            else int(self.cfg.min_bars)
         )
         dof_multiplier = (
             int(getattr(policy, "dof_multiplier"))
             if policy is not None and getattr(policy, "dof_multiplier", None) is not None
-            else int(self.cfg.param_dof_multiplier)
+            else int(self.cfg.dof_multiplier)
         )
         return on_fail, min_bars, dof_multiplier
 

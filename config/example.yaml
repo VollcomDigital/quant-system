@@ -10,12 +10,6 @@ slippage: 0.0005
 risk_free_rate: 0.0
 cache_dir: .cache/data
 
-# Optimization settings
-param_search: grid  # grid | optuna
-param_trials: 25
-param_dof_multiplier: 100
-param_min_bars: 2000
-
 # Optional validation policy
 validation:
   data_quality:
