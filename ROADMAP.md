@@ -38,6 +38,9 @@ This roadmap consolidates all prior findings from:
 - No continuous alpha-decay monitoring and auto de-weighting lifecycle.
 - No regime-aware allocator.
 - No execution-quality feedback loop (slippage/fill analytics feeding strategy selection).
+- No multi-channel entry/exit signal delivery for portfolio operations (email/telegram/whatsapp).
+- No Monte Carlo simulation layer for portfolio, execution, and risk stress testing.
+- No self-learning loop to continuously improve RMS thresholds, OMS execution policies, and strategy optimization.
 - No strong experiment lineage/model governance comparable to tier-1 platforms.
 
 ---
@@ -88,6 +91,10 @@ This roadmap consolidates all prior findings from:
   - pin base image digest
   - adopt multi-stage runtime (remove build tools from runtime image)
   - add SBOM + image scanning + signing/provenance
+- [ ] Add portfolio signal notifications (entry/exit) with delivery audit trail:
+  - channels: email, telegram, whatsapp
+  - routing by mode (`paper` vs `live`) and event type (`entry`/`exit`)
+  - dedupe, retry/backoff, and redaction-safe logging
 
 ### Phase 1 success criteria
 - Live mode cannot start without safety controls.
@@ -112,6 +119,10 @@ This roadmap consolidates all prior findings from:
   - structured logs with trace IDs
   - RED metrics for execution services
   - trace spans for signal -> risk -> order -> fill pipeline
+- [ ] Add Monte Carlo simulation service for risk and execution stress testing:
+  - scenario engines for returns, volatility shocks, spread/slippage widening, and fill-latency variation
+  - VaR/CVaR and drawdown distribution reporting at portfolio and strategy levels
+  - integration with pre-trade RMS checks and deployment gates
 
 ### Nice to Have / Medium
 - [ ] Add deployment manifests (Kubernetes/Helm) for execution services and dashboard APIs.
@@ -132,6 +143,10 @@ This roadmap consolidates all prior findings from:
   - Riskfolio-Lib advanced risk objectives (CVaR/drawdown-aware allocation)
 - [ ] Add alpha-decay monitor with policy-based auto de-weight/quarantine.
 - [ ] Add regime detection and regime-aware allocator.
+- [ ] Add self-learning strategy optimization loop:
+  - continuous re-ranking based on live/paper performance drift
+  - bounded online re-optimization with out-of-sample validation gates
+  - automatic rollback to previous stable parameter sets on degradation
 
 ### Nice to Have / Medium
 - [ ] Add walk-forward and promotion gates:
@@ -155,6 +170,10 @@ This roadmap consolidates all prior findings from:
 - [ ] Autonomous anomaly remediation:
   - policy-constrained auto responses for execution/data incidents
 - [ ] Cross-venue smart order routing.
+- [ ] Add self-learning RMS and OMS policy tuning:
+  - adaptive risk limits based on realized volatility and liquidity regimes
+  - adaptive order execution policy selection using slippage/fill outcomes
+  - strict safety envelope and human override for all autonomous updates
 
 ### Optional / Low-Lowest
 - [ ] Meta-learning ensemble allocator.
@@ -176,6 +195,7 @@ This roadmap consolidates all prior findings from:
 - Core security hardening and scanning workflows
 - Hot-path performance and cache redesign
 - Baseline observability
+- Portfolio entry/exit notifications via email/telegram/whatsapp
 
 ### Nice to Have
 - Portfolio optimizer (PyPortfolioOpt/Riskfolio-Lib)
@@ -183,6 +203,8 @@ This roadmap consolidates all prior findings from:
 - Alpha-decay automation
 - Walk-forward promotion gates
 - Kubernetes/Helm + LGTM operationalization
+- Monte Carlo simulation for risk and execution stress tests
+- Self-learning RMS/OMS and strategy optimization loops
 
 ### Optional
 - Smart order routing
@@ -194,9 +216,11 @@ This roadmap consolidates all prior findings from:
 ## 5) Execution Order (Strict)
 
 1. Safety and trust boundary first (paper/live + RMS/OMS + leakage fixes).
-2. First execution engine (Freqtrade), then second (NautilusTrader).
-3. Portfolio intelligence (optimizer + decay + regime).
-4. Scale and autonomy enhancements (self-healing, remediation, routing).
+2. Portfolio signal delivery (email/telegram/whatsapp) for entry/exit operational readiness.
+3. First execution engine (Freqtrade), then second (NautilusTrader).
+4. Monte Carlo risk/execution simulation integrated into promotion gates.
+5. Portfolio intelligence (optimizer + decay + regime).
+6. Scale and autonomy enhancements (self-healing, remediation, self-learning tuning, routing).
 
 ---
 
