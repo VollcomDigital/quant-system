@@ -456,7 +456,7 @@ class BacktestRunner:
         if expected_delta is None:
             raise ValueError(f"unsupported_timeframe_for_continuity: {timeframe}")
 
-        value, _, is_eod_like, is_daily = cls._parse_timeframe_shape(timeframe)
+        value, _, _, is_daily = cls._parse_timeframe_shape(timeframe)
         if calendar_kind == "exchange" and is_daily and exchange_calendar:
             try:
                 import exchange_calendars as xcals
@@ -484,7 +484,7 @@ class BacktestRunner:
                 expected_bars, missing_bars, largest_gap_bars = cls._count_missing_from_expected_index(
                     expected_idx, idx
                 )
-        elif calendar_kind in {"weekday", "exchange"} and is_eod_like:
+        elif calendar_kind in {"weekday", "exchange"} and is_daily:
             expected_idx = cls._weekday_expected_index(idx, expected_delta)
             expected_bars, missing_bars, largest_gap_bars = cls._count_missing_from_expected_index(
                 expected_idx, idx
