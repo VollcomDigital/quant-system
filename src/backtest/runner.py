@@ -1395,6 +1395,34 @@ class BacktestRunner:
         # If an upstream gate already decided to skip optimization for this plan,
         # keep that decision and avoid running strategy-level policy checks.
         if plan.optimization_skip_reasons:
+            policy = self._resolve_optimization_policy()
+            if policy is not None:
+                optimization_on_fail, min_bars_cfg, dof_multiplier = policy
+                n_params = len(plan.search_space)
+                min_bars_for_optimization = max(min_bars_cfg, dof_multiplier * n_params)
+                insufficient_bars = (
+                    bool(plan.search_space) and len(validated_data.raw_df) < min_bars_for_optimization
+                )
+                if insufficient_bars and optimization_on_fail == "skip_job":
+                    skip_reasons = list(plan.optimization_skip_reasons)
+                    if "insufficient_bars_for_optimization" not in skip_reasons:
+                        skip_reasons.append("insufficient_bars_for_optimization")
+                    plan.skip_optimization = True
+                    plan.optimization_skip_reasons = skip_reasons
+                    plan.optimization_skip_reason = "; ".join(skip_reasons)
+                    if not isinstance(plan.optimization_details, dict):
+                        plan.optimization_details = {}
+                    plan.optimization_details["skipped"] = True
+                    plan.optimization_details["reason"] = skip_reasons[0]
+                    plan.optimization_details["reasons"] = skip_reasons
+                    plan.optimization_details["min_bars_required"] = min_bars_for_optimization
+                    plan.optimization_details["bars_available"] = len(validated_data.raw_df)
+                    return GateDecision(
+                        passed=False,
+                        action="skip_job",
+                        reasons=skip_reasons,
+                        stage="strategy_optimization",
+                    )
             skip_reasons = list(plan.optimization_skip_reasons)
             plan.skip_optimization = True
             plan.optimization_skip_reason = "; ".join(skip_reasons)
@@ -1522,22 +1550,23 @@ class BacktestRunner:
             val_cached = float(cached["metric_value"])
             cached_stats = self._enrich_evaluation_stats(cached["stats"], plan, validated_data)
             # Legacy cache continues to be written for reporting compatibility.
-            self._cache_set(
-                collection=request.collection,
-                symbol=request.symbol,
-                timeframe=request.timeframe,
-                strategy=request.strategy,
-                params=request.params,
-                metric_name=request.metric_name,
-                metric_value=val_cached,
-                stats=cached_stats,
-                data_fingerprint=request.data_fingerprint,
-                fees=request.fees,
-                slippage=request.slippage,
-                run_id=self.run_id,
-                evaluation_mode=self.mode_config.mode,
-                mode_config_hash=self.mode_config_hash,
-            )
+            if np.isfinite(val_cached):
+                self._cache_set(
+                    collection=request.collection,
+                    symbol=request.symbol,
+                    timeframe=request.timeframe,
+                    strategy=request.strategy,
+                    params=request.params,
+                    metric_name=request.metric_name,
+                    metric_value=val_cached,
+                    stats=cached_stats,
+                    data_fingerprint=request.data_fingerprint,
+                    fees=request.fees,
+                    slippage=request.slippage,
+                    run_id=self.run_id,
+                    evaluation_mode=self.mode_config.mode,
+                    mode_config_hash=self.mode_config_hash,
+                )
             if val_cached > plan.best_val:
                 plan.best_val = val_cached
                 plan.best_params = full_params.copy()
@@ -1582,22 +1611,23 @@ class BacktestRunner:
             )
 
             # Legacy cache remains the compatibility source for current reporters.
-            self._cache_set(
-                collection=request.collection,
-                symbol=request.symbol,
-                timeframe=request.timeframe,
-                strategy=request.strategy,
-                params=request.params,
-                metric_name=request.metric_name,
-                metric_value=metric_val,
-                stats=stats,
-                data_fingerprint=request.data_fingerprint,
-                fees=request.fees,
-                slippage=request.slippage,
-                run_id=self.run_id,
-                evaluation_mode=self.mode_config.mode,
-                mode_config_hash=self.mode_config_hash,
-            )
+            if np.isfinite(metric_val):
+                self._cache_set(
+                    collection=request.collection,
+                    symbol=request.symbol,
+                    timeframe=request.timeframe,
+                    strategy=request.strategy,
+                    params=request.params,
+                    metric_name=request.metric_name,
+                    metric_value=metric_val,
+                    stats=stats,
+                    data_fingerprint=request.data_fingerprint,
+                    fees=request.fees,
+                    slippage=request.slippage,
+                    run_id=self.run_id,
+                    evaluation_mode=self.mode_config.mode,
+                    mode_config_hash=self.mode_config_hash,
+                )
         if not outcome.valid:
             return float("-inf")
         if metric_val > plan.best_val:
