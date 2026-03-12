@@ -336,6 +336,23 @@ def test_compute_continuity_score_weekend_gap_missing_for_24_7_calendar():
     assert continuity["score"] < 1.0
 
 
+@pytest.mark.parametrize(
+    ("timeframe", "idx"),
+    [
+        ("1wk", pd.to_datetime(["2024-01-06", "2024-01-20", "2024-01-27"])),
+        ("1mo", pd.to_datetime(["2024-01-02", "2024-02-01", "2024-04-01"])),
+    ],
+    ids=["weekly_weekend_anchors", "monthly_30d_anchors"],
+)
+def test_compute_continuity_score_weekday_calendar_non_daily_uses_fixed_delta(timeframe, idx):
+    df = pd.DataFrame({"Close": [100.0, 101.0, 102.0]}, index=idx)
+    continuity = BacktestRunner.compute_continuity_score(df, timeframe, calendar_kind="weekday")
+    assert continuity["expected_bars"] == 4
+    assert continuity["missing_bars"] == 1
+    assert continuity["largest_gap_bars"] == 1
+    assert continuity["score"] < 1.0
+
+
 def test_compute_continuity_score_exchange_calendar_ignores_market_holiday():
     pytest.importorskip("exchange_calendars")
     idx = pd.to_datetime(["2023-12-22", "2023-12-26"])  # Dec 25th is NYSE holiday
