@@ -874,6 +874,26 @@ def _patch_pybroker_simulation(monkeypatch) -> dict[str, int]:
     return eval_calls
 
 
+def test_run_all_applies_legacy_optimization_guard_without_validation_config(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = None
+    runner.cfg.param_min_bars = 7
+    runner.cfg.param_dof_multiplier = 1
+    runner.cfg.param_search = "grid"
+
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results
+    assert eval_calls["count"] == 1
+    optimization = results[0].stats.get("optimization")
+    assert optimization is not None
+    assert optimization["reason"] == "insufficient_bars_for_optimization"
+    assert optimization["min_bars_required"] == 7
+    assert optimization["bars_available"] == 5
+
+
 @pytest.mark.parametrize(
     ("dof_multiplier", "min_bars", "bars", "expected_eval_calls", "expect_skip"),
     [
@@ -1348,6 +1368,11 @@ def test_run_all_reliability_skip_collection_blocks_remaining_jobs_in_collection
     runner = _make_runner(tmp_path, monkeypatch, collections=collections)
     runner.cfg.validation = ValidationConfig(
         data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_collection"),
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+        ),
     )
 
     fetch_calls = {"bad_col": 0, "good_col": 0}
@@ -1395,6 +1420,13 @@ def test_run_all_collection_cache_isolation_for_same_name_collections(tmp_path, 
         ),
     ]
     runner = _make_runner(tmp_path, monkeypatch, collections=collections, patch_source=False)
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+        )
+    )
 
     make_source_calls = {"good": 0, "bad": 0}
 

@@ -495,10 +495,10 @@ class BacktestRunner:
 
         if expected_bars <= 0:
             expected_bars = unique_bars
-        coverage_ratio = 1.0 if expected_bars <= 0 else float(unique_bars / expected_bars)
+        coverage_ratio = float(unique_bars / expected_bars)
         coverage_ratio = max(0.0, min(1.0, coverage_ratio))
-        missing_ratio = 0.0 if expected_bars <= 0 else (missing_bars / expected_bars)
-        largest_gap_ratio = 0.0 if expected_bars <= 0 else (largest_gap_bars / expected_bars)
+        missing_ratio = missing_bars / expected_bars
+        largest_gap_ratio = largest_gap_bars / expected_bars
         duplicate_ratio = 0.0 if actual_bars <= 0 else (duplicate_bars / actual_bars)
         score = max(
             0.0, 1.0 - (0.60 * missing_ratio + 0.25 * largest_gap_ratio + 0.15 * duplicate_ratio)
@@ -1184,11 +1184,15 @@ class BacktestRunner:
         )
 
     def _resolve_optimization_policy(self) -> tuple[str, int, int] | None:
-        # `validation.optimization` is optional; when omitted no feasibility gate is applied.
+        # Keep legacy guard behavior unless explicitly overridden via validation.optimization.
         validation_cfg = getattr(self.cfg, "validation", None)
         policy = getattr(validation_cfg, "optimization", None)
         if policy is None:
-            return None
+            return (
+                "baseline_only",
+                int(getattr(self.cfg, "param_min_bars", 2000)),
+                int(getattr(self.cfg, "param_dof_multiplier", 100)),
+            )
         on_fail = str(policy.on_fail).strip().lower()
         min_bars = int(policy.min_bars)
         dof_multiplier = int(policy.dof_multiplier)
