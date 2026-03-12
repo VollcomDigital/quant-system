@@ -1144,6 +1144,42 @@ def test_run_all_skip_optimization_still_evaluates_each_strategy(tmp_path, monke
         assert all("insufficient_bars_for_optimization" not in reason for reason in optimization["reasons"])
 
 
+def test_run_all_skip_optimization_does_not_skip_no_param_strategy(tmp_path, monkeypatch):
+    class _NoParamStrategy(BaseStrategy):
+        name = "no_param"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_optimization"),
+        optimization=OptimizationPolicyConfig(
+            on_fail="skip_job",
+            min_bars=60,
+            dof_multiplier=1,
+        ),
+    )
+    monkeypatch.setattr(
+        "src.backtest.runner.discover_external_strategies",
+        lambda root: {"no_param": _NoParamStrategy},
+    )
+    runner.external_index = {"no_param": _NoParamStrategy}
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    assert eval_calls["count"] == 1
+    assert not any(failure["stage"] == "strategy_optimization" for failure in runner.failures)
+
+
 def test_strategy_plan_skip_optimization_does_not_leak_to_next_strategy(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
@@ -1290,6 +1326,51 @@ def test_run_all_reliability_skip_collection_blocks_remaining_jobs_in_collection
     assert failure["collection"] == "bad_col"
     assert failure["stage"] == "data_validation"
     assert "min_data_points_not_met" in failure["error"]
+
+
+def test_run_all_collection_cache_isolation_for_same_name_collections(tmp_path, monkeypatch):
+    collections = [
+        CollectionConfig(
+            name="crypto",
+            source="good",
+            symbols=["BTCUSD"],
+            fees=0.0004,
+            slippage=0.0003,
+        ),
+        CollectionConfig(
+            name="crypto",
+            source="bad",
+            symbols=["ETHUSD"],
+            fees=0.0004,
+            slippage=0.0003,
+        ),
+    ]
+    runner = _make_runner(tmp_path, monkeypatch, collections=collections, patch_source=False)
+
+    make_source_calls = {"good": 0, "bad": 0}
+
+    class _Source:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            return _make_ohlcv(20)
+
+    def _make_source(self, col):
+        make_source_calls[col.source] += 1
+        if col.source == "good":
+            return _Source()
+        raise ValueError("bad source config")
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", _make_source)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    assert eval_calls["count"] == 1
+    # Reusing validation-built source avoids duplicate construction for the passing collection.
+    assert make_source_calls == {"good": 1, "bad": 1}
+    assert any(
+        failure["stage"] == "collection_validation" and "bad source config" in failure["error"]
+        for failure in runner.failures
+    )
 
 
 def test_runner_rejects_walk_forward_mode_until_implemented(tmp_path, monkeypatch):

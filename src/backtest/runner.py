@@ -832,6 +832,11 @@ class BacktestRunner:
             "source": job.source,
         }
 
+    @staticmethod
+    def _collection_gate_key(collection: CollectionConfig) -> int:
+        # Use object identity so collections sharing a name do not collide.
+        return id(collection)
+
     def _gate_log(self, stage: StageName, decision: GateDecision, context: dict[str, Any]) -> None:
         log_json(
             self.logger,
@@ -856,7 +861,7 @@ class BacktestRunner:
         decision: GateDecision,
         context_extra: dict[str, Any] | None = None,
         record_failure: bool = True,
-        blocked_collections: set[str] | None = None,
+        blocked_collections: set[int] | None = None,
     ) -> GateDecision:
         """Apply, log, and optionally record a non-continue gate decision."""
         context = self._job_log_context(state.job)
@@ -864,7 +869,7 @@ class BacktestRunner:
             context |= context_extra
         self._apply_gate_to_state(state, decision)
         if decision.action == "skip_collection" and blocked_collections is not None:
-            blocked_collections.add(state.job.collection.name)
+            blocked_collections.add(self._collection_gate_key(state.job.collection))
         if not decision.passed or decision.action != "continue":
             self._gate_log(decision.stage, decision, context)
             if record_failure and decision.action in {"skip_job", "skip_collection", "reject_result"}:
@@ -893,7 +898,7 @@ class BacktestRunner:
         validated_data: ValidatedData,
         plan: StrategyPlan,
     ) -> None:
-        if not state.policy_skip_optimization:
+        if not state.policy_skip_optimization or not plan.search_space:
             return
         self._plan_add_skip_reason(plan, "reliability_threshold_skip_optimization")
         if not isinstance(plan.optimization_details, dict):
@@ -938,27 +943,32 @@ class BacktestRunner:
         passed = action in {"continue", "skip_optimization", "baseline_only"}
         return GateDecision(passed=passed, action=action, reasons=reasons, stage=stage)
 
-    def _collection_validation(self, state: JobState) -> GateDecision:
+    def _collection_validation(self, state: JobState) -> tuple[GateDecision, DataSource | None]:
         context = ValidationContext(
             stage="collection_validation",
             state=state,
             mode=self.mode_config.mode,
             job=state.job,
         )
-        common_decision = self._collection_validation_common(context)
+        common_decision, source = self._collection_validation_common(context)
         mode_decision = (
             self._collection_validation_backtest(context)
             if context.mode == "backtest"
             else self._collection_validation_walk_forward(context)
         )
-        return self._compose_gate_decisions("collection_validation", common_decision, mode_decision)
+        decision = self._compose_gate_decisions(
+            "collection_validation", common_decision, mode_decision
+        )
+        return decision, source
 
-    def _collection_validation_common(self, context: ValidationContext) -> GateDecision:
+    def _collection_validation_common(
+        self, context: ValidationContext
+    ) -> tuple[GateDecision, DataSource | None]:
         try:
-            self._make_source(context.job.collection)
-            return GateDecision(True, "continue", [], "collection_validation")
+            source = self._make_source(context.job.collection)
+            return GateDecision(True, "continue", [], "collection_validation"), source
         except Exception as exc:
-            return GateDecision(False, "skip_job", [str(exc)], "collection_validation")
+            return GateDecision(False, "skip_job", [str(exc)], "collection_validation"), None
 
     @staticmethod
     def _collection_validation_backtest(_context: ValidationContext) -> GateDecision:
@@ -973,13 +983,41 @@ class BacktestRunner:
             "collection_validation",
         )
 
-    def _data_fetch(self, job: JobContext, only_cached: bool) -> tuple[GateDecision, FetchedData | None]:
+    def _data_fetch(
+        self,
+        state: JobState,
+        only_cached: bool,
+        source: DataSource | None = None,
+    ) -> tuple[GateDecision, FetchedData | None]:
+        context = ValidationContext(
+            stage="data_fetch",
+            state=state,
+            mode=self.mode_config.mode,
+            job=state.job,
+        )
+        common_decision, fetched_data = self._data_fetch_common(
+            context, only_cached=only_cached, source=source
+        )
+        mode_decision = (
+            self._data_fetch_backtest(context)
+            if context.mode == "backtest"
+            else self._data_fetch_walk_forward(context)
+        )
+        decision = self._compose_gate_decisions("data_fetch", common_decision, mode_decision)
+        return decision, fetched_data
+
+    def _data_fetch_common(
+        self,
+        context: ValidationContext,
+        only_cached: bool,
+        source: DataSource | None = None,
+    ) -> tuple[GateDecision, FetchedData | None]:
         """Fetch market data for one job and translate failures into gate decisions."""
+        job = context.job
         try:
-            source = self._make_source(job.collection)
+            resolved_source = source or self._make_source(job.collection)
         except Exception as exc:
-            decision = GateDecision(False, "skip_job", [str(exc)], "data_fetch")
-            return decision, None
+            return GateDecision(False, "skip_job", [str(exc)], "data_fetch"), None
 
         with time_block(
             self.logger,
@@ -990,12 +1028,23 @@ class BacktestRunner:
             source=job.source,
         ):
             try:
-                df = source.fetch(job.symbol, job.timeframe, only_cached=only_cached)
-                decision = GateDecision(True, "continue", [], "data_fetch")
+                df = resolved_source.fetch(job.symbol, job.timeframe, only_cached=only_cached)
             except Exception as exc:
-                decision = GateDecision(False, "skip_job", [str(exc)], "data_fetch")
-                return decision, None
-        return decision, FetchedData(raw_df=df)
+                return GateDecision(False, "skip_job", [str(exc)], "data_fetch"), None
+        return GateDecision(True, "continue", [], "data_fetch"), FetchedData(raw_df=df)
+
+    @staticmethod
+    def _data_fetch_backtest(_context: ValidationContext) -> GateDecision:
+        return GateDecision(True, "continue", [], "data_fetch")
+
+    @staticmethod
+    def _data_fetch_walk_forward(_context: ValidationContext) -> GateDecision:
+        return GateDecision(
+            False,
+            "skip_job",
+            ["walk_forward_data_fetch_not_implemented"],
+            "data_fetch",
+        )
 
     def _data_validation(
         self, state: JobState, fetched_data: FetchedData
