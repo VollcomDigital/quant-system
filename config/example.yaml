@@ -12,6 +12,7 @@ cache_dir: .cache/data
 
 # Optional validation policy
 validation:
+  # You can keep only `data_quality`, only `optimization`, or both.
   data_quality:
     calendar:
       kind: auto  # auto | crypto_24_7 | weekday | exchange
@@ -22,12 +23,11 @@ validation:
     max_missing_bar_pct: 5.0  # max percent of missing bars vs expected timeline
     max_kurtosis: 10.0  # max allowed kurtosis of close-to-close returns
     on_fail: skip_job  # skip_optimization | skip_job | skip_collection
-
-# Optional optimization policy (strategy-level feasibility gates)
-optimization_policy:
-  on_fail: baseline_only  # baseline_only | skip_job
-  min_bars: 2000
-  dof_multiplier: 100
+  # Optional strategy-level optimization feasibility policy.
+  optimization:
+    on_fail: baseline_only  # baseline_only | skip_job
+    min_bars: 2000
+    dof_multiplier: 100
 
 collections:
   # Stocks (large-cap growth)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, cast
 
 import yaml
 
@@ -63,13 +63,14 @@ class ValidationDataQualityConfig:
 @dataclass
 class ValidationConfig:
     data_quality: ValidationDataQualityConfig | None = None
+    optimization: "OptimizationPolicyConfig | None" = None
 
 
 @dataclass
 class OptimizationPolicyConfig:
-    on_fail: str = "baseline_only"
-    min_bars: int | None = None
-    dof_multiplier: int | None = None
+    on_fail: str
+    min_bars: int
+    dof_multiplier: int
 
 
 @dataclass
@@ -81,8 +82,6 @@ class Config:
     engine: str = "pybroker"  # pybroker engine
     param_search: str = "grid"  # grid | optuna
     param_trials: int = 25
-    dof_multiplier: int = 100
-    min_bars: int = 2000
     max_workers: int = 1
     asset_workers: int = 1
     param_workers: int = 1
@@ -94,7 +93,6 @@ class Config:
     evaluation_mode: str = "backtest"
     notifications: NotificationsConfig | None = None
     validation: ValidationConfig | None = None
-    optimization_policy: OptimizationPolicyConfig | None = None
 
 
 def _parse_on_fail(
@@ -196,18 +194,24 @@ def _parse_validation(raw: Any, prefix: str) -> ValidationConfig | None:
     data_quality_raw = raw.get("data_quality")
     if data_quality_raw is not None and not isinstance(data_quality_raw, dict):
         raise ValueError(f"Invalid `{prefix}.data_quality`: expected a mapping")
+    optimization_raw = raw.get("optimization")
+    if optimization_raw is not None and not isinstance(optimization_raw, dict):
+        raise ValueError(f"Invalid `{prefix}.optimization`: expected a mapping")
 
-    data_quality_cfg = None
-    if isinstance(data_quality_raw, dict):
-        parsed_data_quality = _parse_validation_data_quality_thresholds(
-            data_quality_raw, f"{prefix}.data_quality"
-        )
-        assert parsed_data_quality is not None  # data_quality_raw is dict
-        data_quality_cfg = parsed_data_quality
+    data_quality_cfg = (
+        _parse_validation_data_quality_thresholds(data_quality_raw, f"{prefix}.data_quality")
+        if isinstance(data_quality_raw, dict)
+        else None
+    )
+    optimization_cfg = (
+        _parse_optimization_policy(optimization_raw, f"{prefix}.optimization")
+        if isinstance(optimization_raw, dict)
+        else None
+    )
 
-    if data_quality_cfg is None:
+    if data_quality_cfg is None and optimization_cfg is None:
         return None
-    return ValidationConfig(data_quality=data_quality_cfg)
+    return ValidationConfig(data_quality=data_quality_cfg, optimization=optimization_cfg)
 
 
 def _parse_optimization_policy(raw: Any, prefix: str) -> OptimizationPolicyConfig | None:
@@ -216,11 +220,21 @@ def _parse_optimization_policy(raw: Any, prefix: str) -> OptimizationPolicyConfi
     if not isinstance(raw, dict):
         raise ValueError(f"Invalid `{prefix}`: expected a mapping")
 
-    on_fail = _parse_on_fail(
-        raw.get("on_fail"),
-        f"{prefix}.on_fail",
-        {"baseline_only", "skip_job"},
-    ) or "baseline_only"
+    required_fields = ("on_fail", "min_bars", "dof_multiplier")
+    missing_fields = [field for field in required_fields if raw.get(field) is None]
+    if missing_fields:
+        raise ValueError(
+            f"Invalid `{prefix}`: missing required field(s): {', '.join(missing_fields)}"
+        )
+
+    on_fail = cast(
+        str,
+        _parse_on_fail(
+            raw.get("on_fail"),
+            f"{prefix}.on_fail",
+            {"baseline_only", "skip_job"},
+        ),
+    )
 
     def _as_optional_int(value: Any, field: str) -> int | None:
         if value is None:
@@ -230,10 +244,17 @@ def _parse_optimization_policy(raw: Any, prefix: str) -> OptimizationPolicyConfi
             raise ValueError(f"`{prefix}.{field}` must be >= 0")
         return parsed
 
+    min_bars = _as_optional_int(raw.get("min_bars"), "min_bars")
+    dof_multiplier = _as_optional_int(raw.get("dof_multiplier"), "dof_multiplier")
+    if min_bars is None or dof_multiplier is None:
+        raise ValueError(
+            f"Invalid `{prefix}`: `min_bars` and `dof_multiplier` are required"
+        )
+
     return OptimizationPolicyConfig(
         on_fail=on_fail,
-        min_bars=_as_optional_int(raw.get("min_bars"), "min_bars"),
-        dof_multiplier=_as_optional_int(raw.get("dof_multiplier"), "dof_multiplier"),
+        min_bars=min_bars,
+        dof_multiplier=dof_multiplier,
     )
 
 
@@ -299,9 +320,6 @@ def load_config(path: str | Path) -> Config:
             notifications_cfg = NotificationsConfig(slack=slack_cfg)
 
     validation_cfg = _parse_validation(raw.get("validation"), "validation")
-    optimization_policy_cfg = _parse_optimization_policy(
-        raw.get("optimization_policy"), "optimization_policy"
-    )
 
     evaluation_mode = str(raw.get("evaluation_mode", "backtest")).strip().lower()
     allowed_modes = {"backtest", "walk_forward"}
@@ -318,8 +336,6 @@ def load_config(path: str | Path) -> Config:
         engine=str(raw.get("engine", "pybroker")).lower(),
         param_search=str(raw.get("param_search", raw.get("param_optimizer", "grid"))).lower(),
         param_trials=int(raw.get("param_trials", raw.get("opt_trials", 25))),
-        dof_multiplier=int(raw.get("dof_multiplier", 100)),
-        min_bars=int(raw.get("min_bars", 2000)),
         max_workers=int(raw.get("max_workers", raw.get("asset_workers", 1))),
         asset_workers=int(raw.get("asset_workers", raw.get("max_workers", 1))),
         param_workers=int(raw.get("param_workers", 1)),
@@ -331,6 +347,5 @@ def load_config(path: str | Path) -> Config:
         evaluation_mode=evaluation_mode,
         notifications=notifications_cfg,
         validation=validation_cfg,
-        optimization_policy=optimization_policy_cfg,
     )
     return cfg

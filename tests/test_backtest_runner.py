@@ -609,8 +609,13 @@ def test_run_all_uses_cached_results(tmp_path, monkeypatch):
 
 def test_run_all_handles_failed_and_nan_metrics(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
-    runner.cfg.min_bars = 1
-    runner.cfg.dof_multiplier = 1
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+        )
+    )
     call_state = {"count": 0}
 
     def _sim_with_none(self, *args, **kwargs):
@@ -863,8 +868,13 @@ def test_run_all_min_bars_and_dof_guard_behavior(
     expect_skip,
 ):
     runner = _make_runner(tmp_path, monkeypatch)
-    runner.cfg.dof_multiplier = dof_multiplier
-    runner.cfg.min_bars = min_bars
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=min_bars,
+            dof_multiplier=dof_multiplier,
+        )
+    )
     runner.cfg.param_search = "grid"
 
     _patch_source_with_bars(monkeypatch, bars)
@@ -880,7 +890,7 @@ def test_run_all_min_bars_and_dof_guard_behavior(
         assert optimization["skipped"] is True
         assert optimization["reason"] == "insufficient_bars_for_optimization"
         # search_space has one dimension (`window`) in _make_runner, so n_params=1.
-        expected_min_bars = max(runner.cfg.min_bars, runner.cfg.dof_multiplier * 1)
+        expected_min_bars = max(min_bars, dof_multiplier * 1)
         assert optimization["min_bars_required"] == expected_min_bars
         assert optimization["bars_available"] == bars
     else:
@@ -890,10 +900,12 @@ def test_run_all_min_bars_and_dof_guard_behavior(
 def test_run_all_optimization_policy_skip_job_on_infeasible_search(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.param_search = "grid"
-    runner.cfg.optimization_policy = OptimizationPolicyConfig(
-        on_fail="skip_job",
-        min_bars=60,
-        dof_multiplier=1,
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="skip_job",
+            min_bars=60,
+            dof_multiplier=1,
+        )
     )
     _patch_source_with_bars(monkeypatch, bars=5)
     eval_calls = _patch_pybroker_simulation(monkeypatch)
@@ -1106,6 +1118,11 @@ def test_run_all_skip_optimization_still_evaluates_each_strategy(tmp_path, monke
     runner.cfg.strategies = []
     runner.cfg.validation = ValidationConfig(
         data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_optimization"),
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=100,
+            dof_multiplier=100,
+        ),
     )
     monkeypatch.setattr(
         "src.backtest.runner.discover_external_strategies",
@@ -1124,12 +1141,18 @@ def test_run_all_skip_optimization_still_evaluates_each_strategy(tmp_path, monke
         assert optimization["reason"] == "reliability_threshold_skip_optimization"
         reasons = optimization.get("reliability_reasons", [])
         assert any("min_data_points_not_met" in reason for reason in reasons)
+        assert all("insufficient_bars_for_optimization" not in reason for reason in optimization["reasons"])
 
 
 def test_strategy_plan_skip_optimization_does_not_leak_to_next_strategy(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
-    runner.cfg.min_bars = 1
-    runner.cfg.dof_multiplier = 3
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=3,
+        )
+    )
     runner.cfg.strategies = []
 
     class _WideStrategy(BaseStrategy):
@@ -1261,7 +1284,7 @@ def test_run_all_reliability_skip_collection_blocks_remaining_jobs_in_collection
     assert len(results) == 1
     assert fetch_calls["bad_col"] == 1
     assert fetch_calls["good_col"] == 1
-    assert eval_calls["count"] == 1
+    assert eval_calls["count"] == 2
     assert len(runner.failures) == 1
     failure = runner.failures[0]
     assert failure["collection"] == "bad_col"

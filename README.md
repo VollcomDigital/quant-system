@@ -197,6 +197,10 @@ See new collection examples under `config/collections/` for FX intraday via Finn
 
 ### Validation & Optimization Policy
 
+- `validation` is optional. When present, you can configure either section independently:
+  - `validation.data_quality` only
+  - `validation.optimization` only
+  - or both together
 - `validation.data_quality` controls job-level data gates (for collection/symbol/timeframe):
   - `calendar` controls continuity expectations:
     - `kind: auto | crypto_24_7 | weekday | exchange`
@@ -210,8 +214,10 @@ See new collection examples under `config/collections/` for FX intraday via Finn
   - `max_kurtosis`: maximum kurtosis of close-to-close returns
   - `on_fail: skip_job | skip_collection | skip_optimization`
   - `skip_optimization` means optimization is disabled for all strategies on that job.
-- `optimization_policy` controls strategy-level search feasibility:
+- `validation.optimization` controls strategy-level search feasibility:
   - `on_fail: baseline_only | skip_job`
+  - `min_bars`: minimum bars required for optimization
+  - `dof_multiplier`: multiplies parameter dimensions for the DoF guard
   - `baseline_only` runs a single baseline evaluation without parameter search.
 
 Structured logs reflect this directly via gate actions:

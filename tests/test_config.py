@@ -199,19 +199,21 @@ collections:
     symbols: ['AAPL']
 timeframes: ['1d']
 metric: sharpe
-optimization_policy:
-  on_fail: skip_job
-  min_bars: 123
-  dof_multiplier: 7
+validation:
+  optimization:
+    on_fail: skip_job
+    min_bars: 123
+    dof_multiplier: 7
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
 
     cfg = load_config(path)
-    assert cfg.optimization_policy is not None
-    assert cfg.optimization_policy.on_fail == "skip_job"
-    assert cfg.optimization_policy.min_bars == 123
-    assert cfg.optimization_policy.dof_multiplier == 7
+    assert cfg.validation is not None
+    assert cfg.validation.optimization is not None
+    assert cfg.validation.optimization.on_fail == "skip_job"
+    assert cfg.validation.optimization.min_bars == 123
+    assert cfg.validation.optimization.dof_multiplier == 7
 
 
 def test_load_config_optimization_policy_invalid_on_fail(tmp_path: Path):
@@ -222,8 +224,29 @@ collections:
     symbols: ['AAPL']
 timeframes: ['1d']
 metric: sharpe
-optimization_policy:
-  on_fail: skip_optimization
+validation:
+  optimization:
+    on_fail: skip_optimization
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_optimization_policy_requires_all_fields(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  optimization:
+    on_fail: baseline_only
+    min_bars: 100
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)

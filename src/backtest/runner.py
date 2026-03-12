@@ -1134,24 +1134,15 @@ class BacktestRunner:
             calendar_exchange,
         )
 
-    def _resolve_optimization_policy(self) -> tuple[str, int, int]:
-        # `optimization_policy` drives strategy-plan feasibility decisions.
-        policy = getattr(self.cfg, "optimization_policy", None)
-        on_fail = (
-            str(getattr(policy, "on_fail", "baseline_only")).strip().lower()
-            if policy is not None
-            else "baseline_only"
-        )
-        min_bars = (
-            int(getattr(policy, "min_bars"))
-            if policy is not None and getattr(policy, "min_bars", None) is not None
-            else int(self.cfg.min_bars)
-        )
-        dof_multiplier = (
-            int(getattr(policy, "dof_multiplier"))
-            if policy is not None and getattr(policy, "dof_multiplier", None) is not None
-            else int(self.cfg.dof_multiplier)
-        )
+    def _resolve_optimization_policy(self) -> tuple[str, int, int] | None:
+        # `validation.optimization` is optional; when omitted no feasibility gate is applied.
+        validation_cfg = getattr(self.cfg, "validation", None)
+        policy = getattr(validation_cfg, "optimization", None)
+        if policy is None:
+            return None
+        on_fail = str(policy.on_fail).strip().lower()
+        min_bars = int(policy.min_bars)
+        dof_multiplier = int(policy.dof_multiplier)
         return on_fail, min_bars, dof_multiplier
 
     @staticmethod
@@ -1347,40 +1338,55 @@ class BacktestRunner:
         return self._compose_gate_decisions("strategy_optimization", common_decision, mode_decision)
 
     def _strategy_validate_plan_common(self, context: ValidationContext) -> GateDecision:
-        # `optimization_policy` decides strategy-level action when search is infeasible.
+        # `validation.optimization` decides strategy-level action when search is infeasible.
         plan = context.plan
         validated_data = context.validated_data
         if plan is None or validated_data is None:
             return GateDecision(False, "skip_job", ["missing_strategy_plan_context"], "strategy_optimization")
-        optimization_on_fail, min_bars_cfg, dof_multiplier = self._resolve_optimization_policy()
-        n_params = len(plan.search_space)
-        min_bars_for_optimization = max(min_bars_cfg, dof_multiplier * n_params)
-        insufficient_bars = (
-            bool(plan.search_space) and len(validated_data.raw_df) < min_bars_for_optimization
-        )
-
-        skip_reasons = list(plan.optimization_skip_reasons)
-        if insufficient_bars:
-            skip_reasons.append("insufficient_bars_for_optimization")
-
-        if skip_reasons:
+        # If an upstream gate already decided to skip optimization for this plan,
+        # keep that decision and avoid running strategy-level policy checks.
+        if plan.optimization_skip_reasons:
+            skip_reasons = list(plan.optimization_skip_reasons)
             plan.skip_optimization = True
-            plan.optimization_skip_reasons = skip_reasons
             plan.optimization_skip_reason = "; ".join(skip_reasons)
             if not isinstance(plan.optimization_details, dict):
                 plan.optimization_details = {}
             plan.optimization_details["skipped"] = True
             plan.optimization_details["reason"] = skip_reasons[0]
             plan.optimization_details["reasons"] = skip_reasons
-            if insufficient_bars:
-                plan.optimization_details["min_bars_required"] = min_bars_for_optimization
-                plan.optimization_details["bars_available"] = len(validated_data.raw_df)
             return GateDecision(
-                passed=(optimization_on_fail == "baseline_only"),
-                action=optimization_on_fail,
+                passed=True,
+                action="baseline_only",
                 reasons=skip_reasons,
                 stage="strategy_optimization",
             )
+        policy = self._resolve_optimization_policy()
+        # enforce optimization policy if set
+        if policy is not None:
+            optimization_on_fail, min_bars_cfg, dof_multiplier = policy
+            n_params = len(plan.search_space)
+            min_bars_for_optimization = max(min_bars_cfg, dof_multiplier * n_params)
+            insufficient_bars = (
+                bool(plan.search_space) and len(validated_data.raw_df) < min_bars_for_optimization
+            )
+            if insufficient_bars:
+                skip_reasons = ["insufficient_bars_for_optimization"]
+                plan.skip_optimization = True
+                plan.optimization_skip_reasons = skip_reasons
+                plan.optimization_skip_reason = "; ".join(skip_reasons)
+                if not isinstance(plan.optimization_details, dict):
+                    plan.optimization_details = {}
+                plan.optimization_details["skipped"] = True
+                plan.optimization_details["reason"] = skip_reasons[0]
+                plan.optimization_details["reasons"] = skip_reasons
+                plan.optimization_details["min_bars_required"] = min_bars_for_optimization
+                plan.optimization_details["bars_available"] = len(validated_data.raw_df)
+                return GateDecision(
+                    passed=(optimization_on_fail == "baseline_only"),
+                    action=optimization_on_fail,
+                    reasons=skip_reasons,
+                    stage="strategy_optimization",
+                )
 
         plan.skip_optimization = False
         plan.optimization_skip_reasons = []
