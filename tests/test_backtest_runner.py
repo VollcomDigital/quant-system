@@ -1364,7 +1364,7 @@ def test_run_all_collection_cache_isolation_for_same_name_collections(tmp_path, 
 
     results = runner.run_all()
     assert len(results) == 1
-    assert eval_calls["count"] == 1
+    assert eval_calls["count"] == 2
     # Reusing validation-built source avoids duplicate construction for the passing collection.
     assert make_source_calls == {"good": 1, "bad": 1}
     assert any(

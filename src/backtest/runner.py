@@ -1784,30 +1784,37 @@ class BacktestRunner:
 
         jobs = self._create_job_list()
         # Cache collection gate decisions so each collection is validated once per run.
-        validated_collections: dict[str, GateDecision] = {}
-        blocked_collections: set[str] = set()
+        validated_collections: dict[int, GateDecision] = {}
+        validated_collection_sources: dict[int, DataSource] = {}
+        blocked_collections: set[int] = set()
 
         for job in jobs:
             state = JobState(job=job)
-            collection_key = job.collection.name
+            collection_key = self._collection_gate_key(job.collection)
             if collection_key in blocked_collections:
                 continue
             collection_decision = validated_collections.get(collection_key)
             if collection_decision is None:
-                collection_decision = self._collection_validation(state)
+                collection_decision, source = self._collection_validation(state)
                 collection_decision = self._handle_gate_decision(
                     state,
                     collection_decision,
                     blocked_collections=blocked_collections,
                 )
                 validated_collections[collection_key] = collection_decision
+                if source is not None:
+                    validated_collection_sources[collection_key] = source
             else:
                 # Apply cached gate state without re-emitting logs/failure side effects.
                 self._apply_gate_to_state(state, collection_decision)
             if not collection_decision.passed:
                 continue
 
-            data_fetch_decision, fetched_data = self._data_fetch(state.job, only_cached=only_cached)
+            data_fetch_decision, fetched_data = self._data_fetch(
+                state,
+                only_cached=only_cached,
+                source=validated_collection_sources.get(collection_key),
+            )
             data_fetch_decision = self._handle_gate_decision(
                 state,
                 data_fetch_decision,
