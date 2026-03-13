@@ -1222,6 +1222,77 @@ class BacktestRunner:
         return on_fail, min_bars, dof_multiplier
 
     @staticmethod
+    def _continuity_threshold_reason(
+        continuity: dict[str, float | int], min_continuity_score: float | None
+    ) -> str | None:
+        if min_continuity_score is None:
+            return None
+        threshold = float(min_continuity_score)
+        continuity_score = float(continuity.get("score", 0.0))
+        if continuity_score < threshold:
+            return (
+                "min_continuity_score_not_met("
+                f"required={threshold}, available={continuity_score})"
+            )
+        return None
+
+    @staticmethod
+    def _min_data_points_reason(raw_df: pd.DataFrame, min_data_points: int | None) -> str | None:
+        if min_data_points is None:
+            return None
+        required = int(min_data_points)
+        available = len(raw_df)
+        if available < required:
+            return f"min_data_points_not_met(required={required}, available={available})"
+        return None
+
+    @staticmethod
+    def _missing_bar_pct_reason(
+        continuity: dict[str, float | int], max_missing_bar_pct: float | None
+    ) -> str | None:
+        if max_missing_bar_pct is None:
+            return None
+        threshold = float(max_missing_bar_pct)
+        expected_bars = int(continuity.get("expected_bars", 0))
+        missing_bars = int(continuity.get("missing_bars", 0))
+        missing_bar_pct = (
+            0.0 if expected_bars <= 0 else (float(missing_bars) / float(expected_bars)) * 100.0
+        )
+        if missing_bar_pct > threshold:
+            return (
+                "max_missing_bar_pct_exceeded("
+                f"max_allowed={threshold}, available={missing_bar_pct})"
+            )
+        return None
+
+    @staticmethod
+    def _resolve_close_column(raw_df: pd.DataFrame) -> str | None:
+        if "Close" in raw_df.columns:
+            return "Close"
+        if "close" in raw_df.columns:
+            return "close"
+        return None
+
+    @classmethod
+    def _max_kurtosis_reason(cls, raw_df: pd.DataFrame, max_kurtosis: float | None) -> str | None:
+        if max_kurtosis is None:
+            return None
+        close_col = cls._resolve_close_column(raw_df)
+        if close_col is None:
+            return None
+        threshold = float(max_kurtosis)
+        returns = raw_df[close_col].astype(float).pct_change().dropna()
+        if returns.empty:
+            return None
+        sample_kurtosis = returns.kurt()
+        if pd.notna(sample_kurtosis) and float(sample_kurtosis) > threshold:
+            return (
+                "max_kurtosis_exceeded("
+                f"max_allowed={threshold}, available={float(sample_kurtosis)})"
+            )
+        return None
+
+    @staticmethod
     def _collect_reliability_reasons(
         *,
         raw_df: pd.DataFrame,
@@ -1232,49 +1303,15 @@ class BacktestRunner:
         max_kurtosis: float | None,
     ) -> list[str]:
         reasons: list[str] = []
-        if min_continuity_score is not None:
-            threshold = float(min_continuity_score)
-            continuity_score = float(continuity.get("score", 0.0))
-            if continuity_score < threshold:
-                reasons.append(
-                    "min_continuity_score_not_met("
-                    f"required={threshold}, available={continuity_score})"
-                )
-        if min_data_points is not None:
-            required = int(min_data_points)
-            available = len(raw_df)
-            if available < required:
-                reasons.append(
-                    f"min_data_points_not_met(required={required}, available={available})"
-                )
-        if max_missing_bar_pct is not None:
-            threshold = float(max_missing_bar_pct)
-            expected_bars = int(continuity.get("expected_bars", 0))
-            missing_bars = int(continuity.get("missing_bars", 0))
-            missing_bar_pct = (
-                0.0 if expected_bars <= 0 else (float(missing_bars) / float(expected_bars)) * 100.0
-            )
-            if missing_bar_pct > threshold:
-                reasons.append(
-                    "max_missing_bar_pct_exceeded("
-                    f"max_allowed={threshold}, available={missing_bar_pct})"
-                )
-        if max_kurtosis is not None:
-            threshold = float(max_kurtosis)
-            close_col = None
-            if "Close" in raw_df.columns:
-                close_col = "Close"
-            elif "close" in raw_df.columns:
-                close_col = "close"
-            if close_col is not None:
-                returns = raw_df[close_col].astype(float).pct_change().dropna()
-                if not returns.empty:
-                    sample_kurtosis = returns.kurt()
-                    if pd.notna(sample_kurtosis) and float(sample_kurtosis) > threshold:
-                        reasons.append(
-                            "max_kurtosis_exceeded("
-                            f"max_allowed={threshold}, available={float(sample_kurtosis)})"
-                        )
+        reason_checks = (
+            BacktestRunner._continuity_threshold_reason(continuity, min_continuity_score),
+            BacktestRunner._min_data_points_reason(raw_df, min_data_points),
+            BacktestRunner._missing_bar_pct_reason(continuity, max_missing_bar_pct),
+            BacktestRunner._max_kurtosis_reason(raw_df, max_kurtosis),
+        )
+        for reason in reason_checks:
+            if reason is not None:
+                reasons.append(reason)
         return reasons
 
     @staticmethod
