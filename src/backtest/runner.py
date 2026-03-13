@@ -398,16 +398,17 @@ class BacktestRunner:
         lhs = expected_idx.normalize() if normalize_before_compare else expected_idx
         rhs = actual_idx.normalize() if normalize_before_compare else actual_idx
         present_mask = lhs.isin(rhs)
-        missing_mask = ~present_mask
+        missing_mask = np.asarray(~present_mask, dtype=np.int8)
         missing_bars = int(missing_mask.sum())
-        largest_gap_bars = 0
-        current_gap = 0
-        for is_missing in missing_mask:
-            if bool(is_missing):
-                current_gap += 1
-                largest_gap_bars = max(largest_gap_bars, current_gap)
-            else:
-                current_gap = 0
+        if missing_bars == 0:
+            largest_gap_bars = 0
+        else:
+            # Find contiguous runs of missing bars from edge transitions.
+            padded = np.concatenate(([0], missing_mask, [0]))
+            transitions = np.diff(padded)
+            starts = np.where(transitions == 1)[0]
+            ends = np.where(transitions == -1)[0]
+            largest_gap_bars = int((ends - starts).max())
         return expected_bars, missing_bars, largest_gap_bars
 
     @staticmethod

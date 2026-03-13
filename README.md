@@ -207,7 +207,7 @@ See new collection examples under `config/collections/` for FX intraday via Finn
     - `timezone: UTC or UTC±HH:MM`
     - `auto` resolves to `crypto_24_7` for crypto sources and `weekday` otherwise
     - `exchange` uses `exchange_calendars` for daily session-aware continuity (holidays excluded)
-    - non-daily exchange checks currently fall back to weekday-style expectations
+    - non-daily checks use fixed-delta continuity (not weekday filtering)
   - `min_data_points`: minimum number of bars required
   - `min_continuity_score`: minimum continuity score (0..1)
   - `max_missing_bar_pct`: maximum missing bars percentage across expected bars
@@ -223,6 +223,9 @@ See new collection examples under `config/collections/` for FX intraday via Finn
 Structured logs reflect this directly via gate actions:
 - `data_validation_gate` can emit `skip_optimization` (job-level optimization disable).
 - `strategy_optimization_gate` can emit `baseline_only` (strategy-level baseline fallback) or `skip_job`.
+
+For implementation details (continuity decision flow, weekday filtering scope, and
+vectorized gap counting), see `DEVELOPMENT.md`.
 
 ### Dashboard
 
