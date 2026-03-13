@@ -216,6 +216,25 @@ validation:
     assert cfg.validation.optimization.dof_multiplier == 7
 
 
+def test_load_config_legacy_optimization_guard_fields(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+param_min_bars: 321
+param_dof_multiplier: 9
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.param_min_bars == 321
+    assert cfg.param_dof_multiplier == 9
+
+
 def test_load_config_optimization_policy_invalid_on_fail(tmp_path: Path):
     config_text = """
 collections:

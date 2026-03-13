@@ -624,6 +624,33 @@ def test_run_all_uses_cached_results(tmp_path, monkeypatch):
     assert runner.results_cache.set_calls == runner.metrics["result_cache_hits"]
 
 
+def test_run_all_does_not_persist_non_finite_cached_metric_to_legacy_cache(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+
+    class _CachedResults(_StubResultsCache):
+        def __init__(self):
+            super().__init__()
+            self.set_calls = 0
+
+        def set(self, **kwargs):
+            self.set_calls += 1
+            super().set(**kwargs)
+
+    class _CachedEval(_StubEvaluationCache):
+        def get(self, **kwargs):
+            self.retrieved.append(kwargs)
+            return {"metric_value": float("-inf"), "stats": {"cached": True}}
+
+    runner.results_cache = _CachedResults()
+    runner.evaluation_cache = _CachedEval()
+    runner.mode_config_hash = runner.evaluation_cache.hash_mode_config(runner.mode_config)
+
+    results = runner.run_all()
+    assert results == []
+    assert runner.metrics["result_cache_hits"] >= 1
+    assert runner.results_cache.set_calls == 0
+
+
 def test_run_all_handles_failed_and_nan_metrics(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
@@ -669,9 +696,8 @@ def test_run_all_handles_failed_and_nan_metrics(tmp_path, monkeypatch):
     assert runner.metrics["result_cache_misses"] >= 1
     assert runner.metrics.get("fresh_metric_evals", 0) >= 1
     assert len(runner.evaluation_cache.saved) == 1
-    assert len(runner.results_cache.saved) == 1
+    assert len(runner.results_cache.saved) == 0
     assert runner.evaluation_cache.saved[0]["metric_value"] == float("-inf")
-    assert runner.results_cache.saved[0]["metric_value"] == float("-inf")
 
 
 def test_run_pybroker_simulation_generates_metrics(tmp_path, monkeypatch):
@@ -863,6 +889,26 @@ def _patch_pybroker_simulation(monkeypatch) -> dict[str, int]:
 
     monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _fake_sim)
     return eval_calls
+
+
+def test_run_all_applies_legacy_optimization_guard_without_validation_config(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = None
+    runner.cfg.param_min_bars = 7
+    runner.cfg.param_dof_multiplier = 1
+    runner.cfg.param_search = "grid"
+
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results
+    assert eval_calls["count"] == 1
+    optimization = results[0].stats.get("optimization")
+    assert optimization is not None
+    assert optimization["reason"] == "insufficient_bars_for_optimization"
+    assert optimization["min_bars_required"] == 7
+    assert optimization["bars_available"] == 5
 
 
 @pytest.mark.parametrize(
@@ -1161,6 +1207,29 @@ def test_run_all_skip_optimization_still_evaluates_each_strategy(tmp_path, monke
         assert all("insufficient_bars_for_optimization" not in reason for reason in optimization["reasons"])
 
 
+def test_run_all_reliability_skip_optimization_respects_optimization_skip_job(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_optimization"),
+        optimization=OptimizationPolicyConfig(
+            on_fail="skip_job",
+            min_bars=60,
+            dof_multiplier=1,
+        ),
+    )
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert len(runner.failures) == 1
+    assert runner.failures[0]["stage"] == "strategy_optimization"
+    assert "insufficient_bars_for_optimization" in runner.failures[0]["error"]
+
+
 def test_run_all_skip_optimization_does_not_skip_no_param_strategy(tmp_path, monkeypatch):
     class _NoParamStrategy(BaseStrategy):
         name = "no_param"
@@ -1316,6 +1385,11 @@ def test_run_all_reliability_skip_collection_blocks_remaining_jobs_in_collection
     runner = _make_runner(tmp_path, monkeypatch, collections=collections)
     runner.cfg.validation = ValidationConfig(
         data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_collection"),
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+        ),
     )
 
     fetch_calls = {"bad_col": 0, "good_col": 0}
@@ -1363,6 +1437,13 @@ def test_run_all_collection_cache_isolation_for_same_name_collections(tmp_path, 
         ),
     ]
     runner = _make_runner(tmp_path, monkeypatch, collections=collections, patch_source=False)
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+        )
+    )
 
     make_source_calls = {"good": 0, "bad": 0}
 
