@@ -136,23 +136,7 @@ def _parse_validation_data_quality_thresholds(
         f"{prefix}.on_fail",
         {"skip_optimization", "skip_job", "skip_collection"},
     )
-    calendar_raw = raw.get("calendar")
-    if calendar_raw is not None and not isinstance(calendar_raw, dict):
-        raise ValueError(f"Invalid `{prefix}.calendar`: expected a mapping")
-    calendar_cfg = None
-    if isinstance(calendar_raw, dict):
-        kind = str(calendar_raw.get("kind", "auto")).strip().lower()
-        allowed_kinds = {"auto", "crypto_24_7", "weekday", "exchange"}
-        if kind not in allowed_kinds:
-            raise ValueError(
-                f"Invalid `{prefix}.calendar.kind`: expected one of {sorted(allowed_kinds)}, got '{kind}'"
-            )
-        exchange = calendar_raw.get("exchange")
-        calendar_cfg = ValidationCalendarConfig(
-            kind=kind,
-            exchange=str(exchange).strip() if exchange is not None else None,
-            timezone=_parse_utc_timezone(calendar_raw.get("timezone"), f"{prefix}.calendar.timezone"),
-        )
+    calendar_cfg = _parse_validation_calendar(raw.get("calendar"), f"{prefix}.calendar")
 
     def _as_optional_int(value: Any, field: str) -> int | None:
         if value is None:
@@ -183,6 +167,25 @@ def _parse_validation_data_quality_thresholds(
     if cfg.min_continuity_score is not None and not 0.0 <= cfg.min_continuity_score <= 1.0:
         raise ValueError(f"`{prefix}.min_continuity_score` must be between 0 and 1")
     return cfg
+
+
+def _parse_validation_calendar(raw: Any, prefix: str) -> ValidationCalendarConfig | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid `{prefix}`: expected a mapping")
+    kind = str(raw.get("kind", "auto")).strip().lower()
+    allowed_kinds = {"auto", "crypto_24_7", "weekday", "exchange"}
+    if kind not in allowed_kinds:
+        raise ValueError(
+            f"Invalid `{prefix}.kind`: expected one of {sorted(allowed_kinds)}, got '{kind}'"
+        )
+    exchange = raw.get("exchange")
+    return ValidationCalendarConfig(
+        kind=kind,
+        exchange=str(exchange).strip() if exchange is not None else None,
+        timezone=_parse_utc_timezone(raw.get("timezone"), f"{prefix}.timezone"),
+    )
 
 
 def _parse_validation(raw: Any, prefix: str) -> ValidationConfig | None:
