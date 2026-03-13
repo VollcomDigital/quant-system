@@ -1161,51 +1161,18 @@ class BacktestRunner:
         global_dq = getattr(global_validation, "data_quality", None)
         collection_dq = getattr(collection_validation, "data_quality", None)
         # Collection override takes precedence over global validation defaults.
-        on_fail = (
-            getattr(collection_dq, "on_fail", None)
-            if collection_dq is not None and getattr(collection_dq, "on_fail", None) is not None
-            else getattr(global_dq, "on_fail", None)
-        )
+        on_fail = self._resolve_data_quality_value(collection_dq, global_dq, "on_fail")
         on_fail = str(on_fail).strip().lower() if on_fail is not None else "skip_optimization"
-
-        min_data_points = (
-            getattr(collection_dq, "min_data_points", None)
-            if collection_dq is not None and getattr(collection_dq, "min_data_points", None) is not None
-            else getattr(global_dq, "min_data_points", None)
+        min_data_points = self._resolve_data_quality_value(collection_dq, global_dq, "min_data_points")
+        min_continuity_score = self._resolve_data_quality_value(
+            collection_dq, global_dq, "min_continuity_score"
         )
-        min_continuity_score = (
-            getattr(collection_dq, "min_continuity_score", None)
-            if collection_dq is not None
-            and getattr(collection_dq, "min_continuity_score", None) is not None
-            else getattr(global_dq, "min_continuity_score", None)
+        max_missing_bar_pct = self._resolve_data_quality_value(
+            collection_dq, global_dq, "max_missing_bar_pct"
         )
-        max_missing_bar_pct = (
-            getattr(collection_dq, "max_missing_bar_pct", None)
-            if collection_dq is not None and getattr(collection_dq, "max_missing_bar_pct", None) is not None
-            else getattr(global_dq, "max_missing_bar_pct", None)
-        )
-        max_kurtosis = (
-            getattr(collection_dq, "max_kurtosis", None)
-            if collection_dq is not None and getattr(collection_dq, "max_kurtosis", None) is not None
-            else getattr(global_dq, "max_kurtosis", None)
-        )
-        calendar_cfg = (
-            getattr(collection_dq, "calendar", None)
-            if collection_dq is not None and getattr(collection_dq, "calendar", None) is not None
-            else getattr(global_dq, "calendar", None)
-        )
-        calendar_kind = str(getattr(calendar_cfg, "kind", "auto")).strip().lower()
-        calendar_exchange = (
-            str(getattr(calendar_cfg, "exchange", "")).strip()
-            if calendar_cfg is not None and getattr(calendar_cfg, "exchange", None) is not None
-            else None
-        )
-        if calendar_kind == "auto":
-            calendar_kind = (
-                "crypto_24_7"
-                if collection.source.strip().lower() in self._CRYPTO_SOURCE_NAMES
-                else "weekday"
-            )
+        max_kurtosis = self._resolve_data_quality_value(collection_dq, global_dq, "max_kurtosis")
+        calendar_cfg = self._resolve_data_quality_value(collection_dq, global_dq, "calendar")
+        calendar_kind, calendar_exchange = self._resolve_calendar_policy(calendar_cfg, collection.source)
         return (
             on_fail,
             min_data_points,
@@ -1215,6 +1182,33 @@ class BacktestRunner:
             calendar_kind,
             calendar_exchange,
         )
+
+    @staticmethod
+    def _resolve_data_quality_value(
+        collection_dq: Any, global_dq: Any, field_name: str
+    ) -> Any:
+        if collection_dq is not None:
+            collection_value = getattr(collection_dq, field_name, None)
+            if collection_value is not None:
+                return collection_value
+        return getattr(global_dq, field_name, None)
+
+    def _resolve_calendar_policy(
+        self,
+        calendar_cfg: Any,
+        source: str,
+    ) -> tuple[str, str | None]:
+        calendar_kind = str(getattr(calendar_cfg, "kind", "auto")).strip().lower()
+        calendar_exchange = None
+        if calendar_cfg is not None:
+            exchange_value = getattr(calendar_cfg, "exchange", None)
+            if exchange_value is not None:
+                calendar_exchange = str(exchange_value).strip()
+        if calendar_kind == "auto":
+            calendar_kind = (
+                "crypto_24_7" if source.strip().lower() in self._CRYPTO_SOURCE_NAMES else "weekday"
+            )
+        return calendar_kind, calendar_exchange
 
     def _resolve_optimization_policy(self) -> tuple[str, int, int] | None:
         # `validation.optimization` is optional; when omitted no feasibility gate is applied.
