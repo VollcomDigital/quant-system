@@ -433,6 +433,66 @@ class BacktestRunner:
         return expected_idx[expected_idx.dayofweek < 5]
 
     @classmethod
+    def _exchange_daily_expected_counts(
+        cls,
+        idx: pd.DatetimeIndex,
+        *,
+        value: int,
+        exchange_calendar: str,
+        expected_delta: pd.Timedelta,
+    ) -> tuple[int, int, int]:
+        try:
+            import exchange_calendars as xcals
+
+            calendar = xcals.get_calendar(exchange_calendar)
+            start_date = pd.Timestamp(idx[0]).date().isoformat()
+            end_date = pd.Timestamp(idx[-1]).date().isoformat()
+            expected_idx = pd.DatetimeIndex(calendar.sessions_in_range(start_date, end_date))
+            if expected_idx.tz is not None:
+                expected_idx = expected_idx.tz_localize(None)
+            if value > 1 and len(expected_idx) > 0:
+                expected_idx = expected_idx[::value]
+            actual_idx = idx
+            if actual_idx.tz is not None:
+                actual_idx = actual_idx.tz_localize(None)
+            return cls._count_missing_from_expected_index(
+                expected_idx,
+                actual_idx,
+                normalize_before_compare=True,
+            )
+        except ModuleNotFoundError:
+            # Fallback keeps continuity gate functional when exchange_calendars
+            # is not installed; behaves like weekday expectations.
+            expected_idx = cls._weekday_expected_index(idx, expected_delta)
+            return cls._count_missing_from_expected_index(expected_idx, idx)
+
+    @classmethod
+    def _expected_missing_counts(
+        cls,
+        idx: pd.DatetimeIndex,
+        *,
+        timeframe: str,
+        calendar_kind: str,
+        exchange_calendar: str | None,
+        expected_delta: pd.Timedelta,
+        unique_bars: int,
+    ) -> tuple[int, int, int]:
+        value, _, _, is_daily = cls._parse_timeframe_shape(timeframe)
+        if calendar_kind == "exchange" and is_daily and exchange_calendar:
+            return cls._exchange_daily_expected_counts(
+                idx,
+                value=value,
+                exchange_calendar=exchange_calendar,
+                expected_delta=expected_delta,
+            )
+        if calendar_kind in {"weekday", "exchange"} and is_daily:
+            expected_idx = cls._weekday_expected_index(idx, expected_delta)
+            return cls._count_missing_from_expected_index(expected_idx, idx)
+        missing_bars, largest_gap_bars = cls._count_missing_by_fixed_delta(idx, expected_delta)
+        expected_bars = unique_bars + missing_bars
+        return expected_bars, missing_bars, largest_gap_bars
+
+    @classmethod
     def compute_continuity_score(
         cls,
         df: pd.DataFrame,
@@ -457,49 +517,21 @@ class BacktestRunner:
         if expected_delta is None:
             raise ValueError(f"unsupported_timeframe_for_continuity: {timeframe}")
 
-        value, _, _, is_daily = cls._parse_timeframe_shape(timeframe)
-        if calendar_kind == "exchange" and is_daily and exchange_calendar:
-            try:
-                import exchange_calendars as xcals
-
-                calendar = xcals.get_calendar(exchange_calendar)
-                start_date = pd.Timestamp(idx[0]).date().isoformat()
-                end_date = pd.Timestamp(idx[-1]).date().isoformat()
-                expected_idx = pd.DatetimeIndex(calendar.sessions_in_range(start_date, end_date))
-                if expected_idx.tz is not None:
-                    expected_idx = expected_idx.tz_localize(None)
-                if value > 1 and len(expected_idx) > 0:
-                    expected_idx = expected_idx[::value]
-                actual_idx = idx
-                if actual_idx.tz is not None:
-                    actual_idx = actual_idx.tz_localize(None)
-                expected_bars, missing_bars, largest_gap_bars = cls._count_missing_from_expected_index(
-                    expected_idx,
-                    actual_idx,
-                    normalize_before_compare=True,
-                )
-            except ModuleNotFoundError:
-                # Fallback keeps continuity gate functional when exchange_calendars
-                # is not installed; behaves like weekday expectations.
-                expected_idx = cls._weekday_expected_index(idx, expected_delta)
-                expected_bars, missing_bars, largest_gap_bars = cls._count_missing_from_expected_index(
-                    expected_idx, idx
-                )
-        elif calendar_kind in {"weekday", "exchange"} and is_daily:
-            expected_idx = cls._weekday_expected_index(idx, expected_delta)
-            expected_bars, missing_bars, largest_gap_bars = cls._count_missing_from_expected_index(
-                expected_idx, idx
-            )
-        else:
-            missing_bars, largest_gap_bars = cls._count_missing_by_fixed_delta(idx, expected_delta)
-            expected_bars = unique_bars + missing_bars
+        expected_bars, missing_bars, largest_gap_bars = cls._expected_missing_counts(
+            idx,
+            timeframe=timeframe,
+            calendar_kind=calendar_kind,
+            exchange_calendar=exchange_calendar,
+            expected_delta=expected_delta,
+            unique_bars=unique_bars,
+        )
 
         if expected_bars <= 0:
             expected_bars = unique_bars
-        coverage_ratio = 1.0 if expected_bars <= 0 else float(unique_bars / expected_bars)
+        coverage_ratio = float(unique_bars / expected_bars)
         coverage_ratio = max(0.0, min(1.0, coverage_ratio))
-        missing_ratio = 0.0 if expected_bars <= 0 else (missing_bars / expected_bars)
-        largest_gap_ratio = 0.0 if expected_bars <= 0 else (largest_gap_bars / expected_bars)
+        missing_ratio = missing_bars / expected_bars
+        largest_gap_ratio = largest_gap_bars / expected_bars
         duplicate_ratio = 0.0 if actual_bars <= 0 else (duplicate_bars / actual_bars)
         score = max(
             0.0, 1.0 - (0.60 * missing_ratio + 0.25 * largest_gap_ratio + 0.15 * duplicate_ratio)
@@ -1235,7 +1267,11 @@ class BacktestRunner:
                 )
         if max_kurtosis is not None:
             threshold = float(max_kurtosis)
-            close_col = "Close" if "Close" in raw_df.columns else "close" if "close" in raw_df.columns else None
+            close_col = None
+            if "Close" in raw_df.columns:
+                close_col = "Close"
+            elif "close" in raw_df.columns:
+                close_col = "close"
             if close_col is not None:
                 returns = raw_df[close_col].astype(float).pct_change().dropna()
                 if not returns.empty:
