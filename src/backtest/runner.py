@@ -406,8 +406,8 @@ class BacktestRunner:
             # Find contiguous runs of missing bars from edge transitions.
             padded = np.concatenate(([0], missing_mask, [0]))
             transitions = np.diff(padded)
-            starts = np.where(transitions == 1)[0]
-            ends = np.where(transitions == -1)[0]
+            starts = np.nonzero(transitions == 1)[0]
+            ends = np.nonzero(transitions == -1)[0]
             largest_gap_bars = int((ends - starts).max())
         return expected_bars, missing_bars, largest_gap_bars
 
