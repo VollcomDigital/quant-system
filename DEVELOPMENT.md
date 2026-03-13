@@ -43,28 +43,34 @@ Source: `BacktestRunner.run_all` in `src/backtest/runner.py`.
 
 ```mermaid
 flowchart TD
-  A[run_all start] --> B[Create jobs]
-  B --> C{For each job}
-  C --> D[Collection validation gate]
-  D -->|fail| C
-  D --> E[Data fetch gate]
-  E -->|fail| C
-  E --> F[Data validation gate]
-  F -->|fail| C
-  F --> G[Prepare execution context]
-  G -->|fail| C
-  G --> H{For each strategy}
-  H --> I[Create strategy plan]
-  I --> J[Apply policy constraints]
-  J --> K[Strategy plan gate]
-  K -->|skip job/reject| H
-  K -->|baseline_only or continue| L[Run strategy evaluation]
-  L --> M[Strategy result gate]
-  M -->|reject| H
-  M --> N[Assemble BestResult + persist]
+  A([run_all]) --> B[_create_job_list]
+  B --> C{{for each JobContext}}
+  C --> D[_collection_validation]
+  D --> GD{collection_validation gate}
+  GD -->|fail| C
+  GD --> E[_data_fetch]
+  E --> GE{data_fetch gate}
+  GE -->|fail| C
+  GE --> F[_data_validation_common + _data_validation]
+  F --> GF{data_validation gate}
+  GF -->|fail| C
+  GF --> G[_execution_context_prepare_common + _execution_context_prepare]
+  G --> GG{data_preparation gate}
+  GG -->|fail| C
+  GG --> H{{for each strategy in external_index}}
+  H --> I[_strategy_create_plan]
+  I --> J[_apply_policy_constraints_to_plan]
+  J --> K[_strategy_validate_plan_common + _strategy_validate_plan]
+  K --> GK{strategy_optimization gate}
+  GK -->|fail/reject| H
+  GK --> L[_strategy_run -> _strategy_evaluation -> evaluator.evaluate]
+  L --> M[_strategy_validate_results_common + _strategy_validate_results]
+  M --> GM{strategy_validation gate}
+  GM -->|reject| H
+  GM --> N[_build_result_record + _result_store_insert]
   N --> H
   H --> C
-  C --> O[Return best results]
+  C --> Z([return list[BestResult]])
 ```
 
 ## Continuity Score Calendar Behavior
