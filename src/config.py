@@ -192,6 +192,71 @@ def normalize_validation_defaults(cfg: Config) -> Config:
     return cfg
 
 
+def require_mapping(raw: Any, prefix: str) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid `{prefix}`: expected a mapping")
+    return cast(dict[str, Any], raw)
+
+
+def require_fields(raw: dict[str, Any], prefix: str, required_fields: tuple[str, ...]) -> None:
+    missing_fields = [field for field in required_fields if raw.get(field) is None]
+    if missing_fields:
+        raise ValueError(
+            f"Invalid `{prefix}`: missing required field(s): {', '.join(missing_fields)}"
+        )
+
+
+def parse_optional_int(
+    raw: dict[str, Any],
+    prefix: str,
+    key: str,
+    *,
+    min_value: int | None = None,
+    max_value: int | None = None,
+) -> int | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    parsed = int(value)
+    if min_value is not None and parsed < min_value:
+        raise ValueError(f"`{prefix}.{key}` must be >= {min_value}")
+    if max_value is not None and parsed > max_value:
+        raise ValueError(f"`{prefix}.{key}` must be <= {max_value}")
+    return parsed
+
+
+def parse_optional_float(
+    raw: dict[str, Any],
+    prefix: str,
+    key: str,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    parsed = float(value)
+    if min_value is not None and parsed < min_value:
+        raise ValueError(f"`{prefix}.{key}` must be >= {min_value}")
+    if max_value is not None and parsed > max_value:
+        raise ValueError(f"`{prefix}.{key}` must be <= {max_value}")
+    return parsed
+
+
+def parse_optional_str(
+    raw: dict[str, Any],
+    key: str,
+    *,
+    normalize: bool = True,
+) -> str | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    parsed = str(value).strip()
+    return parsed.lower() if normalize else parsed
+
+
 def _parse_on_fail(
     raw_value: Any,
     field_path: str,
@@ -225,48 +290,27 @@ def _parse_validation_data_quality_thresholds(
 ) -> ValidationDataQualityConfig | None:
     if raw is None:
         return None
-    if not isinstance(raw, dict):
-        raise ValueError(f"Invalid `{prefix}`: expected a mapping")
+    parsed_raw = require_mapping(raw, prefix)
 
     on_fail = _parse_on_fail(
-        raw.get("on_fail"),
+        parsed_raw.get("on_fail"),
         f"{prefix}.on_fail",
         {"skip_optimization", "skip_job", "skip_collection"},
     )
-    calendar_cfg = _parse_validation_calendar(raw.get("calendar"), f"{prefix}.calendar")
-
-    def _as_optional_int(value: Any, field: str) -> int | None:
-        if value is None:
-            return None
-        parsed = int(value)
-        if parsed < 0:
-            raise ValueError(f"`{prefix}.{field}` must be >= 0")
-        return parsed
-
-    def _as_optional_float(value: Any, field: str) -> float | None:
-        if value is None:
-            return None
-        parsed = float(value)
-        if parsed < 0:
-            raise ValueError(f"`{prefix}.{field}` must be >= 0")
-        return parsed
+    calendar_cfg = _parse_validation_calendar(parsed_raw.get("calendar"), f"{prefix}.calendar")
 
     cfg = ValidationDataQualityConfig(
-        min_data_points=_as_optional_int(raw.get("min_data_points"), "min_data_points"),
-        max_missing_bar_pct=_as_optional_float(raw.get("max_missing_bar_pct"), "max_missing_bar_pct"),
-        max_kurtosis=_as_optional_float(raw.get("max_kurtosis"), "max_kurtosis"),
-        max_outlier_pct=_as_optional_float(raw.get("max_outlier_pct"), "max_outlier_pct"),
-        outlier_method=(
-            str(raw.get("outlier_method")).strip().lower()
-            if raw.get("outlier_method") is not None
-            else None
+        min_data_points=parse_optional_int(parsed_raw, prefix, "min_data_points", min_value=0),
+        max_missing_bar_pct=parse_optional_float(
+            parsed_raw, prefix, "max_missing_bar_pct", min_value=0
         ),
-        outlier_zscore_threshold=_as_optional_float(
-            raw.get("outlier_zscore_threshold"), "outlier_zscore_threshold"
+        max_kurtosis=parse_optional_float(parsed_raw, prefix, "max_kurtosis", min_value=0),
+        max_outlier_pct=parse_optional_float(parsed_raw, prefix, "max_outlier_pct", min_value=0),
+        outlier_method=parse_optional_str(parsed_raw, "outlier_method"),
+        outlier_zscore_threshold=parse_optional_float(
+            parsed_raw, prefix, "outlier_zscore_threshold", min_value=0
         ),
-        min_continuity_score=_as_optional_float(
-            raw.get("min_continuity_score"), "min_continuity_score"
-        ),
+        min_continuity_score=parse_optional_float(parsed_raw, prefix, "min_continuity_score", min_value=0),
         on_fail=on_fail,
         calendar=calendar_cfg,
     )
@@ -289,32 +333,30 @@ def _parse_validation_data_quality_thresholds(
 def _parse_validation_calendar(raw: Any, prefix: str) -> ValidationCalendarConfig | None:
     if raw is None:
         return None
-    if not isinstance(raw, dict):
-        raise ValueError(f"Invalid `{prefix}`: expected a mapping")
-    kind = str(raw.get("kind", "auto")).strip().lower()
+    parsed_raw = require_mapping(raw, prefix)
+    kind = str(parsed_raw.get("kind", "auto")).strip().lower()
     allowed_kinds = {"auto", "crypto_24_7", "weekday", "exchange"}
     if kind not in allowed_kinds:
         raise ValueError(
             f"Invalid `{prefix}.kind`: expected one of {sorted(allowed_kinds)}, got '{kind}'"
         )
-    exchange = raw.get("exchange")
+    exchange = parsed_raw.get("exchange")
     return ValidationCalendarConfig(
         kind=kind,
         exchange=str(exchange).strip() if exchange is not None else None,
-        timezone=_parse_utc_timezone(raw.get("timezone"), f"{prefix}.timezone"),
+        timezone=_parse_utc_timezone(parsed_raw.get("timezone"), f"{prefix}.timezone"),
     )
 
 
 def _parse_validation(raw: Any, prefix: str) -> ValidationConfig | None:
     if raw is None:
         return None
-    if not isinstance(raw, dict):
-        raise ValueError(f"Invalid `{prefix}`: expected a mapping")
+    parsed_raw = require_mapping(raw, prefix)
 
-    data_quality_raw = raw.get("data_quality")
+    data_quality_raw = parsed_raw.get("data_quality")
     if data_quality_raw is not None and not isinstance(data_quality_raw, dict):
         raise ValueError(f"Invalid `{prefix}.data_quality`: expected a mapping")
-    optimization_raw = raw.get("optimization")
+    optimization_raw = parsed_raw.get("optimization")
     if optimization_raw is not None and not isinstance(optimization_raw, dict):
         raise ValueError(f"Invalid `{prefix}.optimization`: expected a mapping")
 
@@ -337,35 +379,20 @@ def _parse_validation(raw: Any, prefix: str) -> ValidationConfig | None:
 def _parse_optimization_policy(raw: Any, prefix: str) -> OptimizationPolicyConfig | None:
     if raw is None:
         return None
-    if not isinstance(raw, dict):
-        raise ValueError(f"Invalid `{prefix}`: expected a mapping")
-
-    required_fields = ("on_fail", "min_bars", "dof_multiplier")
-    missing_fields = [field for field in required_fields if raw.get(field) is None]
-    if missing_fields:
-        raise ValueError(
-            f"Invalid `{prefix}`: missing required field(s): {', '.join(missing_fields)}"
-        )
+    parsed_raw = require_mapping(raw, prefix)
+    require_fields(parsed_raw, prefix, ("on_fail", "min_bars", "dof_multiplier"))
 
     on_fail = cast(
         str,
         _parse_on_fail(
-            raw.get("on_fail"),
+            parsed_raw.get("on_fail"),
             f"{prefix}.on_fail",
             {"baseline_only", "skip_job"},
         ),
     )
 
-    def _as_optional_int(value: Any, field: str) -> int | None:
-        if value is None:
-            return None
-        parsed = int(value)
-        if parsed < 0:
-            raise ValueError(f"`{prefix}.{field}` must be >= 0")
-        return parsed
-
-    min_bars = _as_optional_int(raw.get("min_bars"), "min_bars")
-    dof_multiplier = _as_optional_int(raw.get("dof_multiplier"), "dof_multiplier")
+    min_bars = parse_optional_int(parsed_raw, prefix, "min_bars", min_value=0)
+    dof_multiplier = parse_optional_int(parsed_raw, prefix, "dof_multiplier", min_value=0)
     if min_bars is None or dof_multiplier is None:
         raise ValueError(
             f"Invalid `{prefix}`: `min_bars` and `dof_multiplier` are required"
