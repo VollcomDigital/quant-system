@@ -1126,7 +1126,7 @@ class BacktestRunner:
                 calendar_kind=calendar_kind,
                 exchange_calendar=calendar_exchange,
             )
-        except ValueError as exc:
+        except Exception as exc:
             return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
         reliability_reasons = self._collect_reliability_reasons(
             raw_df=fetched_data.raw_df,
@@ -1210,7 +1210,7 @@ class BacktestRunner:
             )
         return calendar_kind, calendar_exchange
 
-    def _resolve_optimization_policy(self) -> tuple[str, int, int] | None:
+    def _resolve_optimization_policy(self) -> tuple[str, int, int]:
         # Keep legacy feasibility guard defaults when `validation.optimization` is omitted.
         validation_cfg = getattr(self.cfg, "validation", None)
         policy = getattr(validation_cfg, "optimization", None)
@@ -1514,15 +1514,6 @@ class BacktestRunner:
                 stage="strategy_optimization",
             )
         policy = self._resolve_optimization_policy()
-        if policy is None:
-            self._reset_plan_optimization_state(plan)
-            return GateDecision(
-                passed=True,
-                action="continue",
-                reasons=[],
-                stage="strategy_optimization",
-            )
-
         optimization_on_fail, min_bars_cfg, dof_multiplier = policy
         bars_available = len(validated_data.raw_df)
         insufficient_bars, min_bars_required = self._insufficient_bars_for_optimization(

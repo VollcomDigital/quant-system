@@ -916,6 +916,30 @@ def test_run_all_skips_empty_frames(tmp_path, monkeypatch):
     assert failure["error"] == "empty_dataframe"
 
 
+def test_run_all_data_validation_handles_non_value_error_continuity_failure(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    def _raise_type_error(
+        _cls,
+        _df,
+        _timeframe,
+        **_kwargs,
+    ):
+        raise TypeError("bad_index_type")
+
+    monkeypatch.setattr(BacktestRunner, "compute_continuity_score", classmethod(_raise_type_error))
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert runner.failures
+    failure = runner.failures[0]
+    assert failure["stage"] == "data_validation"
+    assert "bad_index_type" in failure["error"]
+
+
 def _make_ohlcv(periods: int) -> pd.DataFrame:
     dates = pd.date_range("2024-01-01", periods=periods, freq="D")
     return pd.DataFrame(
