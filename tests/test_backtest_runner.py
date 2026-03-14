@@ -13,6 +13,7 @@ from src.config import (
     Config,
     OptimizationPolicyConfig,
     StrategyConfig,
+    ValidationCalendarConfig,
     ValidationConfig,
     ValidationDataQualityConfig,
 )
@@ -365,6 +366,27 @@ def test_compute_continuity_score_exchange_calendar_ignores_market_holiday():
     assert exchange_continuity["missing_bars"] == 0
     assert weekday_continuity["score"] < 1.0
     assert exchange_continuity["score"] == pytest.approx(1.0)
+
+
+def test_data_validation_calendar_timezone_changes_weekday_continuity(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            calendar=ValidationCalendarConfig(kind="weekday", timezone="UTC-05:00")
+        )
+    )
+    idx = pd.to_datetime(["2024-01-06 00:30:00+00:00", "2024-01-09 00:30:00+00:00"], utc=True)
+    df = pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
+    context = SimpleNamespace(
+        job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
+        fetched_data=SimpleNamespace(raw_df=df),
+    )
+
+    decision, validated_data = runner._data_validation_common(context)
+
+    assert decision.passed
+    assert validated_data is not None
+    assert validated_data.continuity["missing_bars"] == 0
 
 
 def test_sample_series_preserves_last_point():
