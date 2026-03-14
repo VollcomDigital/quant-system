@@ -136,7 +136,7 @@ def test_run_command_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     export_calls: dict[str, int] = {}
 
     class DummyRunner:
-        def __init__(self, cfg, strategies_root, run_id):
+        def __init__(self, cfg, strategies_root, run_id, **kwargs):
             self.cfg = cfg
             self.strategies_root = strategies_root
             self.run_id = run_id
@@ -191,11 +191,54 @@ def test_run_command_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     assert export_calls["markdown"] == 1
 
 
+def test_run_command_evaluation_mode_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    (tmp_path / "strategies").mkdir()
+    seen: dict[str, str] = {}
+
+    class DummyRunner:
+        def __init__(self, cfg, strategies_root, run_id, **kwargs):
+            self.external_index = {"stratA": object()}
+            self.results_cache = object()
+            self.failures = []
+            seen["mode"] = cfg.evaluation_mode
+
+        def run_all(self, only_cached: bool = False):
+            return [
+                SimpleNamespace(
+                    collection="test",
+                    symbol="AAPL",
+                    timeframe="1d",
+                    strategy="stratA",
+                    params={"x": 1},
+                    metric_name="sharpe",
+                    metric_value=1.5,
+                    stats={"sharpe": 1.5},
+                )
+            ]
+
+    monkeypatch.setattr("src.main.BacktestRunner", DummyRunner)
+    _patch_common(monkeypatch, {})
+    _patch_manifest(monkeypatch)
+    monkeypatch.setattr("src.main.notify_all", lambda *_args, **_kwargs: [])
+
+    args = _run_args(tmp_path) + ["--evaluation-mode", "backtest"]
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0
+    assert seen["mode"] == "backtest"
+
+
+def test_run_command_rejects_invalid_evaluation_mode(tmp_path: Path):
+    args = _run_args(tmp_path) + ["--evaluation-mode", "invalid"]
+    result = runner.invoke(app, args)
+    assert result.exit_code != 0
+    assert "evaluation_mode must be backtest or walk_forward" in result.output
+
+
 def test_run_command_no_strategies(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (tmp_path / "strategies").mkdir()
 
     class EmptyRunner:
-        def __init__(self, cfg, strategies_root, run_id):
+        def __init__(self, cfg, strategies_root, run_id, **kwargs):
             self.external_index = {}
             self.results_cache = object()
             self.failures = []
@@ -213,7 +256,7 @@ def test_run_command_no_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     (tmp_path / "strategies").mkdir()
 
     class NoResultsRunner:
-        def __init__(self, cfg, strategies_root, run_id):
+        def __init__(self, cfg, strategies_root, run_id, **kwargs):
             self.external_index = {"stratA": object()}
             self.results_cache = object()
             self.failures = []

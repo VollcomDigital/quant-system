@@ -10,6 +10,25 @@ slippage: 0.0005
 risk_free_rate: 0.0
 cache_dir: .cache/data
 
+# Optional validation policy
+validation:
+  # You can keep only `data_quality`, only `optimization`, or both.
+  data_quality:
+    calendar:
+      kind: auto  # auto | crypto_24_7 | weekday | exchange
+      # exchange: XNYS
+      # timezone: UTC-05:00
+    min_data_points: 1000
+    min_continuity_score: 0.98
+    max_missing_bar_pct: 5.0  # max percent of missing bars vs expected timeline
+    max_kurtosis: 10.0  # max allowed kurtosis of close-to-close returns
+    on_fail: skip_job  # skip_optimization | skip_job | skip_collection
+  # Optional strategy-level optimization feasibility policy.
+  optimization:
+    on_fail: baseline_only  # baseline_only | skip_job
+    min_bars: 2000
+    dof_multiplier: 100
+
 collections:
   # Stocks (large-cap growth)
   - name: stocks_large_cap_growth
@@ -40,6 +59,14 @@ collections:
     symbols: ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT"]
     fees: 0.0006  # approx Bybit/Binance taker
     slippage: 0.0005
+    # Optional per-collection validation override (falls back to global settings above).
+    # validation:
+    #   data_quality:
+    #     min_data_points: 1500
+    #     min_continuity_score: 0.99
+    #     max_missing_bar_pct: 2.0
+    #     max_kurtosis: 8.0
+    #     on_fail: skip_optimization
 
 # Choose timeframes compatible across sources for full history
 timeframes: ["1d"]
