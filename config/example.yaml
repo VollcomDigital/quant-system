@@ -22,9 +22,10 @@ validation:
     min_continuity_score: 0.98
     max_missing_bar_pct: 5.0  # max percent of missing bars vs expected timeline
     max_kurtosis: 10.0  # max allowed kurtosis of close-to-close returns
-    max_outlier_pct: 2.0  # max percent of return bars flagged as outliers
-    outlier_method: modified_zscore  # zscore | modified_zscore
-    outlier_zscore_threshold: 3.5  # zscore cutoff (method default: zscore=3.0, modified_zscore=3.5)
+    outlier_detection:
+      max_outlier_pct: 2.0  # max percent of return bars flagged as outliers
+      method: modified_zscore  # zscore | modified_zscore
+      zscore_threshold: 3.5  # method default: zscore=3.0, modified_zscore=3.5
     on_fail: skip_job  # skip_optimization | skip_job | skip_collection
   # Optional strategy-level optimization feasibility policy.
   optimization:
@@ -69,9 +70,10 @@ collections:
     #     min_continuity_score: 0.99
     #     max_missing_bar_pct: 2.0
     #     max_kurtosis: 8.0
-    #     max_outlier_pct: 1.0
-    #     outlier_method: modified_zscore
-    #     outlier_zscore_threshold: 3.5
+    #     outlier_detection:
+    #       max_outlier_pct: 1.0
+    #       method: modified_zscore
+    #       zscore_threshold: 3.5
     #     on_fail: skip_optimization
 
 # Choose timeframes compatible across sources for full history

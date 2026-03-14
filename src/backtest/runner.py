@@ -13,7 +13,12 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
-from ..config import CollectionConfig, Config, normalize_validation_defaults
+from ..config import (
+    CollectionConfig,
+    Config,
+    ValidationOutlierDetectionConfig,
+    normalize_validation_defaults,
+)
 from ..data.alpaca_source import AlpacaSource
 from ..data.alphavantage_source import AlphaVantageSource
 from ..data.base import DataSource
@@ -1114,9 +1119,7 @@ class BacktestRunner:
             min_continuity_score,
             max_missing_bar_pct,
             max_kurtosis,
-            max_outlier_pct,
-            outlier_method,
-            outlier_zscore_threshold,
+            outlier_detection,
             calendar_kind,
             calendar_exchange,
         ) = (
@@ -1138,9 +1141,7 @@ class BacktestRunner:
             min_continuity_score=min_continuity_score,
             max_missing_bar_pct=max_missing_bar_pct,
             max_kurtosis=max_kurtosis,
-            max_outlier_pct=max_outlier_pct,
-            outlier_method=outlier_method,
-            outlier_zscore_threshold=outlier_zscore_threshold,
+            outlier_detection=outlier_detection,
         )
         if not reliability_reasons:
             decision = GateDecision(True, "continue", [], "data_validation")
@@ -1167,9 +1168,7 @@ class BacktestRunner:
         float | None,
         float | None,
         float | None,
-        float | None,
-        str | None,
-        float | None,
+        ValidationOutlierDetectionConfig | None,
         str,
         str | None,
     ]:
@@ -1189,14 +1188,8 @@ class BacktestRunner:
             collection_dq, global_dq, "max_missing_bar_pct"
         )
         max_kurtosis = self._resolve_data_quality_value(collection_dq, global_dq, "max_kurtosis")
-        max_outlier_pct = self._resolve_data_quality_value(collection_dq, global_dq, "max_outlier_pct")
-        outlier_method = str(
-            self._resolve_data_quality_value(collection_dq, global_dq, "outlier_method")
-        ).strip().lower()
-        outlier_zscore_threshold = float(
-            self._resolve_data_quality_value(
-            collection_dq, global_dq, "outlier_zscore_threshold"
-            )
+        outlier_detection = self._resolve_data_quality_value(
+            collection_dq, global_dq, "outlier_detection"
         )
         calendar_cfg = self._resolve_data_quality_value(collection_dq, global_dq, "calendar")
         calendar_kind, calendar_exchange = self._resolve_calendar_policy(calendar_cfg, collection.source)
@@ -1206,9 +1199,7 @@ class BacktestRunner:
             min_continuity_score,
             max_missing_bar_pct,
             max_kurtosis,
-            max_outlier_pct,
-            outlier_method,
-            outlier_zscore_threshold,
+            outlier_detection,
             calendar_kind,
             calendar_exchange,
         )
@@ -1332,9 +1323,7 @@ class BacktestRunner:
         min_continuity_score: float | None,
         max_missing_bar_pct: float | None,
         max_kurtosis: float | None,
-        max_outlier_pct: float | None,
-        outlier_method: str | None,
-        outlier_zscore_threshold: float | None,
+        outlier_detection: ValidationOutlierDetectionConfig | None,
     ) -> list[str]:
         reasons: list[str] = []
         reason_checks = (
@@ -1344,9 +1333,7 @@ class BacktestRunner:
             BacktestRunner._max_kurtosis_reason(raw_df, max_kurtosis),
             BacktestRunner._outlier_pct_reason(
                 raw_df=raw_df,
-                max_outlier_pct=max_outlier_pct,
-                outlier_method=outlier_method,
-                outlier_zscore_threshold=outlier_zscore_threshold,
+                outlier_detection=outlier_detection,
             ),
         )
         for reason in reason_checks:
@@ -1359,11 +1346,9 @@ class BacktestRunner:
         cls,
         *,
         raw_df: pd.DataFrame,
-        max_outlier_pct: float | None,
-        outlier_method: str | None,
-        outlier_zscore_threshold: float | None,
+        outlier_detection: ValidationOutlierDetectionConfig | None,
     ) -> str | None:
-        if max_outlier_pct is None:
+        if outlier_detection is None:
             return None
         close_col = cls._resolve_close_column(raw_df)
         if close_col is None:
@@ -1371,15 +1356,17 @@ class BacktestRunner:
         returns = raw_df[close_col].astype(float).pct_change().replace([np.inf, -np.inf], np.nan).dropna()
         if returns.empty:
             return None
-        method = str(outlier_method).strip().lower()
-        threshold = float(outlier_zscore_threshold)
+        method = outlier_detection.method
+        threshold = outlier_detection.zscore_threshold
         outlier_mask, issue = cls._compute_outlier_mask(returns=returns, method=method, threshold=threshold)
         if issue is not None:
             return f"outlier_check_indeterminate(method={method}, reason={issue})"
         if outlier_mask is None:
             return None
         outlier_pct = float(outlier_mask.mean() * 100.0)
-        allowed = float(max_outlier_pct)
+        allowed = outlier_detection.max_outlier_pct
+        if allowed is None:
+            return None
         if outlier_pct > allowed:
             return (
                 "max_outlier_pct_exceeded("

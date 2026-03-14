@@ -55,12 +55,17 @@ class ValidationDataQualityConfig:
     min_data_points: int | None = None
     max_missing_bar_pct: float | None = None
     max_kurtosis: float | None = None
-    max_outlier_pct: float | None = None
-    outlier_method: str | None = None
-    outlier_zscore_threshold: float | None = None
+    outlier_detection: "ValidationOutlierDetectionConfig | None" = None
     min_continuity_score: float | None = None
     on_fail: str | None = None
     calendar: ValidationCalendarConfig | None = None
+
+
+@dataclass
+class ValidationOutlierDetectionConfig:
+    max_outlier_pct: float | None = None
+    method: str = "modified_zscore"
+    zscore_threshold: float = 3.5
 
 
 @dataclass
@@ -144,27 +149,16 @@ def _merge_data_quality_config(
         else (calendar_base.timezone if calendar_base is not None else None)
     )
 
-    outlier_method = _pick("outlier_method")
-    method = (
-        str(outlier_method).strip().lower()
-        if outlier_method is not None
-        else DEFAULT_OUTLIER_METHOD
-    )
-    outlier_threshold = _pick("outlier_zscore_threshold")
-    threshold = (
-        float(outlier_threshold)
-        if outlier_threshold is not None
-        else _default_outlier_threshold(method)
-    )
+    outlier_base = base.outlier_detection if base is not None else None
+    outlier_override = override.outlier_detection if override is not None else None
+    outlier_detection = _merge_outlier_detection_config(outlier_base, outlier_override)
 
     on_fail = _pick("on_fail")
     return ValidationDataQualityConfig(
         min_data_points=_pick("min_data_points"),
         max_missing_bar_pct=_pick("max_missing_bar_pct"),
         max_kurtosis=_pick("max_kurtosis"),
-        max_outlier_pct=_pick("max_outlier_pct"),
-        outlier_method=method,
-        outlier_zscore_threshold=threshold,
+        outlier_detection=outlier_detection,
         min_continuity_score=_pick("min_continuity_score"),
         on_fail=(str(on_fail).strip().lower() if on_fail is not None else DEFAULT_DATA_QUALITY_ON_FAIL),
         calendar=ValidationCalendarConfig(
@@ -172,6 +166,41 @@ def _merge_data_quality_config(
             exchange=calendar_exchange,
             timezone=calendar_timezone,
         ),
+    )
+
+
+def _merge_outlier_detection_config(
+    base: ValidationOutlierDetectionConfig | None,
+    override: ValidationOutlierDetectionConfig | None,
+) -> ValidationOutlierDetectionConfig | None:
+    if base is None and override is None:
+        return None
+
+    def _pick(field: str) -> Any:
+        if override is not None:
+            override_value = getattr(override, field)
+            if override_value is not None:
+                return override_value
+        if base is not None:
+            return getattr(base, field)
+        return None
+
+    max_outlier_pct = _pick("max_outlier_pct")
+    if max_outlier_pct is None:
+        raise ValueError(
+            "Invalid `validation.data_quality.outlier_detection`: missing required field(s): max_outlier_pct"
+        )
+    method = str(_pick("method") or DEFAULT_OUTLIER_METHOD).strip().lower()
+    threshold = _pick("zscore_threshold")
+    zscore_threshold = (
+        float(threshold)
+        if threshold is not None
+        else _default_outlier_threshold(method)
+    )
+    return ValidationOutlierDetectionConfig(
+        max_outlier_pct=float(max_outlier_pct),
+        method=method,
+        zscore_threshold=zscore_threshold,
     )
 
 
@@ -298,6 +327,9 @@ def _parse_validation_data_quality_thresholds(
         {"skip_optimization", "skip_job", "skip_collection"},
     )
     calendar_cfg = _parse_validation_calendar(parsed_raw.get("calendar"), f"{prefix}.calendar")
+    outlier_detection_cfg = _parse_outlier_detection(
+        parsed_raw.get("outlier_detection"), f"{prefix}.outlier_detection"
+    )
 
     cfg = ValidationDataQualityConfig(
         min_data_points=parse_optional_int(parsed_raw, prefix, "min_data_points", min_value=0),
@@ -305,29 +337,40 @@ def _parse_validation_data_quality_thresholds(
             parsed_raw, prefix, "max_missing_bar_pct", min_value=0
         ),
         max_kurtosis=parse_optional_float(parsed_raw, prefix, "max_kurtosis", min_value=0),
-        max_outlier_pct=parse_optional_float(parsed_raw, prefix, "max_outlier_pct", min_value=0),
-        outlier_method=parse_optional_str(parsed_raw, "outlier_method"),
-        outlier_zscore_threshold=parse_optional_float(
-            parsed_raw, prefix, "outlier_zscore_threshold", min_value=0
-        ),
+        outlier_detection=outlier_detection_cfg,
         min_continuity_score=parse_optional_float(parsed_raw, prefix, "min_continuity_score", min_value=0),
         on_fail=on_fail,
         calendar=calendar_cfg,
     )
     if cfg.min_continuity_score is not None and not 0.0 <= cfg.min_continuity_score <= 1.0:
         raise ValueError(f"`{prefix}.min_continuity_score` must be between 0 and 1")
-    if cfg.max_outlier_pct is not None and not 0.0 <= cfg.max_outlier_pct <= 100.0:
-        raise ValueError(f"`{prefix}.max_outlier_pct` must be between 0 and 100")
-    if cfg.outlier_method is not None and cfg.outlier_method not in {
-        "zscore",
-        "modified_zscore",
-    }:
-        raise ValueError(
-            f"Invalid `{prefix}.outlier_method`: expected one of ['modified_zscore', 'zscore']"
-        )
-    if cfg.outlier_zscore_threshold is not None and cfg.outlier_zscore_threshold <= 0:
-        raise ValueError(f"`{prefix}.outlier_zscore_threshold` must be > 0")
     return cfg
+
+
+def _parse_outlier_detection(
+    raw: Any, prefix: str
+) -> ValidationOutlierDetectionConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    max_outlier_pct = parse_optional_float(parsed_raw, prefix, "max_outlier_pct", min_value=0, max_value=100)
+    method = parse_optional_str(parsed_raw, "method")
+    if method is not None and method not in {"zscore", "modified_zscore"}:
+        raise ValueError(
+            f"Invalid `{prefix}.method`: expected one of ['modified_zscore', 'zscore']"
+        )
+    zscore_threshold = parse_optional_float(parsed_raw, prefix, "zscore_threshold", min_value=0)
+    if zscore_threshold is not None and zscore_threshold <= 0:
+        raise ValueError(f"`{prefix}.zscore_threshold` must be > 0")
+    return ValidationOutlierDetectionConfig(
+        max_outlier_pct=max_outlier_pct,
+        method=method or DEFAULT_OUTLIER_METHOD,
+        zscore_threshold=(
+            zscore_threshold
+            if zscore_threshold is not None
+            else _default_outlier_threshold(method or DEFAULT_OUTLIER_METHOD)
+        ),
+    )
 
 
 def _parse_validation_calendar(raw: Any, prefix: str) -> ValidationCalendarConfig | None:
