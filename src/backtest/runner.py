@@ -13,7 +13,7 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
-from ..config import CollectionConfig, Config
+from ..config import CollectionConfig, Config, normalize_validation_defaults
 from ..data.alpaca_source import AlpacaSource
 from ..data.alphavantage_source import AlphaVantageSource
 from ..data.base import DataSource
@@ -175,7 +175,7 @@ class BacktestRunner:
         run_id: str | None = None,
         evaluation_mode: str | None = None,
     ):
-        self.cfg = cfg
+        self.cfg = normalize_validation_defaults(cfg)
         self.strategies_root = strategies_root
         self.external_index = discover_external_strategies(strategies_root)
         self.results_cache = ResultsCache(Path(self.cfg.cache_dir).parent / "results")
@@ -1114,6 +1114,9 @@ class BacktestRunner:
             min_continuity_score,
             max_missing_bar_pct,
             max_kurtosis,
+            max_outlier_pct,
+            outlier_method,
+            outlier_zscore_threshold,
             calendar_kind,
             calendar_exchange,
         ) = (
@@ -1135,6 +1138,9 @@ class BacktestRunner:
             min_continuity_score=min_continuity_score,
             max_missing_bar_pct=max_missing_bar_pct,
             max_kurtosis=max_kurtosis,
+            max_outlier_pct=max_outlier_pct,
+            outlier_method=outlier_method,
+            outlier_zscore_threshold=outlier_zscore_threshold,
         )
         if not reliability_reasons:
             decision = GateDecision(True, "continue", [], "data_validation")
@@ -1155,14 +1161,26 @@ class BacktestRunner:
 
     def _resolve_data_quality_policy(
         self, collection: CollectionConfig
-    ) -> tuple[str, int | None, float | None, float | None, float | None, str, str | None]:
+    ) -> tuple[
+        str,
+        int | None,
+        float | None,
+        float | None,
+        float | None,
+        float | None,
+        str | None,
+        float | None,
+        str,
+        str | None,
+    ]:
         global_validation = getattr(self.cfg, "validation", None)
         collection_validation = getattr(collection, "validation", None)
         global_dq = getattr(global_validation, "data_quality", None)
         collection_dq = getattr(collection_validation, "data_quality", None)
         # Collection override takes precedence over global validation defaults.
-        on_fail = self._resolve_data_quality_value(collection_dq, global_dq, "on_fail")
-        on_fail = str(on_fail).strip().lower() if on_fail is not None else "skip_optimization"
+        on_fail = str(
+            self._resolve_data_quality_value(collection_dq, global_dq, "on_fail")
+        ).strip().lower()
         min_data_points = self._resolve_data_quality_value(collection_dq, global_dq, "min_data_points")
         min_continuity_score = self._resolve_data_quality_value(
             collection_dq, global_dq, "min_continuity_score"
@@ -1171,6 +1189,15 @@ class BacktestRunner:
             collection_dq, global_dq, "max_missing_bar_pct"
         )
         max_kurtosis = self._resolve_data_quality_value(collection_dq, global_dq, "max_kurtosis")
+        max_outlier_pct = self._resolve_data_quality_value(collection_dq, global_dq, "max_outlier_pct")
+        outlier_method = str(
+            self._resolve_data_quality_value(collection_dq, global_dq, "outlier_method")
+        ).strip().lower()
+        outlier_zscore_threshold = float(
+            self._resolve_data_quality_value(
+            collection_dq, global_dq, "outlier_zscore_threshold"
+            )
+        )
         calendar_cfg = self._resolve_data_quality_value(collection_dq, global_dq, "calendar")
         calendar_kind, calendar_exchange = self._resolve_calendar_policy(calendar_cfg, collection.source)
         return (
@@ -1179,6 +1206,9 @@ class BacktestRunner:
             min_continuity_score,
             max_missing_bar_pct,
             max_kurtosis,
+            max_outlier_pct,
+            outlier_method,
+            outlier_zscore_threshold,
             calendar_kind,
             calendar_exchange,
         )
@@ -1198,12 +1228,13 @@ class BacktestRunner:
         calendar_cfg: Any,
         source: str,
     ) -> tuple[str, str | None]:
-        calendar_kind = str(getattr(calendar_cfg, "kind", "auto")).strip().lower()
+        if calendar_cfg is None:
+            raise ValueError("validation.data_quality.calendar must be configured")
+        calendar_kind = str(getattr(calendar_cfg, "kind")).strip().lower()
         calendar_exchange = None
-        if calendar_cfg is not None:
-            exchange_value = getattr(calendar_cfg, "exchange", None)
-            if exchange_value is not None:
-                calendar_exchange = str(exchange_value).strip()
+        exchange_value = getattr(calendar_cfg, "exchange", None)
+        if exchange_value is not None:
+            calendar_exchange = str(exchange_value).strip()
         if calendar_kind == "auto":
             calendar_kind = (
                 "crypto_24_7" if source.strip().lower() in self._CRYPTO_SOURCE_NAMES else "weekday"
@@ -1301,6 +1332,9 @@ class BacktestRunner:
         min_continuity_score: float | None,
         max_missing_bar_pct: float | None,
         max_kurtosis: float | None,
+        max_outlier_pct: float | None,
+        outlier_method: str | None,
+        outlier_zscore_threshold: float | None,
     ) -> list[str]:
         reasons: list[str] = []
         reason_checks = (
@@ -1308,11 +1342,73 @@ class BacktestRunner:
             BacktestRunner._min_data_points_reason(raw_df, min_data_points),
             BacktestRunner._missing_bar_pct_reason(continuity, max_missing_bar_pct),
             BacktestRunner._max_kurtosis_reason(raw_df, max_kurtosis),
+            BacktestRunner._outlier_pct_reason(
+                raw_df=raw_df,
+                max_outlier_pct=max_outlier_pct,
+                outlier_method=outlier_method,
+                outlier_zscore_threshold=outlier_zscore_threshold,
+            ),
         )
         for reason in reason_checks:
             if reason is not None:
                 reasons.append(reason)
         return reasons
+
+    @classmethod
+    def _outlier_pct_reason(
+        cls,
+        *,
+        raw_df: pd.DataFrame,
+        max_outlier_pct: float | None,
+        outlier_method: str | None,
+        outlier_zscore_threshold: float | None,
+    ) -> str | None:
+        if max_outlier_pct is None:
+            return None
+        close_col = cls._resolve_close_column(raw_df)
+        if close_col is None:
+            return None
+        returns = raw_df[close_col].astype(float).pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+        if returns.empty:
+            return None
+        method = str(outlier_method).strip().lower()
+        threshold = float(outlier_zscore_threshold)
+        outlier_mask, issue = cls._compute_outlier_mask(returns=returns, method=method, threshold=threshold)
+        if issue is not None:
+            return f"outlier_check_indeterminate(method={method}, reason={issue})"
+        if outlier_mask is None:
+            return None
+        outlier_pct = float(outlier_mask.mean() * 100.0)
+        allowed = float(max_outlier_pct)
+        if outlier_pct > allowed:
+            return (
+                "max_outlier_pct_exceeded("
+                f"method={method}, threshold={threshold}, max_allowed={allowed}, available={outlier_pct})"
+            )
+        return None
+
+    @staticmethod
+    def _compute_outlier_mask(
+        *,
+        returns: pd.Series,
+        method: str,
+        threshold: float,
+    ) -> tuple[np.ndarray | None, str | None]:
+        values = returns.to_numpy(dtype=float)
+        if values.size == 0:
+            return None, "empty_returns"
+        if method == "zscore":
+            mean_val = float(np.mean(values))
+            std_val = float(np.std(values))
+            if std_val <= 0:
+                return None, "std_zero"
+            return np.abs((values - mean_val) / std_val) > threshold, None
+        median_val = float(np.median(values))
+        mad = float(np.median(np.abs(values - median_val)))
+        if mad <= 0:
+            return None, "mad_zero"
+        modified_z = 0.6745 * (values - median_val) / mad
+        return np.abs(modified_z) > threshold, None
 
     @staticmethod
     def _data_validation_backtest(_context: ValidationContext) -> GateDecision:
@@ -1882,6 +1978,7 @@ class BacktestRunner:
         self._cache_write_failures = 0
         self._result_store_write_failures = 0
         self._evaluation_cache_write_failures = 0
+        self.cfg = normalize_validation_defaults(self.cfg)
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
         )

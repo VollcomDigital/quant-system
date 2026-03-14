@@ -55,6 +55,9 @@ class ValidationDataQualityConfig:
     min_data_points: int | None = None
     max_missing_bar_pct: float | None = None
     max_kurtosis: float | None = None
+    max_outlier_pct: float | None = None
+    outlier_method: str | None = None
+    outlier_zscore_threshold: float | None = None
     min_continuity_score: float | None = None
     on_fail: str | None = None
     calendar: ValidationCalendarConfig | None = None
@@ -93,6 +96,100 @@ class Config:
     evaluation_mode: str = "backtest"
     notifications: NotificationsConfig | None = None
     validation: ValidationConfig | None = None
+
+
+DEFAULT_DATA_QUALITY_ON_FAIL = "skip_optimization"
+DEFAULT_CALENDAR_KIND = "auto"
+DEFAULT_OUTLIER_METHOD = "modified_zscore"
+DEFAULT_ZSCORE_THRESHOLD = 3.0
+DEFAULT_MODIFIED_ZSCORE_THRESHOLD = 3.5
+
+
+def _default_outlier_threshold(method: str) -> float:
+    return DEFAULT_ZSCORE_THRESHOLD if method == "zscore" else DEFAULT_MODIFIED_ZSCORE_THRESHOLD
+
+
+def _merge_data_quality_config(
+    base: ValidationDataQualityConfig | None,
+    override: ValidationDataQualityConfig | None,
+) -> ValidationDataQualityConfig:
+    def _pick(field: str) -> Any:
+        if override is not None:
+            override_value = getattr(override, field)
+            if override_value is not None:
+                return override_value
+        if base is not None:
+            return getattr(base, field)
+        return None
+
+    calendar_base = base.calendar if base is not None else None
+    calendar_override = override.calendar if override is not None else None
+    calendar_kind = (
+        str(calendar_override.kind).strip().lower()
+        if calendar_override is not None and calendar_override.kind is not None
+        else (
+            str(calendar_base.kind).strip().lower()
+            if calendar_base is not None and calendar_base.kind is not None
+            else DEFAULT_CALENDAR_KIND
+        )
+    )
+    calendar_exchange = (
+        calendar_override.exchange
+        if calendar_override is not None and calendar_override.exchange is not None
+        else (calendar_base.exchange if calendar_base is not None else None)
+    )
+    calendar_timezone = (
+        calendar_override.timezone
+        if calendar_override is not None and calendar_override.timezone is not None
+        else (calendar_base.timezone if calendar_base is not None else None)
+    )
+
+    outlier_method = _pick("outlier_method")
+    method = (
+        str(outlier_method).strip().lower()
+        if outlier_method is not None
+        else DEFAULT_OUTLIER_METHOD
+    )
+    outlier_threshold = _pick("outlier_zscore_threshold")
+    threshold = (
+        float(outlier_threshold)
+        if outlier_threshold is not None
+        else _default_outlier_threshold(method)
+    )
+
+    on_fail = _pick("on_fail")
+    return ValidationDataQualityConfig(
+        min_data_points=_pick("min_data_points"),
+        max_missing_bar_pct=_pick("max_missing_bar_pct"),
+        max_kurtosis=_pick("max_kurtosis"),
+        max_outlier_pct=_pick("max_outlier_pct"),
+        outlier_method=method,
+        outlier_zscore_threshold=threshold,
+        min_continuity_score=_pick("min_continuity_score"),
+        on_fail=(str(on_fail).strip().lower() if on_fail is not None else DEFAULT_DATA_QUALITY_ON_FAIL),
+        calendar=ValidationCalendarConfig(
+            kind=calendar_kind,
+            exchange=calendar_exchange,
+            timezone=calendar_timezone,
+        ),
+    )
+
+
+def normalize_validation_defaults(cfg: Config) -> Config:
+    """Fill effective validation defaults in config so runtime can trust policy values."""
+    if cfg.validation is None:
+        cfg.validation = ValidationConfig()
+    cfg.validation.data_quality = _merge_data_quality_config(cfg.validation.data_quality, None)
+    global_dq = cfg.validation.data_quality
+
+    for collection in cfg.collections:
+        if collection.validation is None:
+            continue
+        collection_dq = collection.validation.data_quality
+        if collection_dq is None:
+            continue
+        collection.validation.data_quality = _merge_data_quality_config(global_dq, collection_dq)
+    return cfg
 
 
 def _parse_on_fail(
@@ -158,6 +255,15 @@ def _parse_validation_data_quality_thresholds(
         min_data_points=_as_optional_int(raw.get("min_data_points"), "min_data_points"),
         max_missing_bar_pct=_as_optional_float(raw.get("max_missing_bar_pct"), "max_missing_bar_pct"),
         max_kurtosis=_as_optional_float(raw.get("max_kurtosis"), "max_kurtosis"),
+        max_outlier_pct=_as_optional_float(raw.get("max_outlier_pct"), "max_outlier_pct"),
+        outlier_method=(
+            str(raw.get("outlier_method")).strip().lower()
+            if raw.get("outlier_method") is not None
+            else None
+        ),
+        outlier_zscore_threshold=_as_optional_float(
+            raw.get("outlier_zscore_threshold"), "outlier_zscore_threshold"
+        ),
         min_continuity_score=_as_optional_float(
             raw.get("min_continuity_score"), "min_continuity_score"
         ),
@@ -166,6 +272,17 @@ def _parse_validation_data_quality_thresholds(
     )
     if cfg.min_continuity_score is not None and not 0.0 <= cfg.min_continuity_score <= 1.0:
         raise ValueError(f"`{prefix}.min_continuity_score` must be between 0 and 1")
+    if cfg.max_outlier_pct is not None and not 0.0 <= cfg.max_outlier_pct <= 100.0:
+        raise ValueError(f"`{prefix}.max_outlier_pct` must be between 0 and 100")
+    if cfg.outlier_method is not None and cfg.outlier_method not in {
+        "zscore",
+        "modified_zscore",
+    }:
+        raise ValueError(
+            f"Invalid `{prefix}.outlier_method`: expected one of ['modified_zscore', 'zscore']"
+        )
+    if cfg.outlier_zscore_threshold is not None and cfg.outlier_zscore_threshold <= 0:
+        raise ValueError(f"`{prefix}.outlier_zscore_threshold` must be > 0")
     return cfg
 
 
@@ -351,4 +468,4 @@ def load_config(path: str | Path) -> Config:
         notifications=notifications_cfg,
         validation=validation_cfg,
     )
-    return cfg
+    return normalize_validation_defaults(cfg)

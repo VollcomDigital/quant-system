@@ -1050,6 +1050,87 @@ def test_run_all_reliability_skip_evaluation_on_max_kurtosis(tmp_path, monkeypat
     assert "max_kurtosis_exceeded" in failure["error"]
 
 
+def test_run_all_reliability_skip_evaluation_on_max_outlier_pct(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            max_outlier_pct=1.0,
+            outlier_method="modified_zscore",
+            outlier_zscore_threshold=3.5,
+            on_fail="skip_job",
+        ),
+    )
+
+    class _SpikySource:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            idx = pd.date_range("2024-01-01", periods=52, freq="D")
+            returns = [0.01, -0.008, 0.012, -0.009] * 12 + [0.70, 0.01, -0.008]
+            closes = [100.0]
+            for ret in returns:
+                closes.append(closes[-1] * (1.0 + ret))
+            return pd.DataFrame(
+                {
+                    "Open": closes,
+                    "High": closes,
+                    "Low": closes,
+                    "Close": closes,
+                    "Volume": [100] * len(closes),
+                },
+                index=idx,
+            )
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _SpikySource())
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert runner.failures
+    failure = runner.failures[0]
+    assert failure["stage"] == "data_validation"
+    assert "max_outlier_pct_exceeded" in failure["error"]
+
+
+def test_run_all_outlier_indeterminate_on_mad_zero(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            max_outlier_pct=1.0,
+            outlier_method="modified_zscore",
+            outlier_zscore_threshold=3.5,
+            on_fail="skip_job",
+        ),
+    )
+
+    class _FlatWithSingleSpikeSource:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            idx = pd.date_range("2024-01-01", periods=50, freq="D")
+            closes = [100.0] * 25 + [300.0] + [100.0] * 24
+            return pd.DataFrame(
+                {
+                    "Open": closes,
+                    "High": closes,
+                    "Low": closes,
+                    "Close": closes,
+                    "Volume": [100] * len(closes),
+                },
+                index=idx,
+            )
+
+    monkeypatch.setattr(
+        BacktestRunner, "_make_source", lambda self, col: _FlatWithSingleSpikeSource()
+    )
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert runner.failures
+    failure = runner.failures[0]
+    assert failure["stage"] == "data_validation"
+    assert "outlier_check_indeterminate(method=modified_zscore, reason=mad_zero)" in failure["error"]
+
+
 def test_run_all_fetches_once_per_symbol_timeframe_with_multiple_strategies(tmp_path, monkeypatch):
     class _AltStrategy(BaseStrategy):
         name = "alt"
@@ -1343,6 +1424,90 @@ def test_run_all_reliability_skip_collection_blocks_remaining_jobs_in_collection
     assert failure["collection"] == "bad_col"
     assert failure["stage"] == "data_validation"
     assert "min_data_points_not_met" in failure["error"]
+
+
+def test_run_all_outlier_skip_collection_blocks_remaining_jobs_in_collection(
+    tmp_path, monkeypatch
+):
+    collections = [
+        CollectionConfig(
+            name="bad_col",
+            source="custom",
+            symbols=["AAPL", "MSFT"],
+            fees=0.0004,
+            slippage=0.0003,
+        ),
+        CollectionConfig(
+            name="good_col",
+            source="custom",
+            symbols=["NVDA"],
+            fees=0.0004,
+            slippage=0.0003,
+        ),
+    ]
+    runner = _make_runner(tmp_path, monkeypatch, collections=collections)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            max_outlier_pct=1.0,
+            outlier_method="modified_zscore",
+            outlier_zscore_threshold=3.5,
+            on_fail="skip_collection",
+        ),
+    )
+
+    fetch_calls = {"bad_col": 0, "good_col": 0}
+
+    class _Source:
+        def __init__(self, collection_name: str):
+            self.collection_name = collection_name
+
+        def fetch(self, symbol, timeframe, only_cached=False):
+            fetch_calls[self.collection_name] += 1
+            if self.collection_name == "bad_col":
+                idx = pd.date_range("2024-01-01", periods=52, freq="D")
+                returns = [0.01, -0.008, 0.012, -0.009] * 12 + [0.70, 0.01, -0.008]
+                closes = [100.0]
+                for ret in returns:
+                    closes.append(closes[-1] * (1.0 + ret))
+                return pd.DataFrame(
+                    {
+                        "Open": closes,
+                        "High": closes,
+                        "Low": closes,
+                        "Close": closes,
+                        "Volume": [100] * len(closes),
+                    },
+                    index=idx,
+                )
+            idx = pd.date_range("2024-01-01", periods=53, freq="D")
+            returns = [0.01, -0.008, 0.012, -0.009] * 13
+            closes = [100.0]
+            for ret in returns:
+                closes.append(closes[-1] * (1.0 + ret))
+            return pd.DataFrame(
+                {
+                    "Open": closes,
+                    "High": closes,
+                    "Low": closes,
+                    "Close": closes,
+                    "Volume": [100] * len(closes),
+                },
+                index=idx,
+            )
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source(col.name))
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    assert fetch_calls["bad_col"] == 1
+    assert fetch_calls["good_col"] == 1
+    assert eval_calls["count"] == 2
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["collection"] == "bad_col"
+    assert failure["stage"] == "data_validation"
+    assert "max_outlier_pct_exceeded" in failure["error"]
 
 
 def test_run_all_collection_cache_isolation_for_same_name_collections(tmp_path, monkeypatch):

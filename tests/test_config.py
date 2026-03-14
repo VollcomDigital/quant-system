@@ -321,3 +321,48 @@ validation:
 
     with pytest.raises(ValueError):
         load_config(path)
+
+
+def test_load_config_data_quality_outlier_settings(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    max_outlier_pct: 1.5
+    outlier_method: modified_zscore
+    outlier_zscore_threshold: 3.5
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.max_outlier_pct == pytest.approx(1.5)
+    assert cfg.validation.data_quality.outlier_method == "modified_zscore"
+    assert cfg.validation.data_quality.outlier_zscore_threshold == pytest.approx(3.5)
+
+
+def test_load_config_data_quality_invalid_outlier_method(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    max_outlier_pct: 2.0
+    outlier_method: invalid
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)

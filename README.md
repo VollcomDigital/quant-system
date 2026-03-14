@@ -212,6 +212,9 @@ See new collection examples under `config/collections/` for FX intraday via Finn
   - `min_continuity_score`: minimum continuity score (0..1)
   - `max_missing_bar_pct`: maximum missing bars percentage across expected bars
   - `max_kurtosis`: maximum kurtosis of close-to-close returns
+  - `max_outlier_pct`: maximum percentage of return bars classified as outliers
+  - `outlier_method: zscore | modified_zscore` (default `modified_zscore`)
+  - `outlier_zscore_threshold`: cutoff used by the selected outlier method
   - `on_fail: skip_job | skip_collection | skip_optimization`
   - `skip_optimization` means optimization is disabled for all strategies on that job.
 - `validation.optimization` controls strategy-level search feasibility:
