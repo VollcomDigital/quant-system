@@ -14,14 +14,15 @@ cache_dir: .cache/data
 validation:
   # You can keep only `data_quality`, only `optimization`, or both.
   data_quality:
-    calendar:
-      kind: auto  # auto | crypto_24_7 | weekday | exchange
-      # exchange: XNYS
-      # timezone: UTC-05:00
     min_data_points: 1000
-    min_continuity_score: 0.98
-    max_missing_bar_pct: 5.0  # max percent of missing bars vs expected timeline
-    max_kurtosis: 10.0  # max allowed kurtosis of close-to-close returns
+    continuity:
+      min_score: 0.98
+      max_missing_bar_pct: 5.0  # max percent of missing bars vs expected timeline
+      calendar:
+        kind: auto  # auto | crypto_24_7 | weekday | exchange
+        # exchange: XNYS
+        # timezone: UTC-05:00
+    kurtosis: 10.0  # max allowed kurtosis of close-to-close returns
     outlier_detection:
       max_outlier_pct: 2.0  # max percent of return bars flagged as outliers
       method: modified_zscore  # zscore | modified_zscore
@@ -67,9 +68,10 @@ collections:
     # validation:
     #   data_quality:
     #     min_data_points: 1500
-    #     min_continuity_score: 0.99
-    #     max_missing_bar_pct: 2.0
-    #     max_kurtosis: 8.0
+    #     continuity:
+    #       min_score: 0.99
+    #       max_missing_bar_pct: 2.0
+    #     kurtosis: 8.0
     #     outlier_detection:
     #       max_outlier_pct: 1.0
     #       method: modified_zscore

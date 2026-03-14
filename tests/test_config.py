@@ -69,7 +69,8 @@ metric: sharpe
 validation:
   data_quality:
     min_data_points: 500
-    min_continuity_score: 0.98
+    continuity:
+      min_score: 0.98
     on_fail: skip_job
 """
     path = tmp_path / "config.yaml"
@@ -79,7 +80,8 @@ validation:
     assert cfg.validation is not None
     assert cfg.validation.data_quality is not None
     assert cfg.validation.data_quality.min_data_points == 500
-    assert cfg.validation.data_quality.min_continuity_score == pytest.approx(0.98)
+    assert cfg.validation.data_quality.continuity is not None
+    assert cfg.validation.data_quality.continuity.min_score == pytest.approx(0.98)
     assert cfg.validation.data_quality.on_fail == "skip_job"
 
 
@@ -92,14 +94,16 @@ collections:
     validation:
       data_quality:
         min_data_points: 250
-        min_continuity_score: 0.95
+        continuity:
+          min_score: 0.95
         on_fail: skip_optimization
 timeframes: ['1d']
 metric: sharpe
 validation:
   data_quality:
     min_data_points: 500
-    min_continuity_score: 0.98
+    continuity:
+      min_score: 0.98
     on_fail: skip_job
 """
     path = tmp_path / "config.yaml"
@@ -112,7 +116,8 @@ validation:
     assert col.validation is not None
     assert col.validation.data_quality is not None
     assert col.validation.data_quality.min_data_points == 250
-    assert col.validation.data_quality.min_continuity_score == pytest.approx(0.95)
+    assert col.validation.data_quality.continuity is not None
+    assert col.validation.data_quality.continuity.min_score == pytest.approx(0.95)
     assert col.validation.data_quality.on_fail == "skip_optimization"
 
 
@@ -149,9 +154,8 @@ validation:
     "reliability_yaml",
     [
         "on_fail: abort_run",
-        "min_continuity_score: 1.2",
     ],
-    ids=["invalid_on_fail", "invalid_continuity_score"],
+    ids=["invalid_on_fail"],
 )
 def test_load_config_reliability_thresholds_invalid_values(tmp_path: Path, reliability_yaml: str):
     config_text = f"""
@@ -164,6 +168,26 @@ metric: sharpe
 validation:
   data_quality:
     {reliability_yaml}
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_reliability_thresholds_invalid_continuity_score(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    continuity:
+      min_score: 1.2
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -265,10 +289,12 @@ timeframes: ['1d']
 metric: sharpe
 validation:
   data_quality:
-    calendar:
-      kind: exchange
-      exchange: XNYS
-      timezone: UTC-05:00
+    on_fail: skip_job
+    continuity:
+      calendar:
+        kind: exchange
+        exchange: XNYS
+        timezone: UTC-05:00
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -276,10 +302,11 @@ validation:
     cfg = load_config(path)
     assert cfg.validation is not None
     assert cfg.validation.data_quality is not None
-    assert cfg.validation.data_quality.calendar is not None
-    assert cfg.validation.data_quality.calendar.kind == "exchange"
-    assert cfg.validation.data_quality.calendar.exchange == "XNYS"
-    assert cfg.validation.data_quality.calendar.timezone == "UTC-05:00"
+    assert cfg.validation.data_quality.continuity is not None
+    assert cfg.validation.data_quality.continuity.calendar is not None
+    assert cfg.validation.data_quality.continuity.calendar.kind == "exchange"
+    assert cfg.validation.data_quality.continuity.calendar.exchange == "XNYS"
+    assert cfg.validation.data_quality.continuity.calendar.timezone == "UTC-05:00"
 
 
 def test_load_config_data_quality_calendar_invalid_kind(tmp_path: Path):
@@ -292,8 +319,10 @@ timeframes: ['1d']
 metric: sharpe
 validation:
   data_quality:
-    calendar:
-      kind: invalid
+    on_fail: skip_job
+    continuity:
+      calendar:
+        kind: invalid
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -312,9 +341,11 @@ timeframes: ['1d']
 metric: sharpe
 validation:
   data_quality:
-    calendar:
-      kind: exchange
-      timezone: America/New_York
+    on_fail: skip_job
+    continuity:
+      calendar:
+        kind: exchange
+        timezone: America/New_York
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -333,6 +364,7 @@ timeframes: ['1d']
 metric: sharpe
 validation:
   data_quality:
+    on_fail: skip_job
     outlier_detection:
       max_outlier_pct: 1.5
       method: modified_zscore
@@ -360,6 +392,7 @@ timeframes: ['1d']
 metric: sharpe
 validation:
   data_quality:
+    on_fail: skip_job
     outlier_detection:
       max_outlier_pct: 2.0
       method: invalid

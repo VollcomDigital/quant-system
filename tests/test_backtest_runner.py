@@ -14,7 +14,9 @@ from src.config import (
     OptimizationPolicyConfig,
     StrategyConfig,
     ValidationConfig,
+    ValidationContinuityConfig,
     ValidationDataQualityConfig,
+    ValidationOutlierDetectionConfig,
 )
 from src.strategies.base import BaseStrategy
 
@@ -938,7 +940,10 @@ def test_run_all_optimization_policy_skip_job_on_infeasible_search(tmp_path, mon
 def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_optimization"),
+        data_quality=ValidationDataQualityConfig(
+            min_data_points=10,
+            on_fail="skip_optimization",
+        ),
     )
     _patch_source_with_bars(monkeypatch, bars=5)
     eval_calls = _patch_pybroker_simulation(monkeypatch)
@@ -956,7 +961,10 @@ def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkey
 def test_run_all_reliability_skip_evaluation_on_continuity_threshold(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(min_continuity_score=0.95, on_fail="skip_job"),
+        data_quality=ValidationDataQualityConfig(
+            continuity=ValidationContinuityConfig(min_score=0.95),
+            on_fail="skip_job",
+        ),
     )
 
     class _GappySource:
@@ -988,7 +996,10 @@ def test_run_all_reliability_skip_evaluation_on_continuity_threshold(tmp_path, m
 def test_run_all_reliability_skip_evaluation_on_missing_bar_pct_threshold(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(max_missing_bar_pct=10.0, on_fail="skip_job"),
+        data_quality=ValidationDataQualityConfig(
+            continuity=ValidationContinuityConfig(max_missing_bar_pct=10.0),
+            on_fail="skip_job",
+        ),
     )
 
     class _GappySource:
@@ -1020,7 +1031,10 @@ def test_run_all_reliability_skip_evaluation_on_missing_bar_pct_threshold(tmp_pa
 def test_run_all_reliability_skip_evaluation_on_max_kurtosis(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(max_kurtosis=1.0, on_fail="skip_job"),
+        data_quality=ValidationDataQualityConfig(
+            kurtosis=1.0,
+            on_fail="skip_job",
+        ),
     )
 
     class _LeptokurticSource:
@@ -1054,9 +1068,11 @@ def test_run_all_reliability_skip_evaluation_on_max_outlier_pct(tmp_path, monkey
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
         data_quality=ValidationDataQualityConfig(
-            max_outlier_pct=1.0,
-            outlier_method="modified_zscore",
-            outlier_zscore_threshold=3.5,
+            outlier_detection=ValidationOutlierDetectionConfig(
+                max_outlier_pct=1.0,
+                method="modified_zscore",
+                zscore_threshold=3.5,
+            ),
             on_fail="skip_job",
         ),
     )
@@ -1095,9 +1111,11 @@ def test_run_all_outlier_indeterminate_on_mad_zero(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
         data_quality=ValidationDataQualityConfig(
-            max_outlier_pct=1.0,
-            outlier_method="modified_zscore",
-            outlier_zscore_threshold=3.5,
+            outlier_detection=ValidationOutlierDetectionConfig(
+                max_outlier_pct=1.0,
+                method="modified_zscore",
+                zscore_threshold=3.5,
+            ),
             on_fail="skip_job",
         ),
     )
@@ -1182,7 +1200,10 @@ def test_run_all_skip_evaluation_adds_single_failure_for_multiple_strategies(tmp
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.strategies = []
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_job"),
+        data_quality=ValidationDataQualityConfig(
+            min_data_points=10,
+            on_fail="skip_job",
+        ),
     )
     monkeypatch.setattr(
         "src.backtest.runner.discover_external_strategies",
@@ -1215,7 +1236,10 @@ def test_run_all_skip_optimization_still_evaluates_each_strategy(tmp_path, monke
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.strategies = []
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_optimization"),
+        data_quality=ValidationDataQualityConfig(
+            min_data_points=10,
+            on_fail="skip_optimization",
+        ),
         optimization=OptimizationPolicyConfig(
             on_fail="baseline_only",
             min_bars=100,
@@ -1257,7 +1281,10 @@ def test_run_all_skip_optimization_does_not_skip_no_param_strategy(tmp_path, mon
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.strategies = []
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_optimization"),
+        data_quality=ValidationDataQualityConfig(
+            min_data_points=10,
+            on_fail="skip_optimization",
+        ),
         optimization=OptimizationPolicyConfig(
             on_fail="skip_job",
             min_bars=60,
@@ -1355,12 +1382,18 @@ def test_run_all_collection_reliability_override_takes_precedence(tmp_path, monk
         fees=0.0004,
         slippage=0.0003,
         validation=ValidationConfig(
-            data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_optimization"),
+            data_quality=ValidationDataQualityConfig(
+                min_data_points=10,
+                on_fail="skip_optimization",
+            ),
         ),
     )
     runner = _make_runner(tmp_path, monkeypatch, collections=[collection])
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_job"),
+        data_quality=ValidationDataQualityConfig(
+            min_data_points=10,
+            on_fail="skip_job",
+        ),
     )
     _patch_source_with_bars(monkeypatch, bars=5)
     eval_calls = _patch_pybroker_simulation(monkeypatch)
@@ -1396,7 +1429,10 @@ def test_run_all_reliability_skip_collection_blocks_remaining_jobs_in_collection
     ]
     runner = _make_runner(tmp_path, monkeypatch, collections=collections)
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_collection"),
+        data_quality=ValidationDataQualityConfig(
+            min_data_points=10,
+            on_fail="skip_collection",
+        ),
     )
 
     fetch_calls = {"bad_col": 0, "good_col": 0}
@@ -1448,9 +1484,11 @@ def test_run_all_outlier_skip_collection_blocks_remaining_jobs_in_collection(
     runner = _make_runner(tmp_path, monkeypatch, collections=collections)
     runner.cfg.validation = ValidationConfig(
         data_quality=ValidationDataQualityConfig(
-            max_outlier_pct=1.0,
-            outlier_method="modified_zscore",
-            outlier_zscore_threshold=3.5,
+            outlier_detection=ValidationOutlierDetectionConfig(
+                max_outlier_pct=1.0,
+                method="modified_zscore",
+                zscore_threshold=3.5,
+            ),
             on_fail="skip_collection",
         ),
     )

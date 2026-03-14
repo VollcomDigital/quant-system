@@ -16,6 +16,7 @@ import pandas as pd
 from ..config import (
     CollectionConfig,
     Config,
+    ValidationContinuityConfig,
     ValidationOutlierDetectionConfig,
     normalize_validation_defaults,
 )
@@ -1115,10 +1116,9 @@ class BacktestRunner:
 
         (
             reliability_on_fail,
-            min_data_points,
-            min_continuity_score,
-            max_missing_bar_pct,
-            max_kurtosis,
+            min_data_points_cfg,
+            continuity_cfg,
+            kurtosis_cfg,
             outlier_detection,
             calendar_kind,
             calendar_exchange,
@@ -1137,10 +1137,9 @@ class BacktestRunner:
         reliability_reasons = self._collect_reliability_reasons(
             raw_df=fetched_data.raw_df,
             continuity=continuity,
-            min_data_points=min_data_points,
-            min_continuity_score=min_continuity_score,
-            max_missing_bar_pct=max_missing_bar_pct,
-            max_kurtosis=max_kurtosis,
+            min_data_points_cfg=min_data_points_cfg,
+            continuity_cfg=continuity_cfg,
+            kurtosis_cfg=kurtosis_cfg,
             outlier_detection=outlier_detection,
         )
         if not reliability_reasons:
@@ -1165,54 +1164,35 @@ class BacktestRunner:
     ) -> tuple[
         str,
         int | None,
-        float | None,
-        float | None,
+        ValidationContinuityConfig | None,
         float | None,
         ValidationOutlierDetectionConfig | None,
         str,
         str | None,
     ]:
         global_validation = getattr(self.cfg, "validation", None)
-        collection_validation = getattr(collection, "validation", None)
         global_dq = getattr(global_validation, "data_quality", None)
-        collection_dq = getattr(collection_validation, "data_quality", None)
-        # Collection override takes precedence over global validation defaults.
-        on_fail = str(
-            self._resolve_data_quality_value(collection_dq, global_dq, "on_fail")
-        ).strip().lower()
-        min_data_points = self._resolve_data_quality_value(collection_dq, global_dq, "min_data_points")
-        min_continuity_score = self._resolve_data_quality_value(
-            collection_dq, global_dq, "min_continuity_score"
-        )
-        max_missing_bar_pct = self._resolve_data_quality_value(
-            collection_dq, global_dq, "max_missing_bar_pct"
-        )
-        max_kurtosis = self._resolve_data_quality_value(collection_dq, global_dq, "max_kurtosis")
-        outlier_detection = self._resolve_data_quality_value(
-            collection_dq, global_dq, "outlier_detection"
-        )
-        calendar_cfg = self._resolve_data_quality_value(collection_dq, global_dq, "calendar")
+        collection_validation = getattr(collection, "validation", None)
+        collection_dq = getattr(collection_validation, "data_quality", None) if collection_validation else None
+        resolved_dq = collection_dq if collection_dq is not None else global_dq
+        if resolved_dq is None:
+            raise ValueError("validation.data_quality must be normalized before runtime")
+        on_fail = str(resolved_dq.on_fail).strip().lower()
+        min_data_points_cfg = resolved_dq.min_data_points
+        continuity_cfg = resolved_dq.continuity
+        kurtosis_cfg = resolved_dq.kurtosis
+        outlier_detection = resolved_dq.outlier_detection
+        calendar_cfg = getattr(continuity_cfg, "calendar", None) if continuity_cfg is not None else None
         calendar_kind, calendar_exchange = self._resolve_calendar_policy(calendar_cfg, collection.source)
         return (
             on_fail,
-            min_data_points,
-            min_continuity_score,
-            max_missing_bar_pct,
-            max_kurtosis,
+            min_data_points_cfg,
+            continuity_cfg,
+            kurtosis_cfg,
             outlier_detection,
             calendar_kind,
             calendar_exchange,
         )
-
-    @staticmethod
-    def _resolve_data_quality_value(
-        collection_dq: Any, global_dq: Any, field_name: str
-    ) -> Any:
-        if collection_dq is not None:
-            collection_value = getattr(collection_dq, field_name, None)
-            if collection_value is not None:
-                return collection_value
-        return getattr(global_dq, field_name, None)
 
     def _resolve_calendar_policy(
         self,
@@ -1220,7 +1200,15 @@ class BacktestRunner:
         source: str,
     ) -> tuple[str, str | None]:
         if calendar_cfg is None:
-            raise ValueError("validation.data_quality.calendar must be configured")
+            calendar_kind = "auto"
+            calendar_exchange = None
+            if calendar_kind == "auto":
+                calendar_kind = (
+                    "crypto_24_7"
+                    if source.strip().lower() in self._CRYPTO_SOURCE_NAMES
+                    else "weekday"
+                )
+            return calendar_kind, calendar_exchange
         calendar_kind = str(getattr(calendar_cfg, "kind")).strip().lower()
         calendar_exchange = None
         exchange_value = getattr(calendar_cfg, "exchange", None)
@@ -1245,11 +1233,12 @@ class BacktestRunner:
 
     @staticmethod
     def _continuity_threshold_reason(
-        continuity: dict[str, float | int], min_continuity_score: float | None
+        continuity: dict[str, float | int],
+        continuity_cfg: ValidationContinuityConfig | None,
     ) -> str | None:
-        if min_continuity_score is None:
+        if continuity_cfg is None or continuity_cfg.min_score is None:
             return None
-        threshold = float(min_continuity_score)
+        threshold = float(continuity_cfg.min_score)
         continuity_score = float(continuity.get("score", 0.0))
         if continuity_score < threshold:
             return (
@@ -1259,10 +1248,13 @@ class BacktestRunner:
         return None
 
     @staticmethod
-    def _min_data_points_reason(raw_df: pd.DataFrame, min_data_points: int | None) -> str | None:
-        if min_data_points is None:
+    def _min_data_points_reason(
+        raw_df: pd.DataFrame,
+        min_data_points_cfg: int | None,
+    ) -> str | None:
+        if min_data_points_cfg is None:
             return None
-        required = int(min_data_points)
+        required = int(min_data_points_cfg)
         available = len(raw_df)
         if available < required:
             return f"min_data_points_not_met(required={required}, available={available})"
@@ -1270,11 +1262,12 @@ class BacktestRunner:
 
     @staticmethod
     def _missing_bar_pct_reason(
-        continuity: dict[str, float | int], max_missing_bar_pct: float | None
+        continuity: dict[str, float | int],
+        continuity_cfg: ValidationContinuityConfig | None,
     ) -> str | None:
-        if max_missing_bar_pct is None:
+        if continuity_cfg is None or continuity_cfg.max_missing_bar_pct is None:
             return None
-        threshold = float(max_missing_bar_pct)
+        threshold = float(continuity_cfg.max_missing_bar_pct)
         expected_bars = int(continuity.get("expected_bars", 0))
         missing_bars = int(continuity.get("missing_bars", 0))
         missing_bar_pct = (
@@ -1296,13 +1289,17 @@ class BacktestRunner:
         return None
 
     @classmethod
-    def _max_kurtosis_reason(cls, raw_df: pd.DataFrame, max_kurtosis: float | None) -> str | None:
-        if max_kurtosis is None:
+    def _max_kurtosis_reason(
+        cls,
+        raw_df: pd.DataFrame,
+        kurtosis_cfg: float | None,
+    ) -> str | None:
+        if kurtosis_cfg is None:
             return None
         close_col = cls._resolve_close_column(raw_df)
         if close_col is None:
             return None
-        threshold = float(max_kurtosis)
+        threshold = float(kurtosis_cfg)
         returns = raw_df[close_col].astype(float).pct_change().dropna()
         if returns.empty:
             return None
@@ -1319,18 +1316,17 @@ class BacktestRunner:
         *,
         raw_df: pd.DataFrame,
         continuity: dict[str, float | int],
-        min_data_points: int | None,
-        min_continuity_score: float | None,
-        max_missing_bar_pct: float | None,
-        max_kurtosis: float | None,
+        min_data_points_cfg: int | None,
+        continuity_cfg: ValidationContinuityConfig | None,
+        kurtosis_cfg: float | None,
         outlier_detection: ValidationOutlierDetectionConfig | None,
     ) -> list[str]:
         reasons: list[str] = []
         reason_checks = (
-            BacktestRunner._continuity_threshold_reason(continuity, min_continuity_score),
-            BacktestRunner._min_data_points_reason(raw_df, min_data_points),
-            BacktestRunner._missing_bar_pct_reason(continuity, max_missing_bar_pct),
-            BacktestRunner._max_kurtosis_reason(raw_df, max_kurtosis),
+            BacktestRunner._continuity_threshold_reason(continuity, continuity_cfg),
+            BacktestRunner._min_data_points_reason(raw_df, min_data_points_cfg),
+            BacktestRunner._missing_bar_pct_reason(continuity, continuity_cfg),
+            BacktestRunner._max_kurtosis_reason(raw_df, kurtosis_cfg),
             BacktestRunner._outlier_pct_reason(
                 raw_df=raw_df,
                 outlier_detection=outlier_detection,

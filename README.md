@@ -202,21 +202,23 @@ See new collection examples under `config/collections/` for FX intraday via Finn
   - `validation.optimization` only
   - or both together
 - `validation.data_quality` controls job-level data gates (for collection/symbol/timeframe):
-  - `calendar` controls continuity expectations:
-    - `kind: auto | crypto_24_7 | weekday | exchange`
-    - `timezone: UTC or UTC±HH:MM`
-    - `auto` resolves to `crypto_24_7` for crypto sources and `weekday` otherwise
-    - `exchange` uses `exchange_calendars` for daily session-aware continuity (holidays excluded)
-    - non-daily checks use fixed-delta continuity (not weekday filtering)
-  - `min_data_points`: minimum number of bars required
-  - `min_continuity_score`: minimum continuity score (0..1)
-  - `max_missing_bar_pct`: maximum missing bars percentage across expected bars
-  - `max_kurtosis`: maximum kurtosis of close-to-close returns
+  - `on_fail` is required: `skip_job | skip_collection | skip_optimization`
+  - `min_data_points` is optional: minimum number of bars required
+  - `continuity` is optional:
+    - `min_score` minimum continuity score (0..1)
+    - `max_missing_bar_pct` maximum missing bars percentage across expected bars
+    - `calendar` is optional and controls continuity expectations:
+      - `kind: auto | crypto_24_7 | weekday | exchange`
+      - `timezone: UTC or UTC±HH:MM`
+      - `auto` resolves to `crypto_24_7` for crypto sources and `weekday` otherwise
+      - `exchange` uses `exchange_calendars` for daily session-aware continuity (holidays excluded)
+      - non-daily checks use fixed-delta continuity (not weekday filtering)
+  - `kurtosis` is optional: maximum kurtosis of close-to-close returns
   - `outlier_detection` (optional module; active when configured):
     - `max_outlier_pct` (required): maximum percentage of return bars classified as outliers
     - `method: zscore | modified_zscore` (default `modified_zscore`)
     - `zscore_threshold` (method default: `3.0` for `zscore`, `3.5` for `modified_zscore`)
-  - `on_fail: skip_job | skip_collection | skip_optimization`
+  - continuity diagnostics are always computed; jobs with fewer than 2 bars are rejected during data validation.
   - `skip_optimization` means optimization is disabled for all strategies on that job.
 - `validation.optimization` controls strategy-level search feasibility:
   - `on_fail: baseline_only | skip_job`
