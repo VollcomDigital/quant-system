@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 import inspect
 import itertools
+import hashlib
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -101,6 +103,7 @@ class JobState:
     job: JobContext
     current_stage: StageName = "created"
     policy_skip_optimization: bool = False
+    validation_config_hash: str = ""
     decisions: dict[StageName, GateDecision] = field(default_factory=dict)
     reasons_by_stage: dict[StageName, list[str]] = field(default_factory=dict)
 
@@ -432,6 +435,35 @@ class BacktestRunner:
             "active_gates": active_gates,
             "inactive_gates": inactive_gates,
         }
+
+    def _build_job_validation_profile(self, collection: CollectionConfig) -> dict[str, Any]:
+        validation_cfg = getattr(self.cfg, "validation", None)
+        global_data_quality = getattr(validation_cfg, "data_quality", None)
+        optimization_cfg = getattr(validation_cfg, "optimization", None)
+        collection_validation = getattr(collection, "validation", None)
+        collection_dq = (
+            getattr(collection_validation, "data_quality", None)
+            if collection_validation is not None
+            else None
+        )
+        resolved_dq = collection_dq if collection_dq is not None else global_data_quality
+        return {
+            "data_quality": self._serialize_data_quality_profile(resolved_dq),
+            "optimization": (
+                {
+                    "on_fail": getattr(optimization_cfg, "on_fail", None),
+                    "min_bars": getattr(optimization_cfg, "min_bars", None),
+                    "dof_multiplier": getattr(optimization_cfg, "dof_multiplier", None),
+                }
+                if optimization_cfg is not None
+                else None
+            ),
+        }
+
+    @staticmethod
+    def _hash_validation_profile(profile: dict[str, Any]) -> str:
+        payload = json.dumps(profile, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _get_evaluator(self) -> BacktestEvaluator:
         # Resolve evaluator at call-time so monkeypatches and future mode dispatch
@@ -1852,6 +1884,7 @@ class BacktestRunner:
             slippage=request.slippage,
             evaluation_mode=self.mode_config.mode,
             mode_config_hash=self.mode_config_hash,
+            validation_config_hash=state.validation_config_hash,
         )
         if cached is not None:
             self.metrics["result_cache_hits"] += 1
@@ -1916,6 +1949,7 @@ class BacktestRunner:
                 slippage=request.slippage,
                 evaluation_mode=self.mode_config.mode,
                 mode_config_hash=self.mode_config_hash,
+                validation_config_hash=state.validation_config_hash,
             )
 
             # Legacy cache remains the compatibility source for current reporters.
@@ -2188,6 +2222,12 @@ class BacktestRunner:
             if not prep_decision.passed or prepared is None:
                 continue
 
+            # This hash must be computed at runtime from the effective collection-level
+            # validation profile (global + per-collection overrides) because it keys
+            # evaluation-cache correctness per job, not just raw loaded config.
+            state.validation_config_hash = self._hash_validation_profile(
+                self._build_job_validation_profile(state.job.collection)
+            )
             self.metrics["symbols_tested"] += 1
             for strat_name in self.external_index.keys():
                 # Strategy stage: create plan -> validate plan -> run -> validate results.

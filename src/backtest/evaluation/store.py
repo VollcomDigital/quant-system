@@ -37,6 +37,7 @@ class EvaluationCache:
                     slippage REAL,
                     evaluation_mode TEXT,
                     mode_config_hash TEXT,
+                    validation_config_hash TEXT,
                     engine_version TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY(
@@ -51,6 +52,7 @@ class EvaluationCache:
                         slippage,
                         evaluation_mode,
                         mode_config_hash,
+                        validation_config_hash,
                         engine_version
                     )
                 )
@@ -83,6 +85,7 @@ class EvaluationCache:
         slippage: float,
         evaluation_mode: str,
         mode_config_hash: str,
+        validation_config_hash: str,
     ) -> dict[str, Any] | None:
         params_json = json.dumps(params, sort_keys=True)
         con = sqlite3.connect(self.db_path)
@@ -95,7 +98,8 @@ class EvaluationCache:
                 WHERE collection=? AND symbol=? AND timeframe=? AND strategy=?
                   AND params_json=? AND metric_name=? AND data_fingerprint=?
                   AND fees=? AND slippage=?
-                  AND evaluation_mode=? AND mode_config_hash=? AND engine_version=?
+                  AND evaluation_mode=? AND mode_config_hash=? AND validation_config_hash=?
+                  AND engine_version=?
                 """,
                 (
                     collection,
@@ -109,6 +113,7 @@ class EvaluationCache:
                     slippage,
                     evaluation_mode,
                     mode_config_hash,
+                    validation_config_hash,
                     EVALUATION_SCHEMA_VERSION,
                 ),
             )
@@ -138,6 +143,7 @@ class EvaluationCache:
         slippage: float,
         evaluation_mode: str,
         mode_config_hash: str,
+        validation_config_hash: str,
     ) -> None:
         params_json = json.dumps(params, sort_keys=True)
         con = sqlite3.connect(self.db_path)
@@ -159,9 +165,10 @@ class EvaluationCache:
                     slippage,
                     evaluation_mode,
                     mode_config_hash,
+                    validation_config_hash,
                     engine_version
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     collection,
@@ -177,6 +184,7 @@ class EvaluationCache:
                     slippage,
                     evaluation_mode,
                     mode_config_hash,
+                    validation_config_hash,
                     EVALUATION_SCHEMA_VERSION,
                 ),
             )
