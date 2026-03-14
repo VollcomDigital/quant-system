@@ -181,6 +181,7 @@ def run(
             "started_at": start_ts.isoformat() + "Z",
             "finished_at": end_ts.isoformat() + "Z",
             "duration_sec": duration,
+            "validation": getattr(runner, "validation_metadata", {}),
         }
     )
     runs_manifest = collect_runs_manifest(
@@ -232,6 +233,7 @@ def run(
             "runs": runs_manifest,
             "manifest_refresh": manifest_status,
             "notifications": notification_events,
+            "validation": getattr(runner, "validation_metadata", {}),
         }
         summary_json = safe_json_dumps(summary, indent=2)
         (base_out / SUMMARY_JSON_FILENAME).write_text(summary_json)
@@ -271,6 +273,9 @@ def run(
         typer.echo(f"- fresh_simulation_runs: {metrics.get('fresh_simulation_runs', 0)}")
         typer.echo(f"- fresh_metric_evals: {metrics.get('fresh_metric_evals', 0)}")
         typer.echo(f"- strategies_count: {metrics.get('strategies_count', 0)}")
+        active_validation_gates = summary.get("validation", {}).get("active_gates", [])
+        if active_validation_gates:
+            typer.echo(f"- active_validation_gates: {', '.join(active_validation_gates)}")
         if failed_strategies:
             typer.echo(f"- failed_strategies: {', '.join(failed_strategies)}")
         if failed_collections:

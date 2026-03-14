@@ -173,6 +173,15 @@ class ValidationContext:
 
 class BacktestRunner:
     _CRYPTO_SOURCE_NAMES = {"binance", "bybit", "ccxt", "coinbase", "kraken", "okx", "kucoin"}
+    _VALIDATION_GATE_IDS = (
+        "data_quality.min_required_bars",
+        "data_quality.min_data_points",
+        "data_quality.continuity.min_score",
+        "data_quality.continuity.max_missing_bar_pct",
+        "data_quality.kurtosis",
+        "data_quality.outlier_detection",
+        "optimization.feasibility",
+    )
 
     def __init__(
         self,
@@ -209,6 +218,9 @@ class BacktestRunner:
         self.mode_config_hash = self.evaluation_cache.hash_mode_config(self.mode_config)
         self._result_store_write_failures = 0
         self._evaluation_cache_write_failures = 0
+        self.validation_metadata: dict[str, Any] = {}
+        self.active_validation_gates: list[str] = []
+        self.inactive_validation_gates: list[str] = []
 
     def _ensure_pybroker(self) -> tuple[Any, ...]:
         if self._pybroker_components is None:
@@ -278,6 +290,148 @@ class BacktestRunner:
                 self.logger.warning(
                     "result store write failures continuing; suppressing further warnings"
                 )
+
+    def _result_store_upsert_run_metadata(
+        self,
+        *,
+        validation_profile: dict[str, Any],
+        active_gates: list[str],
+        inactive_gates: list[str],
+    ) -> None:
+        if self.run_id is None:
+            return
+        try:
+            self.result_store.upsert_run_metadata(
+                run_id=self.run_id,
+                evaluation_mode=self.mode_config.mode,
+                mode_config_hash=self.mode_config_hash,
+                validation_profile=validation_profile,
+                active_gates=active_gates,
+                inactive_gates=inactive_gates,
+            )
+        except Exception as exc:
+            self._result_store_write_failures += 1
+            if self._result_store_write_failures <= 3:
+                self.logger.warning("run metadata write failed", exc_info=exc)
+            elif self._result_store_write_failures == 4:
+                self.logger.warning(
+                    "result store write failures continuing; suppressing further warnings"
+                )
+
+    @staticmethod
+    def _serialize_data_quality_profile(data_quality: Any) -> dict[str, Any] | None:
+        if data_quality is None:
+            return None
+        continuity = getattr(data_quality, "continuity", None)
+        calendar = getattr(continuity, "calendar", None) if continuity is not None else None
+        outlier = getattr(data_quality, "outlier_detection", None)
+        return {
+            "on_fail": getattr(data_quality, "on_fail", None),
+            "min_data_points": getattr(data_quality, "min_data_points", None),
+            "continuity": (
+                {
+                    "min_score": getattr(continuity, "min_score", None),
+                    "max_missing_bar_pct": getattr(continuity, "max_missing_bar_pct", None),
+                    "calendar": (
+                        {
+                            "kind": getattr(calendar, "kind", None),
+                            "exchange": getattr(calendar, "exchange", None),
+                            "timezone": getattr(calendar, "timezone", None),
+                        }
+                        if calendar is not None
+                        else None
+                    ),
+                }
+                if continuity is not None
+                else None
+            ),
+            "kurtosis": getattr(data_quality, "kurtosis", None),
+            "outlier_detection": (
+                {
+                    "max_outlier_pct": getattr(outlier, "max_outlier_pct", None),
+                    "method": getattr(outlier, "method", None),
+                    "zscore_threshold": getattr(outlier, "zscore_threshold", None),
+                }
+                if outlier is not None
+                else None
+            ),
+        }
+
+    @staticmethod
+    def _active_data_quality_gates(data_quality: Any) -> set[str]:
+        active = {"data_quality.min_required_bars"}
+        if data_quality is None:
+            return active
+        if getattr(data_quality, "min_data_points", None) is not None:
+            active.add("data_quality.min_data_points")
+        continuity = getattr(data_quality, "continuity", None)
+        if continuity is not None:
+            if getattr(continuity, "min_score", None) is not None:
+                active.add("data_quality.continuity.min_score")
+            if getattr(continuity, "max_missing_bar_pct", None) is not None:
+                active.add("data_quality.continuity.max_missing_bar_pct")
+        if getattr(data_quality, "kurtosis", None) is not None:
+            active.add("data_quality.kurtosis")
+        if getattr(data_quality, "outlier_detection", None) is not None:
+            active.add("data_quality.outlier_detection")
+        return active
+
+    @staticmethod
+    def _active_optimization_gates(optimization: Any) -> set[str]:
+        if optimization is None:
+            return set()
+        return {"optimization.feasibility"}
+
+    def _build_validation_metadata(self) -> dict[str, Any]:
+        validation_cfg = getattr(self.cfg, "validation", None)
+        global_data_quality = getattr(validation_cfg, "data_quality", None)
+        optimization_cfg = getattr(validation_cfg, "optimization", None)
+
+        collection_profiles: list[dict[str, Any]] = []
+        active_gates_union = self._active_data_quality_gates(global_data_quality)
+        active_gates_union.update(self._active_optimization_gates(optimization_cfg))
+
+        for collection in self.cfg.collections:
+            collection_validation = getattr(collection, "validation", None)
+            collection_dq = (
+                getattr(collection_validation, "data_quality", None)
+                if collection_validation is not None
+                else None
+            )
+            resolved_dq = collection_dq if collection_dq is not None else global_data_quality
+            collection_active = self._active_data_quality_gates(resolved_dq)
+            active_gates_union.update(collection_active)
+            collection_profiles.append(
+                {
+                    "collection": collection.name,
+                    "source": collection.source,
+                    "data_quality": self._serialize_data_quality_profile(resolved_dq),
+                    "active_gates": sorted(collection_active),
+                }
+            )
+
+        active_gates = sorted(active_gates_union)
+        inactive_gates = sorted(set(self._VALIDATION_GATE_IDS).difference(active_gates_union))
+        profile = {
+            "global": {
+                "data_quality": self._serialize_data_quality_profile(global_data_quality),
+                "optimization": (
+                    {
+                        "on_fail": getattr(optimization_cfg, "on_fail", None),
+                        "min_bars": getattr(optimization_cfg, "min_bars", None),
+                        "dof_multiplier": getattr(optimization_cfg, "dof_multiplier", None),
+                    }
+                    if optimization_cfg is not None
+                    else None
+                ),
+            },
+            "collections": collection_profiles,
+        }
+        return {
+            "profile": profile,
+            "active_gates": active_gates,
+            "inactive_gates": inactive_gates,
+        }
 
     def _get_evaluator(self) -> BacktestEvaluator:
         # Resolve evaluator at call-time so monkeypatches and future mode dispatch
@@ -1964,6 +2118,15 @@ class BacktestRunner:
         self.cfg = normalize_validation_defaults(self.cfg)
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
+        )
+        validation_metadata = self._build_validation_metadata()
+        self.validation_metadata = validation_metadata
+        self.active_validation_gates = list(validation_metadata.get("active_gates", []))
+        self.inactive_validation_gates = list(validation_metadata.get("inactive_gates", []))
+        self._result_store_upsert_run_metadata(
+            validation_profile=validation_metadata.get("profile", {}),
+            active_gates=self.active_validation_gates,
+            inactive_gates=self.inactive_validation_gates,
         )
 
         jobs = self._create_job_list()

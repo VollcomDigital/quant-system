@@ -77,3 +77,30 @@ def test_result_store_round_trip(tmp_path: Path):
     assert row["metric"] == "sharpe"
     assert row["metric_value"] == pytest.approx(1.5)
     assert row["params"] == {"x": 1}
+
+
+def test_result_store_run_metadata_round_trip(tmp_path: Path):
+    store = ResultStore(tmp_path)
+    store.upsert_run_metadata(
+        run_id="run-1",
+        evaluation_mode="backtest",
+        mode_config_hash="abc",
+        validation_profile={
+            "global": {"data_quality": {"on_fail": "skip_job"}},
+            "collections": [],
+        },
+        active_gates=["data_quality.min_required_bars", "data_quality.min_data_points"],
+        inactive_gates=["optimization.feasibility"],
+    )
+
+    row = store.get_run_metadata("run-1")
+    assert row is not None
+    assert row["run_id"] == "run-1"
+    assert row["evaluation_mode"] == "backtest"
+    assert row["mode_config_hash"] == "abc"
+    assert row["active_gates"] == [
+        "data_quality.min_required_bars",
+        "data_quality.min_data_points",
+    ]
+    assert row["inactive_gates"] == ["optimization.feasibility"]
+    assert row["validation_profile"]["global"]["data_quality"]["on_fail"] == "skip_job"

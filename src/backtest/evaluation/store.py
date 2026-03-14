@@ -223,6 +223,19 @@ class ResultStore:
                 ON result_records(run_id, collection, symbol, timeframe, strategy)
                 """
             )
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS run_metadata (
+                    run_id TEXT PRIMARY KEY,
+                    evaluation_mode TEXT,
+                    mode_config_hash TEXT,
+                    validation_profile_json TEXT,
+                    active_gates_json TEXT,
+                    inactive_gates_json TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
             con.commit()
         finally:
             con.close()
@@ -322,5 +335,80 @@ class ResultStore:
                 }
                 for row in cur.fetchall()
             ]
+        finally:
+            con.close()
+
+    def upsert_run_metadata(
+        self,
+        *,
+        run_id: str,
+        evaluation_mode: str,
+        mode_config_hash: str,
+        validation_profile: dict[str, Any],
+        active_gates: list[str],
+        inactive_gates: list[str],
+    ) -> None:
+        con = sqlite3.connect(self.db_path)
+        try:
+            con.execute(
+                """
+                INSERT INTO run_metadata
+                (
+                    run_id,
+                    evaluation_mode,
+                    mode_config_hash,
+                    validation_profile_json,
+                    active_gates_json,
+                    inactive_gates_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    evaluation_mode=excluded.evaluation_mode,
+                    mode_config_hash=excluded.mode_config_hash,
+                    validation_profile_json=excluded.validation_profile_json,
+                    active_gates_json=excluded.active_gates_json,
+                    inactive_gates_json=excluded.inactive_gates_json
+                """,
+                (
+                    run_id,
+                    evaluation_mode,
+                    mode_config_hash,
+                    json.dumps(validation_profile, sort_keys=True),
+                    json.dumps(active_gates, sort_keys=True),
+                    json.dumps(inactive_gates, sort_keys=True),
+                ),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+    def get_run_metadata(self, run_id: str) -> dict[str, Any] | None:
+        con = sqlite3.connect(self.db_path)
+        con.row_factory = sqlite3.Row
+        try:
+            row = con.execute(
+                """
+                SELECT
+                    run_id,
+                    evaluation_mode,
+                    mode_config_hash,
+                    validation_profile_json,
+                    active_gates_json,
+                    inactive_gates_json
+                FROM run_metadata
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "run_id": row["run_id"],
+                "evaluation_mode": row["evaluation_mode"],
+                "mode_config_hash": row["mode_config_hash"],
+                "validation_profile": json.loads(row["validation_profile_json"]),
+                "active_gates": list(json.loads(row["active_gates_json"])),
+                "inactive_gates": list(json.loads(row["inactive_gates_json"])),
+            }
         finally:
             con.close()
