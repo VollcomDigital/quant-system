@@ -1211,15 +1211,17 @@ class BacktestRunner:
         return calendar_kind, calendar_exchange
 
     def _resolve_optimization_policy(self) -> tuple[str, int, int] | None:
-        # `validation.optimization` is optional; when omitted no feasibility gate is applied.
+        # Keep legacy feasibility guard defaults when `validation.optimization` is omitted.
         validation_cfg = getattr(self.cfg, "validation", None)
         policy = getattr(validation_cfg, "optimization", None)
-        if policy is None:
-            return None
-        on_fail = str(policy.on_fail).strip().lower()
-        min_bars = int(policy.min_bars)
-        dof_multiplier = int(policy.dof_multiplier)
-        return on_fail, min_bars, dof_multiplier
+        if policy is not None:
+            on_fail = str(policy.on_fail).strip().lower()
+            min_bars = int(policy.min_bars)
+            dof_multiplier = int(policy.dof_multiplier)
+            return on_fail, min_bars, dof_multiplier
+        min_bars = int(getattr(self.cfg, "param_min_bars", 2000))
+        dof_multiplier = int(getattr(self.cfg, "param_dof_multiplier", 100))
+        return "baseline_only", min_bars, dof_multiplier
 
     @staticmethod
     def _continuity_threshold_reason(
@@ -1961,6 +1963,8 @@ class BacktestRunner:
                     blocked_collections=blocked_collections,
                 )
                 if not plan_decision.passed:
+                    if plan_decision.action in {"skip_job", "skip_collection"}:
+                        break
                     continue
                 self.metrics["strategies_used"].add(plan.strategy.name)
                 outcome = self._strategy_run(plan, state, validated_data, prepared)
@@ -1973,6 +1977,8 @@ class BacktestRunner:
                     blocked_collections=blocked_collections,
                 )
                 if not validation_decision.passed:
+                    if validation_decision.action in {"skip_job", "skip_collection"}:
+                        break
                     continue
 
                 best = BestResult(

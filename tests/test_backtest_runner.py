@@ -591,6 +591,110 @@ def test_run_all_skips_strategy_when_plan_gate_fails(tmp_path, monkeypatch):
     assert runner.failures[0]["error"] == "plan_gate_blocked"
 
 
+def test_run_all_strategy_skip_job_stops_remaining_strategies_for_job(tmp_path, monkeypatch):
+    class _AltStrategy(BaseStrategy):
+        name = "alt"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    monkeypatch.setattr(
+        "src.backtest.runner.discover_external_strategies",
+        lambda root: {"dummy": _DummyStrategy, "alt": _AltStrategy},
+    )
+    runner.external_index = {"dummy": _DummyStrategy, "alt": _AltStrategy}
+
+    def _plan_gate(self, state, validated_data, plan):
+        if plan.strategy.name == "dummy":
+            return GateDecision(False, "skip_job", ["plan_gate_blocked"], "strategy_optimization")
+        return GateDecision(True, "continue", [], "strategy_optimization")
+
+    original_strategy_run = BacktestRunner._strategy_run
+    strategy_runs = {"count": 0}
+
+    def _count_strategy_run(self, plan, state, validated_data, prepared):
+        strategy_runs["count"] += 1
+        return original_strategy_run(self, plan, state, validated_data, prepared)
+
+    monkeypatch.setattr(BacktestRunner, "_strategy_validate_plan", _plan_gate)
+    monkeypatch.setattr(BacktestRunner, "_strategy_run", _count_strategy_run)
+
+    results = runner.run_all()
+    assert results == []
+    assert strategy_runs["count"] == 0
+    assert len(runner.failures) == 1
+    assert runner.failures[0]["stage"] == "strategy_optimization"
+    assert runner.failures[0]["strategy"] == "dummy"
+
+
+def test_run_all_strategy_skip_collection_blocks_current_and_remaining_jobs(tmp_path, monkeypatch):
+    class _AltStrategy(BaseStrategy):
+        name = "alt"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    collections = [
+        CollectionConfig(
+            name="demo",
+            source="custom",
+            symbols=["AAPL", "MSFT"],
+            fees=0.0004,
+            slippage=0.0003,
+        )
+    ]
+    runner = _make_runner(tmp_path, monkeypatch, collections=collections)
+    runner.cfg.strategies = []
+    monkeypatch.setattr(
+        "src.backtest.runner.discover_external_strategies",
+        lambda root: {"dummy": _DummyStrategy, "alt": _AltStrategy},
+    )
+    runner.external_index = {"dummy": _DummyStrategy, "alt": _AltStrategy}
+
+    fetch_calls = {"count": 0}
+
+    class _Source:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            fetch_calls["count"] += 1
+            return _make_ohlcv(20)
+
+    def _plan_gate(self, state, validated_data, plan):
+        if plan.strategy.name == "dummy":
+            return GateDecision(False, "skip_collection", ["plan_gate_blocked"], "strategy_optimization")
+        return GateDecision(True, "continue", [], "strategy_optimization")
+
+    original_strategy_run = BacktestRunner._strategy_run
+    strategy_runs = {"count": 0}
+
+    def _count_strategy_run(self, plan, state, validated_data, prepared):
+        strategy_runs["count"] += 1
+        return original_strategy_run(self, plan, state, validated_data, prepared)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
+    monkeypatch.setattr(BacktestRunner, "_strategy_validate_plan", _plan_gate)
+    monkeypatch.setattr(BacktestRunner, "_strategy_run", _count_strategy_run)
+
+    results = runner.run_all()
+    assert results == []
+    assert fetch_calls["count"] == 1
+    assert strategy_runs["count"] == 0
+    assert len(runner.failures) == 1
+    assert runner.failures[0]["stage"] == "strategy_optimization"
+    assert runner.failures[0]["strategy"] == "dummy"
+
+
 def test_run_all_uses_cached_results(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
 
@@ -863,6 +967,23 @@ def _patch_pybroker_simulation(monkeypatch) -> dict[str, int]:
 
     monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _fake_sim)
     return eval_calls
+
+
+def test_run_all_uses_default_optimization_guard_when_policy_missing(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = None
+    runner.cfg.param_search = "grid"
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results
+    assert eval_calls["count"] == 1
+    optimization = results[0].stats.get("optimization")
+    assert optimization is not None
+    assert optimization["reason"] == "insufficient_bars_for_optimization"
+    assert optimization["min_bars_required"] == 2000
+    assert optimization["bars_available"] == 5
 
 
 @pytest.mark.parametrize(
