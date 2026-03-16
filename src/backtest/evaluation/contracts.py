@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 EvaluationMode = Literal["backtest", "walk_forward"]
 
@@ -13,17 +13,21 @@ class EvaluationModeConfig:
 
 
 @dataclass(frozen=True)
-class EvaluationRequest:
+class EvaluationSharedFields:
     collection: str
     symbol: str
     timeframe: str
-    source: str
     strategy: str
     params: dict[str, Any]
     metric_name: str
     data_fingerprint: str
     fees: float
     slippage: float
+
+
+@dataclass(frozen=True)
+class EvaluationRequest(EvaluationSharedFields):
+    source: str
     bars_per_year: int
     mode_config: EvaluationModeConfig
 
@@ -40,24 +44,21 @@ class EvaluationOutcome:
     artifacts_meta: dict[str, Any] = field(default_factory=dict)
 
 @dataclass(frozen=True)
-class EvaluationCacheRecord:
-    collection: str
-    symbol: str
-    timeframe: str
-    strategy: str
-    params: dict[str, Any]
-    metric_name: str
+class EvaluationCacheRecord(EvaluationSharedFields):
     metric_value: float
     stats: dict[str, Any]
-    data_fingerprint: str
-    fees: float
-    slippage: float
-    evaluation_mode: str
+    evaluation_mode: EvaluationMode
     mode_config_hash: str
     validation_config_hash: str
 
     @classmethod
     def from_mapping(cls, payload: dict[str, Any]) -> "EvaluationCacheRecord":
+        evaluation_mode = str(payload["evaluation_mode"]).strip().lower()
+        if evaluation_mode not in {"backtest", "walk_forward"}:
+            raise ValueError(
+                "Invalid evaluation_mode in EvaluationCacheRecord payload: "
+                f"{payload['evaluation_mode']}"
+            )
         return cls(
             collection=str(payload["collection"]),
             symbol=str(payload["symbol"]),
@@ -70,25 +71,16 @@ class EvaluationCacheRecord:
             data_fingerprint=str(payload["data_fingerprint"]),
             fees=float(payload["fees"]),
             slippage=float(payload["slippage"]),
-            evaluation_mode=str(payload["evaluation_mode"]),
+            evaluation_mode=cast(EvaluationMode, evaluation_mode),
             mode_config_hash=str(payload["mode_config_hash"]),
             validation_config_hash=str(payload["validation_config_hash"]),
         )
     
 @dataclass(frozen=True)
-class ResultRecord:
+class ResultRecord(EvaluationSharedFields):
     run_id: str | None
     evaluation_mode: EvaluationMode
-    collection: str
-    symbol: str
-    timeframe: str
     source: str
-    strategy: str
-    params: dict[str, Any]
-    metric_name: str
     metric_value: float
     stats: dict[str, Any]
-    data_fingerprint: str
-    fees: float
-    slippage: float
     mode_config_hash: str
