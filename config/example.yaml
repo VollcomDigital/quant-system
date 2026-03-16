@@ -26,7 +26,7 @@ validation:
     outlier_detection:
       max_outlier_pct: 2.0  # max percent of return bars flagged as outliers
       method: modified_zscore  # zscore | modified_zscore
-      zscore_threshold: 3.5  # method default: zscore=3.0, modified_zscore=3.5
+      zscore_threshold: 3.5  # required threshold for selected method
     on_fail: skip_job  # skip_optimization | skip_job | skip_collection
   # Optional strategy-level optimization feasibility policy.
   optimization:

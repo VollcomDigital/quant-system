@@ -68,8 +68,8 @@ class ValidationContinuityConfig:
 @dataclass
 class ValidationOutlierDetectionConfig:
     max_outlier_pct: float
-    method: str = "modified_zscore"
-    zscore_threshold: float = 3.5
+    method: str
+    zscore_threshold: float
 
 
 @dataclass
@@ -108,15 +108,6 @@ class Config:
 
 
 DEFAULT_CALENDAR_KIND = "auto"
-DEFAULT_OUTLIER_METHOD = "modified_zscore"
-DEFAULT_ZSCORE_THRESHOLD = 3.0
-DEFAULT_MODIFIED_ZSCORE_THRESHOLD = 3.5
-
-
-def _default_outlier_threshold(method: str) -> float:
-    return DEFAULT_ZSCORE_THRESHOLD if method == "zscore" else DEFAULT_MODIFIED_ZSCORE_THRESHOLD
-
-
 def _merge_replace(base: Any, override: Any) -> Any:
     return override if override is not None else base
 
@@ -203,50 +194,65 @@ def _merge_outlier_detection_config(
         raise ValueError(
             "Invalid `validation.data_quality.outlier_detection`: missing required field(s): max_outlier_pct"
         )
-    method = str(_merged_field(base, override, "method") or DEFAULT_OUTLIER_METHOD).strip().lower()
-    threshold = _merged_field(base, override, "zscore_threshold")
-    zscore_threshold = (
-        float(threshold)
-        if threshold is not None
-        else _default_outlier_threshold(method)
-    )
+    method = _merged_field(base, override, "method")
+    if method is None:
+        raise ValueError(
+            "Invalid `validation.data_quality.outlier_detection`: missing required field(s): method"
+        )
+    zscore_threshold = _merged_field(base, override, "zscore_threshold")
+    if zscore_threshold is None:
+        raise ValueError(
+            "Invalid `validation.data_quality.outlier_detection`: missing required field(s): zscore_threshold"
+        )
     return ValidationOutlierDetectionConfig(
         max_outlier_pct=float(max_outlier_pct),
-        method=method,
-        zscore_threshold=zscore_threshold,
+        method=str(method),
+        zscore_threshold=float(zscore_threshold),
     )
 
 
 def resolve_validation_overrides(cfg: Config) -> Config:
-    """Resolve effective collection validation from global + collection overrides.
+    """Resolve effective `validation.data_quality` per collection.
 
-    Behavior:
-    - If global `validation.data_quality` is unset, no collection data-quality policy is injected.
-    - If global is set, each collection gets an explicit resolved data-quality policy:
-      global-only for missing collection config, or merged global+collection where overrides exist.
+    Rule: effective policy = merge(global_data_quality_policy, collection_data_quality_override).
     """
-    validation = cfg.validation
-    if validation is None:
+    validation_cfg = cfg.validation
+    if validation_cfg is None:
         return cfg
-    global_dq = validation.data_quality
-    if global_dq is not None:
-        validation.data_quality = _merge_data_quality_config(global_dq, None)
+    global_data_quality_policy = validation_cfg.data_quality
+    if global_data_quality_policy is not None:
+        validation_cfg.data_quality = _merge_data_quality_config(global_data_quality_policy, None)
 
     for collection in cfg.collections:
-        if global_dq is None:
+        collection_validation_cfg = collection.validation
+        collection_data_quality_override = (
+            getattr(collection_validation_cfg, "data_quality", None)
+            if collection_validation_cfg is not None
+            else None
+        )
+        if collection_data_quality_override is None:
+            if global_data_quality_policy is None:
+                continue
+            # No collection override: inherit the normalized global data-quality policy.
+            if collection.validation is None:
+                collection.validation = ValidationConfig(
+                    data_quality=_merge_data_quality_config(global_data_quality_policy, None),
+                    optimization=None,
+                )
+            else:
+                collection.validation.data_quality = _merge_data_quality_config(
+                    global_data_quality_policy, None
+                )
             continue
-        if collection.validation is None:
-            # Inherit global data-quality policy into collections with no local validation block.
-            collection.validation = ValidationConfig(
-                data_quality=_merge_data_quality_config(global_dq, None),
-                optimization=None,
+        if global_data_quality_policy is None:
+            # Collection-only data-quality policy: normalize and keep as effective policy.
+            collection.validation.data_quality = _merge_data_quality_config(
+                collection_data_quality_override, None
             )
             continue
-        if collection.validation.data_quality is None:
-            collection.validation.data_quality = _merge_data_quality_config(global_dq, None)
-            continue
+        # Both global and collection are set: collection values override global field-by-field.
         collection.validation.data_quality = _merge_data_quality_config(
-            global_dq, collection.validation.data_quality
+            global_data_quality_policy, collection_data_quality_override
         )
     return cfg
 
@@ -439,21 +445,19 @@ def _parse_outlier_detection(
         parsed_raw, prefix, "max_outlier_pct", min_value=0, max_value=100
     )
     method = parse_optional_str(parsed_raw, "method")
-    if method is not None and method not in {"zscore", "modified_zscore"}:
+    if method is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): method")
+    if method not in {"zscore", "modified_zscore"}:
         raise ValueError(
             f"Invalid `{prefix}.method`: expected one of ['modified_zscore', 'zscore']"
         )
-    zscore_threshold = parse_optional_float(parsed_raw, prefix, "zscore_threshold")
-    if zscore_threshold is not None and zscore_threshold <= 0:
+    zscore_threshold = parse_required_float(parsed_raw, prefix, "zscore_threshold", min_value=0.0)
+    if zscore_threshold <= 0:
         raise ValueError(f"`{prefix}.zscore_threshold` must be > 0")
     return ValidationOutlierDetectionConfig(
         max_outlier_pct=max_outlier_pct,
-        method=method or DEFAULT_OUTLIER_METHOD,
-        zscore_threshold=(
-            zscore_threshold
-            if zscore_threshold is not None
-            else _default_outlier_threshold(method or DEFAULT_OUTLIER_METHOD)
-        ),
+        method=method,
+        zscore_threshold=zscore_threshold,
     )
 
 

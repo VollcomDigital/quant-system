@@ -382,6 +382,36 @@ validation:
     assert cfg.validation.data_quality.outlier_detection.zscore_threshold == pytest.approx(3.5)
 
 
+def test_load_config_data_quality_outlier_collection_requires_method_and_threshold(
+    tmp_path: Path,
+):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    validation:
+      data_quality:
+        on_fail: skip_job
+        outlier_detection:
+          max_outlier_pct: 2.0
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    outlier_detection:
+      max_outlier_pct: 1.5
+      method: zscore
+      zscore_threshold: 3.0
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
 def test_load_config_data_quality_invalid_outlier_method(tmp_path: Path):
     config_text = """
 collections:
@@ -396,6 +426,28 @@ validation:
     outlier_detection:
       max_outlier_pct: 2.0
       method: invalid
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_data_quality_outlier_missing_threshold(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    outlier_detection:
+      max_outlier_pct: 2.0
+      method: zscore
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
