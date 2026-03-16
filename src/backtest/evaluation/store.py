@@ -382,8 +382,8 @@ class ResultStore:
                     evaluation_mode,
                     mode_config_hash,
                     json.dumps(validation_profile, sort_keys=True),
-                    json.dumps(active_gates, sort_keys=True),
-                    json.dumps(inactive_gates, sort_keys=True),
+                    json.dumps(sorted(active_gates)),
+                    json.dumps(sorted(inactive_gates)),
                 ),
             )
             con.commit()

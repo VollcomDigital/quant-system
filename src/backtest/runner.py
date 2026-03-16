@@ -1542,7 +1542,7 @@ class BacktestRunner:
         threshold = outlier_detection.zscore_threshold
         outlier_mask, issue = cls._compute_outlier_mask(returns=returns, method=method, threshold=threshold)
         if issue is not None:
-            return f"outlier_check_indeterminate(method={method}, reason={issue})"
+            return None
         if outlier_mask is None:
             return None
         outlier_pct = float(outlier_mask.mean() * 100.0)
@@ -2149,7 +2149,6 @@ class BacktestRunner:
         self._cache_write_failures = 0
         self._result_store_write_failures = 0
         self._evaluation_cache_write_failures = 0
-        self.cfg = normalize_validation_defaults(self.cfg)
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
         )

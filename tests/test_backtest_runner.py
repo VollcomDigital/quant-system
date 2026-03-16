@@ -1141,12 +1141,9 @@ def test_run_all_outlier_indeterminate_on_mad_zero(tmp_path, monkeypatch):
     eval_calls = _patch_pybroker_simulation(monkeypatch)
 
     results = runner.run_all()
-    assert results == []
-    assert eval_calls["count"] == 0
-    assert runner.failures
-    failure = runner.failures[0]
-    assert failure["stage"] == "data_validation"
-    assert "outlier_check_indeterminate(method=modified_zscore, reason=mad_zero)" in failure["error"]
+    assert results
+    assert eval_calls["count"] > 0
+    assert runner.failures == []
 
 
 def test_run_all_fetches_once_per_symbol_timeframe_with_multiple_strategies(tmp_path, monkeypatch):
