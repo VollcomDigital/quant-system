@@ -369,12 +369,13 @@ class BacktestRunner:
         active: set[str] = set()
         if data_quality is None:
             return active
+        # Continuity precondition checks (<2 bars, timeframe sanity) run for any
+        # configured data-quality policy because continuity diagnostics are always computed.
+        active.add("data_quality.min_required_bars")
         if getattr(data_quality, "min_data_points", None) is not None:
             active.add("data_quality.min_data_points")
         continuity = getattr(data_quality, "continuity", None)
         if continuity is not None:
-            # `min_required_bars` represents continuity precondition checks (<2 bars, timeframe sanity).
-            active.add("data_quality.min_required_bars")
             if getattr(continuity, "min_score", None) is not None:
                 active.add("data_quality.continuity.min_score")
             if getattr(continuity, "max_missing_bar_pct", None) is not None:
@@ -1344,18 +1345,21 @@ class BacktestRunner:
             return GateDecision(True, "continue", [], "data_validation"), validated_data
 
         continuity: dict[str, float | int] = {}
-        if continuity_cfg is not None:
-            if calendar_kind is None:
-                raise ValueError("continuity calendar policy must be resolved before runtime")
-            try:
-                continuity = self.compute_continuity_score(
-                    fetched_data.raw_df,
-                    context.job.timeframe,
-                    calendar_kind=calendar_kind,
-                    exchange_calendar=calendar_exchange,
-                )
-            except ValueError as exc:
-                return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
+        continuity_calendar_kind = calendar_kind
+        continuity_calendar_exchange = calendar_exchange
+        if continuity_calendar_kind is None:
+            continuity_calendar_kind, continuity_calendar_exchange = self._resolve_calendar_policy(
+                None, context.job.source
+            )
+        try:
+            continuity = self.compute_continuity_score(
+                fetched_data.raw_df,
+                context.job.timeframe,
+                calendar_kind=continuity_calendar_kind,
+                exchange_calendar=continuity_calendar_exchange,
+            )
+        except ValueError as exc:
+            return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
         reliability_reasons = self._collect_reliability_reasons(
             raw_df=fetched_data.raw_df,
             continuity=continuity,
