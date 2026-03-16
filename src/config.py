@@ -108,10 +108,6 @@ class Config:
 
 
 DEFAULT_CALENDAR_KIND = "auto"
-def _merge_replace(base: Any, override: Any) -> Any:
-    return override if override is not None else base
-
-
 def _merged_field(base: Any, override: Any, field: str) -> Any:
     override_value = getattr(override, field, None)
     if override_value is not None:
@@ -125,18 +121,12 @@ def _merge_data_quality_config(
 ) -> ValidationDataQualityConfig | None:
     if base is None and override is None:
         return None
-    min_data_points = _merge_replace(
-        getattr(base, "min_data_points", None),
-        getattr(override, "min_data_points", None),
-    )
+    min_data_points = _merged_field(base, override, "min_data_points")
     continuity = _merge_continuity_config(
         getattr(base, "continuity", None),
         getattr(override, "continuity", None),
     )
-    kurtosis = _merge_replace(
-        getattr(base, "kurtosis", None),
-        getattr(override, "kurtosis", None),
-    )
+    kurtosis = _merged_field(base, override, "kurtosis")
     outlier_detection = _merge_outlier_detection_config(
         getattr(base, "outlier_detection", None),
         getattr(override, "outlier_detection", None),
