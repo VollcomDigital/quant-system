@@ -273,8 +273,9 @@ class BacktestRunner:
 
     def _evaluation_cache_set(self, **kwargs: Any) -> None:
         try:
-            if isinstance(self.evaluation_cache, EvaluationCache):
-                record = EvaluationCacheRecord.from_mapping(kwargs)
+            record = EvaluationCacheRecord.from_mapping(kwargs)
+            set_params = inspect.signature(self.evaluation_cache.set).parameters
+            if "record" in set_params:
                 self.evaluation_cache.set(record=record)
             else:
                 self.evaluation_cache.set(**kwargs)
@@ -1344,18 +1345,21 @@ class BacktestRunner:
             return GateDecision(True, "continue", [], "data_validation"), validated_data
 
         continuity: dict[str, float | int] = {}
-        if continuity_cfg is not None:
-            if calendar_kind is None:
-                raise ValueError("continuity calendar policy must be resolved before runtime")
-            try:
-                continuity = self.compute_continuity_score(
-                    fetched_data.raw_df,
-                    context.job.timeframe,
-                    calendar_kind=calendar_kind,
-                    exchange_calendar=calendar_exchange,
-                )
-            except ValueError as exc:
-                return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
+        continuity_calendar_kind = calendar_kind
+        continuity_calendar_exchange = calendar_exchange
+        if continuity_calendar_kind is None:
+            continuity_calendar_kind, continuity_calendar_exchange = self._resolve_calendar_policy(
+                None, context.job.source
+            )
+        try:
+            continuity = self.compute_continuity_score(
+                fetched_data.raw_df,
+                context.job.timeframe,
+                calendar_kind=continuity_calendar_kind,
+                exchange_calendar=continuity_calendar_exchange,
+            )
+        except ValueError as exc:
+            return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
         reliability_reasons = self._collect_reliability_reasons(
             raw_df=fetched_data.raw_df,
             continuity=continuity,

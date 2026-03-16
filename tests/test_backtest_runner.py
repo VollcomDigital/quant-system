@@ -958,6 +958,47 @@ def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkey
     assert any("min_data_points_not_met" in r for r in reasons)
 
 
+def test_run_all_data_quality_without_continuity_still_computes_diagnostics(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            on_fail="skip_job",
+        ),
+    )
+
+    _patch_source_with_bars(monkeypatch, bars=5)
+    _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    continuity = results[0].stats["data_reliability"]["continuity"]
+    assert continuity["expected_bars"] == 5
+    assert continuity["actual_bars"] == 5
+    assert continuity["missing_bars"] == 0
+
+
+def test_run_all_data_quality_without_continuity_rejects_insufficient_bars(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            on_fail="skip_optimization",
+        ),
+    )
+    _patch_source_with_bars(monkeypatch, bars=1)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert len(runner.failures) == 1
+    assert runner.failures[0]["stage"] == "data_validation"
+    assert "insufficient_bars_for_continuity" in runner.failures[0]["error"]
+
+
 def test_run_all_reliability_skip_evaluation_on_continuity_threshold(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
