@@ -226,37 +226,38 @@ def resolve_validation_overrides(cfg: Config) -> None:
         validation_cfg.data_quality = _merge_data_quality_config(global_data_quality_policy, None)
 
     for collection in cfg.collections:
-        collection_validation_cfg = collection.validation
-        collection_data_quality_override = (
-            getattr(collection_validation_cfg, "data_quality", None)
-            if collection_validation_cfg is not None
-            else None
+        resolved_data_quality = _resolve_collection_data_quality_policy(
+            global_data_quality_policy=global_data_quality_policy,
+            collection_data_quality_override=(
+                getattr(collection.validation, "data_quality", None)
+                if collection.validation is not None
+                else None
+            ),
         )
-        if collection_data_quality_override is None:
-            if global_data_quality_policy is None:
-                continue
-            # No collection override: inherit the normalized global data-quality policy.
-            if collection.validation is None:
-                collection.validation = ValidationConfig(
-                    data_quality=_merge_data_quality_config(global_data_quality_policy, None),
-                    optimization=None,
-                )
-            else:
-                collection.validation.data_quality = _merge_data_quality_config(
-                    global_data_quality_policy, None
-                )
+        if resolved_data_quality is None:
             continue
-        if global_data_quality_policy is None:
-            # Collection-only data-quality policy: normalize and keep as effective policy.
-            collection.validation.data_quality = _merge_data_quality_config(
-                collection_data_quality_override, None
-            )
-            continue
-        # Both global and collection are set: collection values override global field-by-field.
-        collection.validation.data_quality = _merge_data_quality_config(
-            global_data_quality_policy, collection_data_quality_override
-        )
+        if collection.validation is None:
+            collection.validation = ValidationConfig(data_quality=resolved_data_quality, optimization=None)
+        else:
+            collection.validation.data_quality = resolved_data_quality
     return
+
+
+def _resolve_collection_data_quality_policy(
+    *,
+    global_data_quality_policy: ValidationDataQualityConfig | None,
+    collection_data_quality_override: ValidationDataQualityConfig | None,
+) -> ValidationDataQualityConfig | None:
+    if collection_data_quality_override is None:
+        if global_data_quality_policy is None:
+            return None
+        # No collection override: inherit normalized global data-quality policy.
+        return _merge_data_quality_config(global_data_quality_policy, None)
+    if global_data_quality_policy is None:
+        # Collection-only data-quality policy: normalize and keep as effective policy.
+        return _merge_data_quality_config(collection_data_quality_override, None)
+    # Both global and collection are set: collection values override global field-by-field.
+    return _merge_data_quality_config(global_data_quality_policy, collection_data_quality_override)
 
 
 def require_mapping(raw: Any, prefix: str) -> dict[str, Any]:
