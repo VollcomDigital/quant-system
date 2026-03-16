@@ -240,7 +240,6 @@ def resolve_validation_overrides(cfg: Config) -> None:
             collection.validation = ValidationConfig(data_quality=resolved_data_quality, optimization=None)
         else:
             collection.validation.data_quality = resolved_data_quality
-    return
 
 
 def _resolve_collection_data_quality_policy(
