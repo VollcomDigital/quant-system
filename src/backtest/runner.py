@@ -1389,14 +1389,12 @@ class BacktestRunner:
         source: str,
     ) -> tuple[str, str | None]:
         if calendar_cfg is None:
-            calendar_kind = "auto"
+            calendar_kind = (
+                "crypto_24_7"
+                if source.strip().lower() in self._CRYPTO_SOURCE_NAMES
+                else "weekday"
+            )
             calendar_exchange = None
-            if calendar_kind == "auto":
-                calendar_kind = (
-                    "crypto_24_7"
-                    if source.strip().lower() in self._CRYPTO_SOURCE_NAMES
-                    else "weekday"
-                )
             return calendar_kind, calendar_exchange
         calendar_kind = str(getattr(calendar_cfg, "kind")).strip().lower()
         calendar_exchange = None
