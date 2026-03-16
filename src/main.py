@@ -32,6 +32,7 @@ app = typer.Typer(add_completion=False, no_args_is_help=True)
 DATA_SOURCES = {
     "yfinance": YFinanceSource,
 }
+SUMMARY_JSON_FILENAME = "summary.json"
 
 
 @app.command()
@@ -40,6 +41,10 @@ def run(
     output_dir: str = typer.Option(None, help="Reports root directory (default: reports/<run_id>)"),
     strategies_path: str = typer.Option(
         None, help="Path to external strategies repo (overrides env STRATEGIES_PATH)"
+    ),
+    evaluation_mode: str = typer.Option(
+        None,
+        help="Evaluation mode override (backtest or walk_forward). Defaults to config value.",
     ),
     only_cached: bool = typer.Option(False, help="Use only cached Parquet data; do not fetch"),
     top_n: int = typer.Option(3, help="Top-N per symbol for CSV/HTML reports"),
@@ -65,6 +70,11 @@ def run(
         logger.debug("requests_cache unavailable", exc_info=exc)
 
     cfg = load_config(config)
+    if evaluation_mode is not None:
+        mode_value = str(evaluation_mode).strip().lower()
+        if mode_value not in {"backtest", "walk_forward"}:
+            raise typer.BadParameter("evaluation_mode must be backtest or walk_forward")
+        cfg.evaluation_mode = mode_value
     env_cache = os.environ.get("DATA_CACHE_DIR")
     if env_cache:
         cfg.cache_dir = env_cache
@@ -82,7 +92,16 @@ def run(
     )
 
     start_ts = datetime.now(UTC)
-    runner = BacktestRunner(cfg, strategies_root=strategies_root, run_id=run_id)
+    try:
+        runner = BacktestRunner(
+            cfg,
+            strategies_root=strategies_root,
+            run_id=run_id,
+            evaluation_mode=cfg.evaluation_mode,
+        )
+    except NotImplementedError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED)
+        raise typer.Exit(code=1)
     if not getattr(runner, "external_index", {}):
         typer.secho(
             (
@@ -142,14 +161,27 @@ def run(
         logger.warning("HTML report export failed", exc_info=exc)
 
     duration = (end_ts - start_ts).total_seconds()
-    dashboard_payload = build_dashboard_payload(runner.results_cache, run_id, results)
+    dashboard_cache = runner.results_cache
+    if os.environ.get("EVALUATION_RESULTS_SOURCE", "").strip().lower() == "result_store":
+        class _ResultStoreCacheAdapter:
+            def __init__(self, rows: list[dict[str, Any]]):
+                self._rows = rows
+
+            def list_by_run(self, _run_id: str) -> list[dict[str, Any]]:
+                return list(self._rows)
+
+        dashboard_cache = _ResultStoreCacheAdapter(runner.list_result_rows_for_run(run_id))
+
+    dashboard_payload = build_dashboard_payload(dashboard_cache, run_id, results)
     dashboard_payload.update(
         {
             "metric": cfg.metric,
+            "evaluation_mode": cfg.evaluation_mode,
             "results_count": len(results),
             "started_at": start_ts.isoformat() + "Z",
             "finished_at": end_ts.isoformat() + "Z",
             "duration_sec": duration,
+            "validation": getattr(runner, "validation_metadata", {}),
         }
     )
     runs_manifest = collect_runs_manifest(
@@ -158,6 +190,7 @@ def run(
         dashboard_payload.get("summary"),
         {
             "metric": cfg.metric,
+            "evaluation_mode": cfg.evaluation_mode,
             "results_count": len(results),
             "started_at": start_ts.isoformat() + "Z",
             "duration_sec": duration,
@@ -191,6 +224,7 @@ def run(
             "finished_at": end_ts.isoformat() + "Z",
             "duration_sec": duration,
             "metric": cfg.metric,
+            "evaluation_mode": cfg.evaluation_mode,
             "results_count": len(results),
             "metrics": getattr(runner, "metrics", {}),
             "failures_count": len(getattr(runner, "failures", [])),
@@ -199,8 +233,10 @@ def run(
             "runs": runs_manifest,
             "manifest_refresh": manifest_status,
             "notifications": notification_events,
+            "validation": getattr(runner, "validation_metadata", {}),
         }
-        (base_out / "summary.json").write_text(safe_json_dumps(summary, indent=2))
+        summary_json = safe_json_dumps(summary, indent=2)
+        (base_out / SUMMARY_JSON_FILENAME).write_text(summary_json)
         if manifest_status:
             (base_out / "manifest_status.json").write_text(
                 safe_json_dumps(manifest_status, indent=2)
@@ -209,6 +245,42 @@ def run(
             (base_out / "notifications.json").write_text(
                 safe_json_dumps(notification_events, indent=2)
             )
+        metrics = summary.get("metrics", {}) or {}
+        failures = summary.get("failures", []) or []
+        failed_strategies = sorted(
+            {
+                str(item.get("strategy")).strip()
+                for item in failures
+                if isinstance(item, dict) and item.get("strategy")
+            }
+        )
+        failed_collections = sorted(
+            {
+                str(item.get("collection")).strip()
+                for item in failures
+                if isinstance(item, dict)
+                and item.get("collection")
+                and not item.get("strategy")
+            }
+        )
+        typer.echo("Run summary:")
+        typer.echo(f"- run_id: {run_id}")
+        typer.echo(f"- metric: {summary.get('metric')}")
+        typer.echo(f"- results_count: {summary.get('results_count')}")
+        typer.echo(f"- failures_count: {summary.get('failures_count')}")
+        typer.echo(f"- result_cache_hits: {metrics.get('result_cache_hits', 0)}")
+        typer.echo(f"- result_cache_misses: {metrics.get('result_cache_misses', 0)}")
+        typer.echo(f"- fresh_simulation_runs: {metrics.get('fresh_simulation_runs', 0)}")
+        typer.echo(f"- fresh_metric_evals: {metrics.get('fresh_metric_evals', 0)}")
+        typer.echo(f"- strategies_count: {metrics.get('strategies_count', 0)}")
+        active_validation_gates = summary.get("validation", {}).get("active_gates", [])
+        if active_validation_gates:
+            typer.echo(f"- active_validation_gates: {', '.join(active_validation_gates)}")
+        if failed_strategies:
+            typer.echo(f"- failed_strategies: {', '.join(failed_strategies)}")
+        if failed_collections:
+            typer.echo(f"- failed_collections: {', '.join(failed_collections)}")
+        typer.echo(f"- duration_sec: {summary.get('duration_sec')}")
     except Exception as exc:
         logger.warning("summary emit failed", exc_info=exc)
 
@@ -226,7 +298,8 @@ def run(
         for k in (
             "result_cache_hits",
             "result_cache_misses",
-            "param_evals",
+            "fresh_simulation_runs",
+            "fresh_metric_evals",
             "symbols_tested",
             "strategies_count",
         ):
@@ -308,10 +381,10 @@ def manifest_status(
             typer.secho(f"Unable to read manifest status: {exc}", fg=typer.colors.RED)
             raise typer.Exit(code=1) from exc
     else:
-        summary_path = run_dir / "summary.json"
+        summary_path = run_dir / SUMMARY_JSON_FILENAME
         if not summary_path.exists():
             typer.secho(
-                f"No manifest_status.json or summary.json found under {run_dir}",
+                f"No manifest_status.json or {SUMMARY_JSON_FILENAME} found under {run_dir}",
                 fg=typer.colors.YELLOW,
             )
             raise typer.Exit(code=1)
@@ -319,7 +392,7 @@ def manifest_status(
             summary = json.loads(summary_path.read_text())
             statuses = summary.get("manifest_refresh") or []
         except Exception as exc:
-            typer.secho(f"Unable to read summary.json: {exc}", fg=typer.colors.RED)
+            typer.secho(f"Unable to read {SUMMARY_JSON_FILENAME}: {exc}", fg=typer.colors.RED)
             raise typer.Exit(code=1) from exc
 
     if not statuses:
@@ -384,14 +457,14 @@ def rebuild_dashboard(
             raise typer.Exit(code=1)
         run_dir = max(candidate_dirs, key=lambda p: p.name)
 
-    summary_path = run_dir / "summary.json"
+    summary_path = run_dir / SUMMARY_JSON_FILENAME
     summary: dict[str, Any] | None = None
     if summary_path.exists():
         try:
             summary = json.loads(summary_path.read_text())
             summary.setdefault("base_dir", str(run_dir))
         except Exception as exc:
-            typer.secho(f"Unable to read summary.json: {exc}", fg=typer.colors.RED)
+            typer.secho(f"Unable to read {SUMMARY_JSON_FILENAME}: {exc}", fg=typer.colors.RED)
             raise typer.Exit(code=1) from exc
 
     cache = ResultsCache(Path(results_cache_dir))
