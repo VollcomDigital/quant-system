@@ -1107,8 +1107,9 @@ def test_run_all_reliability_skip_evaluation_on_max_outlier_pct(tmp_path, monkey
     assert "max_outlier_pct_exceeded" in failure["error"]
 
 
-def test_run_all_outlier_indeterminate_on_mad_zero(tmp_path, monkeypatch):
+def test_run_all_outlier_indeterminate_on_mad_zero(tmp_path, monkeypatch, caplog):
     runner = _make_runner(tmp_path, monkeypatch)
+    caplog.set_level("INFO", logger="quant")
     runner.cfg.validation = ValidationConfig(
         data_quality=ValidationDataQualityConfig(
             outlier_detection=ValidationOutlierDetectionConfig(
@@ -1144,6 +1145,7 @@ def test_run_all_outlier_indeterminate_on_mad_zero(tmp_path, monkeypatch):
     assert results
     assert eval_calls["count"] > 0
     assert runner.failures == []
+    assert any('"event": "outlier_detection_indeterminate"' in rec.getMessage() for rec in caplog.records)
 
 
 def test_run_all_fetches_once_per_symbol_timeframe_with_multiple_strategies(tmp_path, monkeypatch):

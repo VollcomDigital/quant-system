@@ -1386,14 +1386,10 @@ class BacktestRunner:
         source: str,
     ) -> tuple[str, str | None]:
         if calendar_cfg is None:
-            calendar_kind = "auto"
             calendar_exchange = None
-            if calendar_kind == "auto":
-                calendar_kind = (
-                    "crypto_24_7"
-                    if source.strip().lower() in self._CRYPTO_SOURCE_NAMES
-                    else "weekday"
-                )
+            calendar_kind = (
+                "crypto_24_7" if source.strip().lower() in self._CRYPTO_SOURCE_NAMES else "weekday"
+            )
             return calendar_kind, calendar_exchange
         calendar_kind = str(getattr(calendar_cfg, "kind")).strip().lower()
         calendar_exchange = None
@@ -1497,8 +1493,8 @@ class BacktestRunner:
             )
         return None
 
-    @staticmethod
     def _collect_reliability_reasons(
+        self,
         *,
         raw_df: pd.DataFrame,
         continuity: dict[str, float | int],
@@ -1509,11 +1505,11 @@ class BacktestRunner:
     ) -> list[str]:
         reasons: list[str] = []
         reason_checks = (
-            BacktestRunner._continuity_threshold_reason(continuity, continuity_cfg),
-            BacktestRunner._min_data_points_reason(raw_df, min_data_points_cfg),
-            BacktestRunner._missing_bar_pct_reason(continuity, continuity_cfg),
-            BacktestRunner._max_kurtosis_reason(raw_df, kurtosis_cfg),
-            BacktestRunner._outlier_pct_reason(
+            self._continuity_threshold_reason(continuity, continuity_cfg),
+            self._min_data_points_reason(raw_df, min_data_points_cfg),
+            self._missing_bar_pct_reason(continuity, continuity_cfg),
+            self._max_kurtosis_reason(raw_df, kurtosis_cfg),
+            self._outlier_pct_reason(
                 raw_df=raw_df,
                 outlier_detection=outlier_detection,
             ),
@@ -1523,16 +1519,15 @@ class BacktestRunner:
                 reasons.append(reason)
         return reasons
 
-    @classmethod
     def _outlier_pct_reason(
-        cls,
+        self,
         *,
         raw_df: pd.DataFrame,
         outlier_detection: ValidationOutlierDetectionConfig | None,
     ) -> str | None:
         if outlier_detection is None:
             return None
-        close_col = cls._resolve_close_column(raw_df)
+        close_col = self._resolve_close_column(raw_df)
         if close_col is None:
             return None
         returns = raw_df[close_col].astype(float).pct_change().replace([np.inf, -np.inf], np.nan).dropna()
@@ -1540,8 +1535,17 @@ class BacktestRunner:
             return None
         method = outlier_detection.method
         threshold = outlier_detection.zscore_threshold
-        outlier_mask, issue = cls._compute_outlier_mask(returns=returns, method=method, threshold=threshold)
+        outlier_mask, issue = self._compute_outlier_mask(returns=returns, method=method, threshold=threshold)
         if issue is not None:
+            log_json(
+                self.logger,
+                "outlier_detection_indeterminate",
+                run_id=self.run_id,
+                method=method,
+                threshold=threshold,
+                issue=issue,
+                sample_size=int(returns.size),
+            )
             return None
         if outlier_mask is None:
             return None
