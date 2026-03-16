@@ -107,7 +107,6 @@ class Config:
     validation: ValidationConfig | None = None
 
 
-DEFAULT_DATA_QUALITY_ON_FAIL = "skip_optimization"
 DEFAULT_CALENDAR_KIND = "auto"
 DEFAULT_OUTLIER_METHOD = "modified_zscore"
 DEFAULT_ZSCORE_THRESHOLD = 3.0
@@ -132,7 +131,9 @@ def _merged_field(base: Any, override: Any, field: str) -> Any:
 def _merge_data_quality_config(
     base: ValidationDataQualityConfig | None,
     override: ValidationDataQualityConfig | None,
-) -> ValidationDataQualityConfig:
+) -> ValidationDataQualityConfig | None:
+    if base is None and override is None:
+        return None
     min_data_points = _merge_replace(
         getattr(base, "min_data_points", None),
         getattr(override, "min_data_points", None),
@@ -151,12 +152,14 @@ def _merge_data_quality_config(
     )
 
     on_fail = _merged_field(base, override, "on_fail")
+    if on_fail is None:
+        raise ValueError("Invalid `validation.data_quality`: missing required field(s): on_fail")
     return ValidationDataQualityConfig(
         min_data_points=min_data_points,
         continuity=continuity,
         kurtosis=kurtosis,
         outlier_detection=outlier_detection,
-        on_fail=(str(on_fail).strip().lower() if on_fail is not None else DEFAULT_DATA_QUALITY_ON_FAIL),
+        on_fail=str(on_fail).strip().lower(),
     )
 
 def _merge_continuity_config(
@@ -214,17 +217,33 @@ def _merge_outlier_detection_config(
     )
 
 
-def normalize_validation_defaults(cfg: Config) -> Config:
-    """Fill effective validation defaults in config so runtime can trust policy values."""
-    if cfg.validation is None:
-        cfg.validation = ValidationConfig()
-    cfg.validation.data_quality = _merge_data_quality_config(cfg.validation.data_quality, None)
-    global_dq = cfg.validation.data_quality
+def resolve_validation_overrides(cfg: Config) -> Config:
+    """Resolve effective collection validation from global + collection overrides.
+
+    Behavior:
+    - If global `validation.data_quality` is unset, no collection data-quality policy is injected.
+    - If global is set, each collection gets an explicit resolved data-quality policy:
+      global-only for missing collection config, or merged global+collection where overrides exist.
+    """
+    validation = cfg.validation
+    if validation is None:
+        return cfg
+    global_dq = validation.data_quality
+    if global_dq is not None:
+        validation.data_quality = _merge_data_quality_config(global_dq, None)
 
     for collection in cfg.collections:
+        if global_dq is None:
+            continue
         if collection.validation is None:
+            # Inherit global data-quality policy into collections with no local validation block.
+            collection.validation = ValidationConfig(
+                data_quality=_merge_data_quality_config(global_dq, None),
+                optimization=None,
+            )
             continue
         if collection.validation.data_quality is None:
+            collection.validation.data_quality = _merge_data_quality_config(global_dq, None)
             continue
         collection.validation.data_quality = _merge_data_quality_config(
             global_dq, collection.validation.data_quality
@@ -480,6 +499,7 @@ def _parse_validation(raw: Any, prefix: str) -> ValidationConfig | None:
     )
 
     if data_quality_cfg is None and optimization_cfg is None:
+        # Keep validation fully optional; no synthetic policy object when both modules are absent.
         return None
     return ValidationConfig(data_quality=data_quality_cfg, optimization=optimization_cfg)
 
@@ -594,4 +614,4 @@ def load_config(path: str | Path) -> Config:
         notifications=notifications_cfg,
         validation=validation_cfg,
     )
-    return normalize_validation_defaults(cfg)
+    return resolve_validation_overrides(cfg)

@@ -20,7 +20,7 @@ from ..config import (
     Config,
     ValidationContinuityConfig,
     ValidationOutlierDetectionConfig,
-    normalize_validation_defaults,
+    resolve_validation_overrides,
 )
 from ..data.alpaca_source import AlpacaSource
 from ..data.alphavantage_source import AlphaVantageSource
@@ -193,7 +193,7 @@ class BacktestRunner:
         run_id: str | None = None,
         evaluation_mode: str | None = None,
     ):
-        self.cfg = normalize_validation_defaults(cfg)
+        self.cfg = resolve_validation_overrides(cfg)
         self.strategies_root = strategies_root
         self.external_index = discover_external_strategies(strategies_root)
         self.results_cache = ResultsCache(Path(self.cfg.cache_dir).parent / "results")
@@ -365,13 +365,15 @@ class BacktestRunner:
 
     @staticmethod
     def _active_data_quality_gates(data_quality: Any) -> set[str]:
-        active = {"data_quality.min_required_bars"}
+        active: set[str] = set()
         if data_quality is None:
             return active
         if getattr(data_quality, "min_data_points", None) is not None:
             active.add("data_quality.min_data_points")
         continuity = getattr(data_quality, "continuity", None)
         if continuity is not None:
+            # `min_required_bars` represents continuity precondition checks (<2 bars, timeframe sanity).
+            active.add("data_quality.min_required_bars")
             if getattr(continuity, "min_score", None) is not None:
                 active.add("data_quality.continuity.min_score")
             if getattr(continuity, "max_missing_bar_pct", None) is not None:
@@ -1314,15 +1316,45 @@ class BacktestRunner:
         ) = (
             self._resolve_data_quality_policy(context.job.collection)
         )
-        try:
-            continuity = self.compute_continuity_score(
-                fetched_data.raw_df,
-                context.job.timeframe,
-                calendar_kind=calendar_kind,
-                exchange_calendar=calendar_exchange,
+        # `on_fail` is required by config whenever a data-quality policy exists,
+        # so `reliability_on_fail is None` means data-quality policy is unset.
+        if reliability_on_fail is None:
+            # Even with policy disabled, we keep best-effort continuity diagnostics in result stats.
+            continuity: dict[str, float | int] = {}
+            default_calendar_kind, default_calendar_exchange = self._resolve_calendar_policy(
+                None, context.job.source
             )
-        except ValueError as exc:
-            return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
+            try:
+                continuity = self.compute_continuity_score(
+                    fetched_data.raw_df,
+                    context.job.timeframe,
+                    calendar_kind=default_calendar_kind,
+                    exchange_calendar=default_calendar_exchange,
+                )
+            except ValueError:
+                # No policy is configured, so continuity diagnostics are best-effort only.
+                continuity = {}
+            validated_data = ValidatedData(
+                raw_df=fetched_data.raw_df,
+                continuity=continuity,
+                reliability_on_fail="continue",
+                reliability_reasons=[],
+            )
+            return GateDecision(True, "continue", [], "data_validation"), validated_data
+
+        continuity: dict[str, float | int] = {}
+        if continuity_cfg is not None:
+            if calendar_kind is None:
+                raise ValueError("continuity calendar policy must be resolved before runtime")
+            try:
+                continuity = self.compute_continuity_score(
+                    fetched_data.raw_df,
+                    context.job.timeframe,
+                    calendar_kind=calendar_kind,
+                    exchange_calendar=calendar_exchange,
+                )
+            except ValueError as exc:
+                return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
         reliability_reasons = self._collect_reliability_reasons(
             raw_df=fetched_data.raw_df,
             continuity=continuity,
@@ -1351,28 +1383,30 @@ class BacktestRunner:
     def _resolve_data_quality_policy(
         self, collection: CollectionConfig
     ) -> tuple[
-        str,
+        str | None,
         int | None,
         ValidationContinuityConfig | None,
         float | None,
         ValidationOutlierDetectionConfig | None,
-        str,
+        str | None,
         str | None,
     ]:
-        global_validation = getattr(self.cfg, "validation", None)
-        global_dq = getattr(global_validation, "data_quality", None)
         collection_validation = getattr(collection, "validation", None)
-        collection_dq = getattr(collection_validation, "data_quality", None) if collection_validation else None
-        resolved_dq = collection_dq if collection_dq is not None else global_dq
+        resolved_dq = getattr(collection_validation, "data_quality", None) if collection_validation else None
         if resolved_dq is None:
-            raise ValueError("validation.data_quality must be normalized before runtime")
-        on_fail = str(resolved_dq.on_fail).strip().lower()
+            # Sentinel for "no data-quality policy configured for this collection".
+            return None, None, None, None, None, None, None
+        on_fail = resolved_dq.on_fail
         min_data_points_cfg = resolved_dq.min_data_points
         continuity_cfg = resolved_dq.continuity
         kurtosis_cfg = resolved_dq.kurtosis
         outlier_detection = resolved_dq.outlier_detection
-        calendar_cfg = getattr(continuity_cfg, "calendar", None) if continuity_cfg is not None else None
-        calendar_kind, calendar_exchange = self._resolve_calendar_policy(calendar_cfg, collection.source)
+        calendar_kind: str | None = None
+        calendar_exchange: str | None = None
+        if continuity_cfg is not None:
+            calendar_kind, calendar_exchange = self._resolve_calendar_policy(
+                continuity_cfg.calendar, collection.source
+            )
         return (
             on_fail,
             min_data_points_cfg,
@@ -1396,11 +1430,8 @@ class BacktestRunner:
             )
             calendar_exchange = None
             return calendar_kind, calendar_exchange
-        calendar_kind = str(getattr(calendar_cfg, "kind")).strip().lower()
-        calendar_exchange = None
-        exchange_value = getattr(calendar_cfg, "exchange", None)
-        if exchange_value is not None:
-            calendar_exchange = str(exchange_value).strip()
+        calendar_kind = calendar_cfg.kind
+        calendar_exchange = calendar_cfg.exchange
         if calendar_kind == "auto":
             calendar_kind = (
                 "crypto_24_7" if source.strip().lower() in self._CRYPTO_SOURCE_NAMES else "weekday"
@@ -1413,10 +1444,7 @@ class BacktestRunner:
         policy = getattr(validation_cfg, "optimization", None)
         if policy is None:
             return None
-        on_fail = str(policy.on_fail).strip().lower()
-        min_bars = int(policy.min_bars)
-        dof_multiplier = int(policy.dof_multiplier)
-        return on_fail, min_bars, dof_multiplier
+        return policy.on_fail, policy.min_bars, policy.dof_multiplier
 
     @staticmethod
     def _continuity_threshold_reason(
@@ -2150,7 +2178,8 @@ class BacktestRunner:
         self._cache_write_failures = 0
         self._result_store_write_failures = 0
         self._evaluation_cache_write_failures = 0
-        self.cfg = normalize_validation_defaults(self.cfg)
+        # Re-resolve at run start because callers/tests may mutate cfg after runner init.
+        self.cfg = resolve_validation_overrides(self.cfg)
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
         )
