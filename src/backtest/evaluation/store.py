@@ -3,10 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .contracts import EvaluationModeConfig, ResultRecord
+from .contracts import EvaluationModeConfig, ResultRecord, EvaluationCacheRecord
 
 EVALUATION_SCHEMA_VERSION = "1"
 
@@ -127,25 +128,8 @@ class EvaluationCache:
         finally:
             con.close()
 
-    def set(
-        self,
-        *,
-        collection: str,
-        symbol: str,
-        timeframe: str,
-        strategy: str,
-        params: dict[str, Any],
-        metric_name: str,
-        metric_value: float,
-        stats: dict[str, Any],
-        data_fingerprint: str,
-        fees: float,
-        slippage: float,
-        evaluation_mode: str,
-        mode_config_hash: str,
-        validation_config_hash: str,
-    ) -> None:
-        params_json = json.dumps(params, sort_keys=True)
+    def set(self, *, record: EvaluationCacheRecord) -> None:
+        params_json = json.dumps(record.params, sort_keys=True)
         con = sqlite3.connect(self.db_path)
         try:
             con.execute(
@@ -171,20 +155,20 @@ class EvaluationCache:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    collection,
-                    symbol,
-                    timeframe,
-                    strategy,
+                    record.collection,
+                    record.symbol,
+                    record.timeframe,
+                    record.strategy,
                     params_json,
-                    metric_name,
-                    float(metric_value),
-                    json.dumps(stats, sort_keys=True),
-                    data_fingerprint,
-                    fees,
-                    slippage,
-                    evaluation_mode,
-                    mode_config_hash,
-                    validation_config_hash,
+                    record.metric_name,
+                    float(record.metric_value),
+                    json.dumps(record.stats, sort_keys=True),
+                    record.data_fingerprint,
+                    record.fees,
+                    record.slippage,
+                    record.evaluation_mode,
+                    record.mode_config_hash,
+                    record.validation_config_hash,
                     EVALUATION_SCHEMA_VERSION,
                 ),
             )

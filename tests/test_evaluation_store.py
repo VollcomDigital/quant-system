@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from src.backtest.evaluation.contracts import EvaluationModeConfig, ResultRecord
-from src.backtest.evaluation.store import EvaluationCache, ResultStore
+from src.backtest.evaluation.store import EvaluationCache, EvaluationCacheRecord, ResultStore
 
 
 def test_evaluation_cache_uses_mode_hash(tmp_path: Path):
@@ -31,16 +31,24 @@ def test_evaluation_cache_uses_mode_hash(tmp_path: Path):
     }
 
     cache.set(
-        **common,
-        mode_config_hash=hash_a,
-        metric_value=1.0,
-        stats={"sharpe": 1.0},
+        record=EvaluationCacheRecord.from_mapping(
+            {
+                **common,
+                "mode_config_hash": hash_a,
+                "metric_value": 1.0,
+                "stats": {"sharpe": 1.0},
+            }
+        )
     )
     cache.set(
-        **common,
-        mode_config_hash=hash_b,
-        metric_value=2.0,
-        stats={"sharpe": 2.0},
+        record=EvaluationCacheRecord.from_mapping(
+            {
+                **common,
+                "mode_config_hash": hash_b,
+                "metric_value": 2.0,
+                "stats": {"sharpe": 2.0},
+            }
+        )
     )
 
     hit_a = cache.get(**common, mode_config_hash=hash_a)
@@ -98,16 +106,24 @@ def test_evaluation_cache_uses_validation_hash(tmp_path: Path):
         "mode_config_hash": mode_hash,
     }
     cache.set(
-        **common,
-        validation_config_hash="v1",
-        metric_value=1.0,
-        stats={"sharpe": 1.0},
+        record=EvaluationCacheRecord.from_mapping(
+            {
+                **common,
+                "validation_config_hash": "v1",
+                "metric_value": 1.0,
+                "stats": {"sharpe": 1.0},
+            }
+        )
     )
     cache.set(
-        **common,
-        validation_config_hash="v2",
-        metric_value=2.0,
-        stats={"sharpe": 2.0},
+        record=EvaluationCacheRecord.from_mapping(
+            {
+                **common,
+                "validation_config_hash": "v2",
+                "metric_value": 2.0,
+                "stats": {"sharpe": 2.0},
+            }
+        )
     )
 
     hit_v1 = cache.get(**common, validation_config_hash="v1")

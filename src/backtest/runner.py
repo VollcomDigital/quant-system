@@ -41,7 +41,7 @@ from .evaluation.contracts import (
     ResultRecord,
 )
 from .evaluation.evaluator import BacktestEvaluator
-from .evaluation.store import EvaluationCache, ResultStore
+from .evaluation.store import EvaluationCache, EvaluationCacheRecord, ResultStore
 from .metrics import (
     omega_ratio,
     pain_index,
@@ -272,7 +272,11 @@ class BacktestRunner:
 
     def _evaluation_cache_set(self, **kwargs: Any) -> None:
         try:
-            self.evaluation_cache.set(**kwargs)
+            if isinstance(self.evaluation_cache, EvaluationCache):
+                record = EvaluationCacheRecord.from_mapping(kwargs)
+                self.evaluation_cache.set(record=record)
+            else:
+                self.evaluation_cache.set(**kwargs)
         except Exception as exc:
             self._evaluation_cache_write_failures += 1
             if self._evaluation_cache_write_failures <= 3:
