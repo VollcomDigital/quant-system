@@ -186,13 +186,14 @@ timeframes: ['1d']
 metric: sharpe
 validation:
   data_quality:
+    on_fail: skip_job
     continuity:
       min_score: 1.2
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"validation\.data_quality\.continuity\.min_score"):
         load_config(path)
 
 
