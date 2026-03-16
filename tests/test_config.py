@@ -354,6 +354,30 @@ validation:
         load_config(path)
 
 
+def test_load_config_data_quality_continuity_without_calendar_keeps_calendar_none(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    continuity:
+      min_score: 0.98
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.continuity is not None
+    assert cfg.validation.data_quality.continuity.calendar is None
+
+
 def test_load_config_data_quality_outlier_settings(tmp_path: Path):
     config_text = """
 collections:

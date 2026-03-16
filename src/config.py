@@ -162,8 +162,8 @@ def _merge_continuity_config(
     min_score = _merged_field(base, override, "min_score")
     max_missing_bar_pct = _merged_field(base, override, "max_missing_bar_pct")
     calendar = _merge_calendar_config(
-        _merged_field(base, None, "calendar"),
-        _merged_field(None, override, "calendar"),
+        getattr(base, "calendar", None),
+        getattr(override, "calendar", None),
     )
     return ValidationContinuityConfig(
         min_score=min_score,
@@ -175,7 +175,9 @@ def _merge_continuity_config(
 def _merge_calendar_config(
     base: ValidationCalendarConfig | None,
     override: ValidationCalendarConfig | None,
-) -> ValidationCalendarConfig:
+) -> ValidationCalendarConfig | None:
+    if base is None and override is None:
+        return None
     kind = str(_merged_field(base, override, "kind") or DEFAULT_CALENDAR_KIND).strip().lower()
     exchange = _merged_field(base, override, "exchange")
     timezone = _merged_field(base, override, "timezone")
