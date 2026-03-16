@@ -370,12 +370,13 @@ class BacktestRunner:
         active: set[str] = set()
         if data_quality is None:
             return active
+        # `min_required_bars` is enforced by continuity precondition checks whenever
+        # any data-quality policy is configured.
+        active.add("data_quality.min_required_bars")
         if getattr(data_quality, "min_data_points", None) is not None:
             active.add("data_quality.min_data_points")
         continuity = getattr(data_quality, "continuity", None)
         if continuity is not None:
-            # `min_required_bars` represents continuity precondition checks (<2 bars, timeframe sanity).
-            active.add("data_quality.min_required_bars")
             if getattr(continuity, "min_score", None) is not None:
                 active.add("data_quality.continuity.min_score")
             if getattr(continuity, "max_missing_bar_pct", None) is not None:
