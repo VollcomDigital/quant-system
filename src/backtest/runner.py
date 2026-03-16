@@ -331,6 +331,13 @@ class BacktestRunner:
             return None
         continuity = getattr(data_quality, "continuity", None)
         calendar = getattr(continuity, "calendar", None) if continuity is not None else None
+        calendar_payload = None
+        if calendar is not None:
+            calendar_payload = {
+                "kind": getattr(calendar, "kind", None),
+                "exchange": getattr(calendar, "exchange", None),
+                "timezone": getattr(calendar, "timezone", None),
+            }
         outlier = getattr(data_quality, "outlier_detection", None)
         return {
             "on_fail": getattr(data_quality, "on_fail", None),
@@ -339,15 +346,7 @@ class BacktestRunner:
                 {
                     "min_score": getattr(continuity, "min_score", None),
                     "max_missing_bar_pct": getattr(continuity, "max_missing_bar_pct", None),
-                    "calendar": (
-                        {
-                            "kind": getattr(calendar, "kind", None),
-                            "exchange": getattr(calendar, "exchange", None),
-                            "timezone": getattr(calendar, "timezone", None),
-                        }
-                        if calendar is not None
-                        else None
-                    ),
+                    "calendar": calendar_payload,
                 }
                 if continuity is not None
                 else None
