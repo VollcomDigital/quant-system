@@ -382,6 +382,43 @@ validation:
     assert cfg.validation.data_quality.outlier_detection.zscore_threshold == pytest.approx(3.5)
 
 
+def test_load_config_data_quality_outlier_collection_uses_global_method_and_threshold(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    validation:
+      data_quality:
+        on_fail: skip_job
+        outlier_detection:
+          max_outlier_pct: 2.0
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    outlier_detection:
+      max_outlier_pct: 1.5
+      method: zscore
+      zscore_threshold: 3.0
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.data_quality is not None
+    assert cfg.collections[0].validation.data_quality.outlier_detection is not None
+    assert cfg.collections[0].validation.data_quality.outlier_detection.max_outlier_pct == pytest.approx(
+        2.0
+    )
+    assert cfg.collections[0].validation.data_quality.outlier_detection.method == "zscore"
+    assert cfg.collections[0].validation.data_quality.outlier_detection.zscore_threshold == pytest.approx(
+        3.0
+    )
+
+
 def test_load_config_data_quality_invalid_outlier_method(tmp_path: Path):
     config_text = """
 collections:

@@ -68,8 +68,8 @@ class ValidationContinuityConfig:
 @dataclass
 class ValidationOutlierDetectionConfig:
     max_outlier_pct: float
-    method: str = "modified_zscore"
-    zscore_threshold: float = 3.5
+    method: str | None = None
+    zscore_threshold: float | None = None
 
 
 @dataclass
@@ -429,12 +429,8 @@ def _parse_outlier_detection(
         raise ValueError(f"`{prefix}.zscore_threshold` must be > 0")
     return ValidationOutlierDetectionConfig(
         max_outlier_pct=max_outlier_pct,
-        method=method or DEFAULT_OUTLIER_METHOD,
-        zscore_threshold=(
-            zscore_threshold
-            if zscore_threshold is not None
-            else _default_outlier_threshold(method or DEFAULT_OUTLIER_METHOD)
-        ),
+        method=method,
+        zscore_threshold=zscore_threshold,
     )
 
 
