@@ -213,14 +213,14 @@ def _merge_outlier_detection_config(
     )
 
 
-def resolve_validation_overrides(cfg: Config) -> Config:
+def resolve_validation_overrides(cfg: Config) -> None:
     """Resolve effective `validation.data_quality` per collection.
 
     Rule: effective policy = merge(global_data_quality_policy, collection_data_quality_override).
     """
     validation_cfg = cfg.validation
     if validation_cfg is None:
-        return cfg
+        return
     global_data_quality_policy = validation_cfg.data_quality
     if global_data_quality_policy is not None:
         validation_cfg.data_quality = _merge_data_quality_config(global_data_quality_policy, None)
@@ -256,7 +256,7 @@ def resolve_validation_overrides(cfg: Config) -> Config:
         collection.validation.data_quality = _merge_data_quality_config(
             global_data_quality_policy, collection_data_quality_override
         )
-    return cfg
+    return
 
 
 def require_mapping(raw: Any, prefix: str) -> dict[str, Any]:
@@ -620,4 +620,5 @@ def load_config(path: str | Path) -> Config:
         notifications=notifications_cfg,
         validation=validation_cfg,
     )
-    return resolve_validation_overrides(cfg)
+    resolve_validation_overrides(cfg)
+    return cfg

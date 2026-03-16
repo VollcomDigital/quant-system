@@ -193,7 +193,8 @@ class BacktestRunner:
         run_id: str | None = None,
         evaluation_mode: str | None = None,
     ):
-        self.cfg = resolve_validation_overrides(cfg)
+        self.cfg = cfg
+        resolve_validation_overrides(self.cfg)
         self.strategies_root = strategies_root
         self.external_index = discover_external_strategies(strategies_root)
         self.results_cache = ResultsCache(Path(self.cfg.cache_dir).parent / "results")
@@ -2179,7 +2180,7 @@ class BacktestRunner:
         self._result_store_write_failures = 0
         self._evaluation_cache_write_failures = 0
         # Re-resolve at run start because callers/tests may mutate cfg after runner init.
-        self.cfg = resolve_validation_overrides(self.cfg)
+        resolve_validation_overrides(self.cfg)
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
         )
