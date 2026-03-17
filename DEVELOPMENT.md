@@ -63,14 +63,14 @@ flowchart TD
   J --> K[_strategy_validate_plan_common + _strategy_validate_plan]
   K --> GK{strategy_optimization gate}
   GK -->|fail/reject| H
-  GK --> L[_strategy_run -> _strategy_evaluation -> evaluator.evaluate]
+  GK --> L[_strategy_run + _strategy_evaluation + evaluator.evaluate]
   L --> M[_strategy_validate_results_common + _strategy_validate_results]
   M --> GM{strategy_validation gate}
   GM -->|reject| H
   GM --> N[_build_result_record + _result_store_insert]
   N --> H
   H --> C
-  C --> Z([return list[BestResult]])
+  C --> Z([return BestResult list])
 ```
 
 ## Continuity Score Calendar Behavior
