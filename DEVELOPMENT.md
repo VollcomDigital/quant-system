@@ -103,3 +103,27 @@ Source: `BacktestRunner.compute_continuity_score` in
 - `tests/test_backtest_runner.py::test_compute_continuity_score_weekend_gap_not_missing_for_weekday_calendar`
 - `tests/test_backtest_runner.py::test_compute_continuity_score_exchange_calendar_ignores_market_holiday`
 - `tests/test_backtest_runner.py::test_compute_continuity_score_weekday_calendar_non_daily_uses_fixed_delta`
+
+## Validation Policy Resolution
+
+Source: `resolve_validation_overrides` in `src/config.py`.
+
+- Resolution ownership is in config loading, not in runner runtime.
+- Effective policy is materialized on each collection under `collection.validation`.
+- Runner then only reads collection-level effective policies.
+
+### Resolution rules (per module)
+
+- Modules: `validation.data_quality`, `validation.optimization`.
+- If neither global nor collection policy is set: module stays disabled (`None`).
+- If only global is set: collection inherits global policy.
+- If only collection is set: collection policy is normalized and used.
+- If both are set: collection override takes precedence.
+- The persisted validation profile stores only effective collection-level policies
+  (`profile.collections`), not top-level global input blocks.
+
+### Why this matters
+
+- Runner code stays lean: no global-vs-collection merge branches in gate execution.
+- Hashing/job profiles use effective collection policy consistently.
+- Behavior is deterministic across tests and real runs after `load_config`.

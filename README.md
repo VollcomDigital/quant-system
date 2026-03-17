@@ -225,6 +225,8 @@ See new collection examples under `config/collections/` for FX intraday via Finn
   - `min_bars`: minimum bars required for optimization
   - `dof_multiplier`: multiplies parameter dimensions for the DoF guard
   - `baseline_only` runs a single baseline evaluation without parameter search.
+  - collection-level overrides are supported via `collections[].validation.optimization`
+    and are resolved against global `validation.optimization` during config loading.
 
 Structured logs reflect this directly via gate actions:
 - `data_validation_gate` can emit `skip_optimization` (job-level optimization disable).

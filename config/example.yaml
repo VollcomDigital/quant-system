@@ -77,6 +77,10 @@ collections:
     #       method: modified_zscore
     #       zscore_threshold: 3.5
     #     on_fail: skip_optimization
+    #   optimization:
+    #     on_fail: baseline_only
+    #     min_bars: 1500
+    #     dof_multiplier: 50
 
 # Choose timeframes compatible across sources for full history
 timeframes: ["1d"]

@@ -280,6 +280,67 @@ validation:
         load_config(path)
 
 
+def test_load_config_optimization_policy_inherited_to_collections(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test_a
+    source: yfinance
+    symbols: ['AAPL']
+  - name: test_b
+    source: yfinance
+    symbols: ['MSFT']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  optimization:
+    on_fail: baseline_only
+    min_bars: 321
+    dof_multiplier: 11
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    for col in cfg.collections:
+        assert col.validation is not None
+        assert col.validation.optimization is not None
+        assert col.validation.optimization.on_fail == "baseline_only"
+        assert col.validation.optimization.min_bars == 321
+        assert col.validation.optimization.dof_multiplier == 11
+
+
+def test_load_config_optimization_policy_collection_override_merges_with_global(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    validation:
+      optimization:
+        on_fail: baseline_only
+        min_bars: 200
+        dof_multiplier: 9
+timeframes: ['1d']
+metric: sharpe
+validation:
+  optimization:
+    on_fail: skip_job
+    min_bars: 123
+    dof_multiplier: 7
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    col = cfg.collections[0]
+    assert col.validation is not None
+    assert col.validation.optimization is not None
+    # Collection-level optimization policy takes precedence over global values.
+    assert col.validation.optimization.on_fail == "baseline_only"
+    assert col.validation.optimization.min_bars == 200
+    assert col.validation.optimization.dof_multiplier == 9
+
+
 def test_load_config_data_quality_calendar(tmp_path: Path):
     config_text = """
 collections:

@@ -140,7 +140,6 @@ def test_result_store_run_metadata_round_trip(tmp_path: Path):
         evaluation_mode="backtest",
         mode_config_hash="abc",
         validation_profile={
-            "global": {"data_quality": {"on_fail": "skip_job"}},
             "collections": [],
         },
         active_gates=["data_quality.min_required_bars", "data_quality.min_data_points"],
@@ -157,4 +156,4 @@ def test_result_store_run_metadata_round_trip(tmp_path: Path):
         "data_quality.min_data_points",
     ]
     assert row["inactive_gates"] == ["optimization.feasibility"]
-    assert row["validation_profile"]["global"]["data_quality"]["on_fail"] == "skip_job"
+    assert row["validation_profile"]["collections"] == []

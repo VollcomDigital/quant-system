@@ -391,29 +391,30 @@ class BacktestRunner:
         return {"optimization.feasibility"}
 
     def _build_validation_metadata(self) -> dict[str, Any]:
-        validation_cfg = getattr(self.cfg, "validation", None)
-        global_data_quality = getattr(validation_cfg, "data_quality", None)
-        optimization_cfg = getattr(validation_cfg, "optimization", None)
-
         collection_profiles: list[dict[str, Any]] = []
-        active_gates_union = self._active_data_quality_gates(global_data_quality)
-        active_gates_union.update(self._active_optimization_gates(optimization_cfg))
+        active_gates_union: set[str] = set()
 
         for collection in self.cfg.collections:
             collection_validation = getattr(collection, "validation", None)
-            collection_dq = (
-                getattr(collection_validation, "data_quality", None)
-                if collection_validation is not None
-                else None
-            )
-            resolved_dq = collection_dq if collection_dq is not None else global_data_quality
-            collection_active = self._active_data_quality_gates(resolved_dq)
+            collection_dq = getattr(collection_validation, "data_quality", None)
+            collection_optimization = getattr(collection_validation, "optimization", None)
+            collection_active = self._active_data_quality_gates(collection_dq)
+            collection_active.update(self._active_optimization_gates(collection_optimization))
             active_gates_union.update(collection_active)
             collection_profiles.append(
                 {
                     "collection": collection.name,
                     "source": collection.source,
-                    "data_quality": self._serialize_data_quality_profile(resolved_dq),
+                    "data_quality": self._serialize_data_quality_profile(collection_dq),
+                    "optimization": (
+                        {
+                            "on_fail": getattr(collection_optimization, "on_fail", None),
+                            "min_bars": getattr(collection_optimization, "min_bars", None),
+                            "dof_multiplier": getattr(collection_optimization, "dof_multiplier", None),
+                        }
+                        if collection_optimization is not None
+                        else None
+                    ),
                     "active_gates": sorted(collection_active),
                 }
             )
@@ -421,18 +422,6 @@ class BacktestRunner:
         active_gates = sorted(active_gates_union)
         inactive_gates = sorted(set(self._VALIDATION_GATE_IDS).difference(active_gates_union))
         profile = {
-            "global": {
-                "data_quality": self._serialize_data_quality_profile(global_data_quality),
-                "optimization": (
-                    {
-                        "on_fail": getattr(optimization_cfg, "on_fail", None),
-                        "min_bars": getattr(optimization_cfg, "min_bars", None),
-                        "dof_multiplier": getattr(optimization_cfg, "dof_multiplier", None),
-                    }
-                    if optimization_cfg is not None
-                    else None
-                ),
-            },
             "collections": collection_profiles,
         }
         return {
@@ -442,25 +431,18 @@ class BacktestRunner:
         }
 
     def _build_job_validation_profile(self, collection: CollectionConfig) -> dict[str, Any]:
-        validation_cfg = getattr(self.cfg, "validation", None)
-        global_data_quality = getattr(validation_cfg, "data_quality", None)
-        optimization_cfg = getattr(validation_cfg, "optimization", None)
         collection_validation = getattr(collection, "validation", None)
-        collection_dq = (
-            getattr(collection_validation, "data_quality", None)
-            if collection_validation is not None
-            else None
-        )
-        resolved_dq = collection_dq if collection_dq is not None else global_data_quality
+        collection_dq = getattr(collection_validation, "data_quality", None)
+        collection_optimization = getattr(collection_validation, "optimization", None)
         return {
-            "data_quality": self._serialize_data_quality_profile(resolved_dq),
+            "data_quality": self._serialize_data_quality_profile(collection_dq),
             "optimization": (
                 {
-                    "on_fail": getattr(optimization_cfg, "on_fail", None),
-                    "min_bars": getattr(optimization_cfg, "min_bars", None),
-                    "dof_multiplier": getattr(optimization_cfg, "dof_multiplier", None),
+                    "on_fail": getattr(collection_optimization, "on_fail", None),
+                    "min_bars": getattr(collection_optimization, "min_bars", None),
+                    "dof_multiplier": getattr(collection_optimization, "dof_multiplier", None),
                 }
-                if optimization_cfg is not None
+                if collection_optimization is not None
                 else None
             ),
         }
@@ -1314,7 +1296,7 @@ class BacktestRunner:
             calendar_kind,
             calendar_exchange,
         ) = (
-            self._resolve_data_quality_policy(context.job.collection)
+            self._load_data_quality_policy(context.job.collection)
         )
         # `on_fail` is required by config whenever a data-quality policy exists,
         # so `reliability_on_fail is None` means data-quality policy is unset.
@@ -1383,7 +1365,7 @@ class BacktestRunner:
         )
         return decision, validated_data
 
-    def _resolve_data_quality_policy(
+    def _load_data_quality_policy(
         self, collection: CollectionConfig
     ) -> tuple[
         str | None,
@@ -1441,10 +1423,10 @@ class BacktestRunner:
             )
         return calendar_kind, calendar_exchange
 
-    def _resolve_optimization_policy(self) -> tuple[str, int, int] | None:
-        # `validation.optimization` is optional; when omitted no feasibility gate is applied.
-        validation_cfg = getattr(self.cfg, "validation", None)
-        policy = getattr(validation_cfg, "optimization", None)
+    def _load_optimization_policy(self, collection: CollectionConfig) -> tuple[str, int, int] | None:
+        # `validation.optimization` is optional per collection; when omitted no feasibility gate is applied.
+        collection_validation = getattr(collection, "validation", None)
+        policy = getattr(collection_validation, "optimization", None)
         if policy is None:
             return None
         return policy.on_fail, policy.min_bars, policy.dof_multiplier
@@ -1808,7 +1790,7 @@ class BacktestRunner:
                 reasons=skip_reasons,
                 stage="strategy_optimization",
             )
-        policy = self._resolve_optimization_policy()
+        policy = self._load_optimization_policy(context.job.collection)
         if policy is None:
             self._reset_plan_optimization_state(plan)
             return GateDecision(

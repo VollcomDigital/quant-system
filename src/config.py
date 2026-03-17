@@ -153,6 +153,28 @@ def _merge_data_quality_config(
         on_fail=str(on_fail).strip().lower(),
     )
 
+
+def _merge_optimization_config(
+    base: OptimizationPolicyConfig | None,
+    override: OptimizationPolicyConfig | None,
+) -> OptimizationPolicyConfig | None:
+    if base is None and override is None:
+        return None
+    on_fail = _merged_field(base, override, "on_fail")
+    if on_fail is None:
+        raise ValueError("Invalid `validation.optimization`: missing required field(s): on_fail")
+    min_bars = _merged_field(base, override, "min_bars")
+    if min_bars is None:
+        raise ValueError("Invalid `validation.optimization`: missing required field(s): min_bars")
+    dof_multiplier = _merged_field(base, override, "dof_multiplier")
+    if dof_multiplier is None:
+        raise ValueError("Invalid `validation.optimization`: missing required field(s): dof_multiplier")
+    return OptimizationPolicyConfig(
+        on_fail=str(on_fail).strip().lower(),
+        min_bars=int(min_bars),
+        dof_multiplier=int(dof_multiplier),
+    )
+
 def _merge_continuity_config(
     base: ValidationContinuityConfig | None,
     override: ValidationContinuityConfig | None,
@@ -214,16 +236,22 @@ def _merge_outlier_detection_config(
 
 
 def resolve_validation_overrides(cfg: Config) -> None:
-    """Resolve effective `validation.data_quality` per collection.
+    """Resolve effective collection-level validation policies.
 
-    Rule: effective policy = merge(global_data_quality_policy, collection_data_quality_override).
+    For each module (`data_quality`, `optimization`):
+    effective policy = merge(global_policy, collection_override).
     """
     validation_cfg = cfg.validation
-    if validation_cfg is None:
-        return
-    global_data_quality_policy = validation_cfg.data_quality
-    if global_data_quality_policy is not None:
+    global_data_quality_policy = (
+        validation_cfg.data_quality if validation_cfg is not None else None
+    )
+    global_optimization_policy = (
+        validation_cfg.optimization if validation_cfg is not None else None
+    )
+    if validation_cfg is not None and global_data_quality_policy is not None:
         validation_cfg.data_quality = _merge_data_quality_config(global_data_quality_policy, None)
+    if validation_cfg is not None and global_optimization_policy is not None:
+        validation_cfg.optimization = _merge_optimization_config(global_optimization_policy, None)
 
     for collection in cfg.collections:
         resolved_data_quality = _resolve_collection_data_quality_policy(
@@ -234,12 +262,20 @@ def resolve_validation_overrides(cfg: Config) -> None:
                 else None
             ),
         )
-        if resolved_data_quality is None:
+        resolved_optimization = _resolve_collection_optimization_policy(
+            global_optimization_policy=global_optimization_policy,
+            collection_optimization_override=(
+                getattr(collection.validation, "optimization", None)
+                if collection.validation is not None
+                else None
+            ),
+        )
+        if resolved_data_quality is None and resolved_optimization is None:
             continue
-        if collection.validation is None:
-            collection.validation = ValidationConfig(data_quality=resolved_data_quality, optimization=None)
-        else:
-            collection.validation.data_quality = resolved_data_quality
+        collection.validation = ValidationConfig(
+            data_quality=resolved_data_quality,
+            optimization=resolved_optimization,
+        )
 
 
 def _resolve_collection_data_quality_policy(
@@ -257,6 +293,23 @@ def _resolve_collection_data_quality_policy(
         return _merge_data_quality_config(collection_data_quality_override, None)
     # Both global and collection are set: collection values override global field-by-field.
     return _merge_data_quality_config(global_data_quality_policy, collection_data_quality_override)
+
+
+def _resolve_collection_optimization_policy(
+    *,
+    global_optimization_policy: OptimizationPolicyConfig | None,
+    collection_optimization_override: OptimizationPolicyConfig | None,
+) -> OptimizationPolicyConfig | None:
+    if collection_optimization_override is None:
+        if global_optimization_policy is None:
+            return None
+        # No collection override: inherit normalized global optimization policy.
+        return _merge_optimization_config(global_optimization_policy, None)
+    if global_optimization_policy is None:
+        # Collection-only optimization policy: normalize and keep as effective policy.
+        return _merge_optimization_config(collection_optimization_override, None)
+    # Both global and collection are set: collection values override global field-by-field.
+    return _merge_optimization_config(global_optimization_policy, collection_optimization_override)
 
 
 def require_mapping(raw: Any, prefix: str) -> dict[str, Any]:
