@@ -35,12 +35,13 @@ from ..strategies.registry import discover_external_strategies
 from ..utils.telemetry import get_logger, log_json, time_block
 from .evaluation.adapters import normalized_rows_to_legacy_rows
 from .evaluation.contracts import (
+    EvaluationCacheRecord,
     EvaluationModeConfig,
     EvaluationRequest,
     ResultRecord,
 )
 from .evaluation.evaluator import BacktestEvaluator
-from .evaluation.store import EvaluationCache, EvaluationCacheRecord, ResultStore
+from .evaluation.store import EvaluationCache, ResultStore
 from .metrics import (
     omega_ratio,
     pain_index,
@@ -1582,8 +1583,8 @@ class BacktestRunner:
             return None, "empty_returns"
         if method == "zscore":
             mean_val = float(np.mean(values))
-            std_val = float(np.std(values))
-            if std_val <= 0:
+            std_val = float(np.std(values, ddof=1))
+            if not np.isfinite(std_val) or std_val <= 0:
                 return None, "std_zero"
             return np.abs((values - mean_val) / std_val) > threshold, None
         median_val = float(np.median(values))
