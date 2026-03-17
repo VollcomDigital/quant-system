@@ -453,7 +453,7 @@ def _parse_outlier_detection(
         raise ValueError(
             f"Invalid `{prefix}.method`: expected one of ['modified_zscore', 'zscore']"
         )
-    zscore_threshold = parse_required_float(parsed_raw, prefix, "zscore_threshold", min_value=0.0)
+    zscore_threshold = parse_required_float(parsed_raw, prefix, "zscore_threshold")
     if zscore_threshold <= 0:
         raise ValueError(f"`{prefix}.zscore_threshold` must be > 0")
     return ValidationOutlierDetectionConfig(
