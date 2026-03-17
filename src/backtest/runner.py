@@ -35,12 +35,13 @@ from ..strategies.registry import discover_external_strategies
 from ..utils.telemetry import get_logger, log_json, time_block
 from .evaluation.adapters import normalized_rows_to_legacy_rows
 from .evaluation.contracts import (
+    EvaluationCacheRecord,
     EvaluationModeConfig,
     EvaluationRequest,
     ResultRecord,
 )
 from .evaluation.evaluator import BacktestEvaluator
-from .evaluation.store import EvaluationCache, EvaluationCacheRecord, ResultStore
+from .evaluation.store import EvaluationCache, ResultStore
 from .metrics import (
     omega_ratio,
     pain_index,
@@ -443,15 +444,8 @@ class BacktestRunner:
 
     def _build_job_validation_profile(self, collection: CollectionConfig) -> dict[str, Any]:
         validation_cfg = getattr(self.cfg, "validation", None)
-        global_data_quality = getattr(validation_cfg, "data_quality", None)
         optimization_cfg = getattr(validation_cfg, "optimization", None)
-        collection_validation = getattr(collection, "validation", None)
-        collection_dq = (
-            getattr(collection_validation, "data_quality", None)
-            if collection_validation is not None
-            else None
-        )
-        resolved_dq = collection_dq if collection_dq is not None else global_data_quality
+        resolved_dq = self._resolve_collection_data_quality(collection)
         return {
             "data_quality": self._serialize_data_quality_profile(resolved_dq),
             "optimization": (
@@ -464,6 +458,19 @@ class BacktestRunner:
                 else None
             ),
         }
+
+    def _resolve_collection_data_quality(self, collection: CollectionConfig) -> Any:
+        validation_cfg = getattr(self.cfg, "validation", None)
+        global_data_quality = getattr(validation_cfg, "data_quality", None)
+        collection_validation = getattr(collection, "validation", None)
+        collection_data_quality = (
+            getattr(collection_validation, "data_quality", None)
+            if collection_validation is not None
+            else None
+        )
+        if collection_data_quality is not None:
+            return collection_data_quality
+        return global_data_quality
 
     @staticmethod
     def _hash_validation_profile(profile: dict[str, Any]) -> str:
@@ -1394,8 +1401,7 @@ class BacktestRunner:
         str | None,
         str | None,
     ]:
-        collection_validation = getattr(collection, "validation", None)
-        resolved_dq = getattr(collection_validation, "data_quality", None) if collection_validation else None
+        resolved_dq = self._resolve_collection_data_quality(collection)
         if resolved_dq is None:
             # Sentinel for "no data-quality policy configured for this collection".
             return None, None, None, None, None, None, None
