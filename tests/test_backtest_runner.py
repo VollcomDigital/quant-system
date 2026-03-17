@@ -3,6 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from math import isfinite
 from types import SimpleNamespace
+from types import MethodType
 
 import pandas as pd
 import pytest
@@ -17,6 +18,7 @@ from src.config import (
     ValidationContinuityConfig,
     ValidationDataQualityConfig,
     ValidationOutlierDetectionConfig,
+    resolve_validation_overrides,
 )
 from src.strategies.base import BaseStrategy
 
@@ -229,6 +231,15 @@ def _make_runner(
     runner.results_cache = _StubResultsCache()
     runner.evaluation_cache = _StubEvaluationCache()
     runner.mode_config_hash = runner.evaluation_cache.hash_mode_config(runner.mode_config)
+    original_run_all = BacktestRunner.run_all
+
+    def _run_all_with_resolved_cfg(self, only_cached=False):
+        # Tests often mutate runner.cfg after construction; resolve overrides
+        # at invocation time to keep config ownership in src/config.py.
+        resolve_validation_overrides(self.cfg)
+        return original_run_all(self, only_cached=only_cached)
+
+    runner.run_all = MethodType(_run_all_with_resolved_cfg, runner)
     return runner
 
 

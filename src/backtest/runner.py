@@ -20,7 +20,6 @@ from ..config import (
     Config,
     ValidationContinuityConfig,
     ValidationOutlierDetectionConfig,
-    resolve_validation_overrides,
 )
 from ..data.alpaca_source import AlpacaSource
 from ..data.alphavantage_source import AlphaVantageSource
@@ -2182,8 +2181,6 @@ class BacktestRunner:
         self._cache_write_failures = 0
         self._result_store_write_failures = 0
         self._evaluation_cache_write_failures = 0
-        # Re-resolve at run start because callers/tests may mutate cfg after runner init.
-        resolve_validation_overrides(self.cfg)
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
         )
