@@ -194,7 +194,6 @@ class BacktestRunner:
         evaluation_mode: str | None = None,
     ):
         self.cfg = cfg
-        resolve_validation_overrides(self.cfg)
         self.strategies_root = strategies_root
         self.external_index = discover_external_strategies(strategies_root)
         self.results_cache = ResultsCache(Path(self.cfg.cache_dir).parent / "results")
