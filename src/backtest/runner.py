@@ -5,7 +5,7 @@ import inspect
 import itertools
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
@@ -492,6 +492,31 @@ class BacktestRunner:
         expected_bars = unique_bars + missing_bars
         return expected_bars, missing_bars, largest_gap_bars
 
+    @staticmethod
+    def _parse_calendar_timezone(calendar_timezone: str | None) -> timezone | None:
+        if calendar_timezone is None:
+            return None
+        normalized = calendar_timezone.strip().upper()
+        if normalized == "UTC":
+            return timezone.utc
+        try:
+            sign = 1 if normalized[3] == "+" else -1
+            hours = int(normalized[4:6])
+            minutes = int(normalized[7:9])
+        except (IndexError, ValueError) as exc:
+            raise ValueError(f"unsupported_calendar_timezone: {calendar_timezone}") from exc
+        return timezone(sign * timedelta(hours=hours, minutes=minutes))
+
+    @classmethod
+    def _normalize_for_calendar_timezone(
+        cls, idx: pd.DatetimeIndex, calendar_timezone: str | None
+    ) -> pd.DatetimeIndex:
+        parsed_timezone = cls._parse_calendar_timezone(calendar_timezone)
+        if parsed_timezone is None:
+            return idx
+        localized_idx = idx.tz_localize(timezone.utc) if idx.tz is None else idx
+        return localized_idx.tz_convert(parsed_timezone).tz_localize(None)
+
     @classmethod
     def compute_continuity_score(
         cls,
@@ -499,10 +524,11 @@ class BacktestRunner:
         timeframe: str,
         calendar_kind: str = "crypto_24_7",
         exchange_calendar: str | None = None,
+        calendar_timezone: str | None = None,
     ) -> dict[str, float | int]:
         raw_idx = pd.DatetimeIndex(pd.to_datetime(df.index)).sort_values()
-        actual_bars = int(len(raw_idx))
-        idx = raw_idx
+        idx = cls._normalize_for_calendar_timezone(raw_idx, calendar_timezone).sort_values()
+        actual_bars = int(len(idx))
         if idx.has_duplicates:
             idx = idx[~idx.duplicated(keep="first")]
         unique_bars = int(len(idx))
@@ -1116,6 +1142,7 @@ class BacktestRunner:
             max_kurtosis,
             calendar_kind,
             calendar_exchange,
+            calendar_timezone,
         ) = (
             self._resolve_data_quality_policy(context.job.collection)
         )
@@ -1125,6 +1152,7 @@ class BacktestRunner:
                 context.job.timeframe,
                 calendar_kind=calendar_kind,
                 exchange_calendar=calendar_exchange,
+                calendar_timezone=calendar_timezone,
             )
         except ValueError as exc:
             return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
@@ -1155,7 +1183,7 @@ class BacktestRunner:
 
     def _resolve_data_quality_policy(
         self, collection: CollectionConfig
-    ) -> tuple[str, int | None, float | None, float | None, float | None, str, str | None]:
+    ) -> tuple[str, int | None, float | None, float | None, float | None, str, str | None, str | None]:
         global_validation = getattr(self.cfg, "validation", None)
         collection_validation = getattr(collection, "validation", None)
         global_dq = getattr(global_validation, "data_quality", None)
@@ -1172,7 +1200,9 @@ class BacktestRunner:
         )
         max_kurtosis = self._resolve_data_quality_value(collection_dq, global_dq, "max_kurtosis")
         calendar_cfg = self._resolve_data_quality_value(collection_dq, global_dq, "calendar")
-        calendar_kind, calendar_exchange = self._resolve_calendar_policy(calendar_cfg, collection.source)
+        calendar_kind, calendar_exchange, calendar_timezone = self._resolve_calendar_policy(
+            calendar_cfg, collection.source
+        )
         return (
             on_fail,
             min_data_points,
@@ -1181,6 +1211,7 @@ class BacktestRunner:
             max_kurtosis,
             calendar_kind,
             calendar_exchange,
+            calendar_timezone,
         )
 
     @staticmethod
@@ -1197,18 +1228,22 @@ class BacktestRunner:
         self,
         calendar_cfg: Any,
         source: str,
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str | None, str | None]:
         calendar_kind = str(getattr(calendar_cfg, "kind", "auto")).strip().lower()
         calendar_exchange = None
+        calendar_timezone = None
         if calendar_cfg is not None:
             exchange_value = getattr(calendar_cfg, "exchange", None)
             if exchange_value is not None:
                 calendar_exchange = str(exchange_value).strip()
+            timezone_value = getattr(calendar_cfg, "timezone", None)
+            if timezone_value is not None:
+                calendar_timezone = str(timezone_value).strip().upper()
         if calendar_kind == "auto":
             calendar_kind = (
                 "crypto_24_7" if source.strip().lower() in self._CRYPTO_SOURCE_NAMES else "weekday"
             )
-        return calendar_kind, calendar_exchange
+        return calendar_kind, calendar_exchange, calendar_timezone
 
     def _resolve_optimization_policy(self) -> tuple[str, int, int] | None:
         # `validation.optimization` is optional; when omitted no feasibility gate is applied.
@@ -1961,6 +1996,8 @@ class BacktestRunner:
                     blocked_collections=blocked_collections,
                 )
                 if not plan_decision.passed:
+                    if plan_decision.action in {"skip_job", "skip_collection"}:
+                        break
                     continue
                 self.metrics["strategies_used"].add(plan.strategy.name)
                 outcome = self._strategy_run(plan, state, validated_data, prepared)
@@ -1973,6 +2010,8 @@ class BacktestRunner:
                     blocked_collections=blocked_collections,
                 )
                 if not validation_decision.passed:
+                    if validation_decision.action in {"skip_job", "skip_collection"}:
+                        break
                     continue
 
                 best = BestResult(
