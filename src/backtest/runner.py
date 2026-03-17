@@ -460,17 +460,11 @@ class BacktestRunner:
         }
 
     def _resolve_collection_data_quality(self, collection: CollectionConfig) -> Any:
-        validation_cfg = getattr(self.cfg, "validation", None)
-        global_data_quality = getattr(validation_cfg, "data_quality", None)
         collection_validation = getattr(collection, "validation", None)
-        collection_data_quality = (
-            getattr(collection_validation, "data_quality", None)
-            if collection_validation is not None
-            else None
-        )
-        if collection_data_quality is not None:
-            return collection_data_quality
-        return global_data_quality
+        if collection_validation is None:
+            return None
+        # `resolve_validation_overrides` resolves effective per-collection policy at load time.
+        return getattr(collection_validation, "data_quality", None)
 
     @staticmethod
     def _hash_validation_profile(profile: dict[str, Any]) -> str:
@@ -1606,8 +1600,8 @@ class BacktestRunner:
             return None, "empty_returns"
         if method == "zscore":
             mean_val = float(np.mean(values))
-            std_val = float(np.std(values))
-            if std_val <= 0:
+            std_val = float(np.std(values, ddof=1))
+            if not np.isfinite(std_val) or std_val <= 0:
                 return None, "std_zero"
             return np.abs((values - mean_val) / std_val) > threshold, None
         median_val = float(np.median(values))
