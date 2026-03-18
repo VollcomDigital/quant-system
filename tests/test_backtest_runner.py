@@ -8,6 +8,7 @@ from types import MethodType
 import pandas as pd
 import pytest
 
+from src.backtest.evaluation.contracts import EvaluationModeConfig, EvaluationRequest
 from src.backtest.runner import BacktestRunner, BestResult, GateDecision
 from src.config import (
     CollectionConfig,
@@ -1691,6 +1692,38 @@ def test_run_all_rejects_result_on_outlier_dependency(tmp_path, monkeypatch):
         and "outlier_dependency_exceeded" in failure["error"]
         for failure in runner.failures
     )
+
+
+def test_trade_meta_slice_profit_share_includes_earliest_exit_timestamp(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    evaluator = runner._get_evaluator()
+    request = EvaluationRequest(
+        collection="demo",
+        symbol="AAPL",
+        timeframe="1d",
+        source="custom",
+        strategy="dummy",
+        params={},
+        metric_name="sharpe",
+        data_fingerprint="fingerprint",
+        fees=0.0,
+        slippage=0.0,
+        bars_per_year=252,
+        mode_config=EvaluationModeConfig(mode="backtest", payload={}),
+        result_consistency_slices=2,
+        result_consistency_profit_share_threshold=None,
+    )
+    trades_frame = pd.DataFrame(
+        [
+            {"pnl": 100.0, "exit_date": "2024-01-01"},
+            {"pnl": 100.0, "exit_date": "2024-01-02"},
+            {"pnl": 200.0, "exit_date": "2024-01-03"},
+        ]
+    )
+
+    trade_meta = evaluator._build_trade_meta(trades_frame, {"trades": 3}, request)
+
+    assert trade_meta["max_slice_profit_share"] == pytest.approx(0.5)
 
 
 def test_run_all_result_consistency_skips_check_for_truncated_trade_log(tmp_path, monkeypatch):

@@ -144,11 +144,10 @@ class BacktestEvaluator:
             start = timeline.min()
             end = timeline.max()
             if start < end:
-                bins = pd.interval_range(start=start, end=end, periods=slices)
                 positive_pnls = np.asarray([v if v > 0 else 0.0 for v in pnls], dtype=float)
                 grouped = (
                     pd.Series(positive_pnls, index=timeline)
-                    .groupby(pd.cut(timeline, bins), observed=False)
+                    .groupby(pd.cut(timeline, bins=slices), observed=False)
                     .sum()
                 )
                 grouped_sum = float(grouped.sum())
