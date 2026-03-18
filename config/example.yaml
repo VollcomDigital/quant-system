@@ -33,6 +33,11 @@ validation:
     on_fail: baseline_only  # baseline_only | skip_job
     min_bars: 2000
     dof_multiplier: 100
+  # Optional result-level robustness check.
+  result_consistency:
+    slices: 5  # split trade history into N equal time-slices for diagnostics
+    profit_share_threshold: 0.80
+    trade_share_threshold: 0.05
 
 collections:
   # Stocks (large-cap growth)

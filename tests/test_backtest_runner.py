@@ -13,6 +13,7 @@ from src.config import (
     CollectionConfig,
     Config,
     OptimizationPolicyConfig,
+    ResultConsistencyConfig,
     StrategyConfig,
     ValidationConfig,
     ValidationContinuityConfig,
@@ -783,10 +784,11 @@ def test_run_pybroker_simulation_generates_metrics(tmp_path, monkeypatch):
     )
 
     assert result is not None
-    returns, equity_curve, stats = result
+    returns, equity_curve, stats, trades_frame = result
     assert len(returns) == len(equity_curve)
     assert "sharpe" in stats and "trades" in stats
     assert stats["trades"] == 1
+    assert isinstance(trades_frame, pd.DataFrame)
 
 
 def test_run_all_records_fetch_failures(tmp_path, monkeypatch):
@@ -1643,6 +1645,92 @@ def test_run_all_collection_cache_isolation_for_same_name_collections(tmp_path, 
         failure["stage"] == "collection_validation" and "bad source config" in failure["error"]
         for failure in runner.failures
     )
+
+
+def test_run_all_rejects_result_on_outlier_dependency(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
+    runner.cfg.validation = ValidationConfig(
+        result_consistency=ResultConsistencyConfig(
+            slices=5,
+            profit_share_threshold=0.80,
+            trade_share_threshold=0.05,
+        ),
+    )
+    resolve_validation_overrides(runner.cfg)
+
+    def _sim_with_concentrated_pnl(self, *args, **kwargs):
+        dates = pd.date_range("2024-01-01", periods=120, freq="D")
+        returns = pd.Series([0.001] * 120, index=dates)
+        equity = (1 + returns).cumprod()
+        trades_log = [
+            {"pnl": 1.0, "exit_date": f"2024-01-{(i % 28) + 1:02d}"} for i in range(99)
+        ] + [{"pnl": 500.0, "exit_date": "2024-03-15"}]
+        stats = {
+            "sharpe": 1.0,
+            "sortino": 1.0,
+            "omega": 1.0,
+            "tail_ratio": 1.0,
+            "profit": 1.0,
+            "pain_index": 0.0,
+            "trades": 100,
+            "max_drawdown": -0.1,
+            "cagr": 0.1,
+            "calmar": 1.0,
+            "equity_curve": [],
+            "drawdown_curve": [],
+            "trades_log": trades_log,
+        }
+        return returns, equity, stats
+
+    monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _sim_with_concentrated_pnl)
+    results = runner.run_all()
+
+    assert results == []
+    assert any(
+        failure["stage"] == "strategy_validation"
+        and "outlier_dependency_exceeded" in failure["error"]
+        for failure in runner.failures
+    )
+
+
+def test_run_all_result_consistency_skips_check_for_truncated_trade_log(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
+    runner.cfg.validation = ValidationConfig(
+        result_consistency=ResultConsistencyConfig(
+            slices=5,
+            profit_share_threshold=0.80,
+            trade_share_threshold=0.05,
+        ),
+    )
+    resolve_validation_overrides(runner.cfg)
+
+    def _sim_with_truncated_log(self, *args, **kwargs):
+        dates = pd.date_range("2024-01-01", periods=120, freq="D")
+        returns = pd.Series([0.001] * 120, index=dates)
+        equity = (1 + returns).cumprod()
+        trades_log = [{"pnl": 1.0, "exit_date": "2024-01-10"} for _ in range(50)]
+        stats = {
+            "sharpe": 1.0,
+            "sortino": 1.0,
+            "omega": 1.0,
+            "tail_ratio": 1.0,
+            "profit": 1.0,
+            "pain_index": 0.0,
+            "trades": 100,
+            "max_drawdown": -0.1,
+            "cagr": 0.1,
+            "calmar": 1.0,
+            "equity_curve": [],
+            "drawdown_curve": [],
+            "trades_log": trades_log,
+        }
+        return returns, equity, stats
+
+    monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _sim_with_truncated_log)
+    results = runner.run_all()
+
+    assert len(results) >= 1
+    assert not any("outlier_dependency_exceeded" in failure["error"] for failure in runner.failures)
 
 
 def test_runner_rejects_walk_forward_mode_until_implemented(tmp_path, monkeypatch):

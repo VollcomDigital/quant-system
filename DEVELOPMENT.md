@@ -114,7 +114,7 @@ Source: `resolve_validation_overrides` in `src/config.py`.
 
 ### Resolution rules (per module)
 
-- Modules: `validation.data_quality`, `validation.optimization`.
+- Modules: `validation.data_quality`, `validation.optimization`, `validation.result_consistency`.
 - If neither global nor collection policy is set: module stays disabled (`None`).
 - If only global is set: collection inherits global policy.
 - If only collection is set: collection policy is normalized and used.

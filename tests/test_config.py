@@ -341,6 +341,150 @@ validation:
     assert col.validation.optimization.dof_multiplier == 9
 
 
+def test_load_config_result_consistency_policy(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    slices: 6
+    profit_share_threshold: 0.80
+    trade_share_threshold: 0.05
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.result_consistency is not None
+    assert cfg.validation.result_consistency.slices == 6
+    assert cfg.validation.result_consistency.profit_share_threshold == pytest.approx(0.80)
+    assert cfg.validation.result_consistency.trade_share_threshold == pytest.approx(0.05)
+    col = cfg.collections[0]
+    assert col.validation is not None
+    assert col.validation.result_consistency is not None
+    assert col.validation.result_consistency.slices == 6
+    assert col.validation.result_consistency.profit_share_threshold == pytest.approx(0.80)
+    assert col.validation.result_consistency.trade_share_threshold == pytest.approx(0.05)
+
+
+def test_load_config_result_consistency_collection_override(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    validation:
+      result_consistency:
+        slices: 4
+        profit_share_threshold: 0.75
+        trade_share_threshold: 0.10
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    slices: 8
+    profit_share_threshold: 0.80
+    trade_share_threshold: 0.05
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    col = cfg.collections[0]
+    assert col.validation is not None
+    assert col.validation.result_consistency is not None
+    assert col.validation.result_consistency.slices == 4
+    assert col.validation.result_consistency.profit_share_threshold == pytest.approx(0.75)
+    assert col.validation.result_consistency.trade_share_threshold == pytest.approx(0.10)
+
+
+def test_load_config_result_consistency_invalid_slices(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    slices: 1
+    profit_share_threshold: 0.80
+    trade_share_threshold: 0.05
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_result_consistency_requires_profit_share_threshold(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    slices: 5
+    trade_share_threshold: 0.05
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_result_consistency_requires_trade_share_threshold(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    slices: 5
+    profit_share_threshold: 0.80
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_result_consistency_threshold_out_of_range(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    slices: 5
+    profit_share_threshold: 1.2
+    trade_share_threshold: 0.05
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
 def test_load_config_data_quality_calendar(tmp_path: Path):
     config_text = """
 collections:

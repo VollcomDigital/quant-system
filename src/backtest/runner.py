@@ -20,6 +20,7 @@ from ..config import (
     Config,
     ValidationContinuityConfig,
     ValidationOutlierDetectionConfig,
+    ResultConsistencyConfig,
 )
 from ..data.alpaca_source import AlpacaSource
 from ..data.alphavantage_source import AlphaVantageSource
@@ -184,6 +185,7 @@ class BacktestRunner:
         "data_quality.kurtosis",
         "data_quality.outlier_detection",
         "optimization.feasibility",
+        "result_consistency.outlier_dependency",
     )
 
     def __init__(
@@ -391,6 +393,12 @@ class BacktestRunner:
             return set()
         return {"optimization.feasibility"}
 
+    @staticmethod
+    def _active_result_consistency_gates(result_consistency: Any) -> set[str]:
+        if result_consistency is None:
+            return set()
+        return {"result_consistency.outlier_dependency"}
+
     def _build_validation_metadata(self) -> dict[str, Any]:
         collection_profiles: list[dict[str, Any]] = []
         active_gates_union: set[str] = set()
@@ -399,8 +407,12 @@ class BacktestRunner:
             collection_validation = getattr(collection, "validation", None)
             collection_dq = getattr(collection_validation, "data_quality", None)
             collection_optimization = getattr(collection_validation, "optimization", None)
+            collection_result_consistency = getattr(collection_validation, "result_consistency", None)
             collection_active = self._active_data_quality_gates(collection_dq)
             collection_active.update(self._active_optimization_gates(collection_optimization))
+            collection_active.update(
+                self._active_result_consistency_gates(collection_result_consistency)
+            )
             active_gates_union.update(collection_active)
             collection_profiles.append(
                 {
@@ -414,6 +426,19 @@ class BacktestRunner:
                             "dof_multiplier": getattr(collection_optimization, "dof_multiplier", None),
                         }
                         if collection_optimization is not None
+                        else None
+                    ),
+                    "result_consistency": (
+                        {
+                            "slices": getattr(collection_result_consistency, "slices", None),
+                            "profit_share_threshold": getattr(
+                                collection_result_consistency, "profit_share_threshold", None
+                            ),
+                            "trade_share_threshold": getattr(
+                                collection_result_consistency, "trade_share_threshold", None
+                            ),
+                        }
+                        if collection_result_consistency is not None
                         else None
                     ),
                     "active_gates": sorted(collection_active),
@@ -435,6 +460,7 @@ class BacktestRunner:
         collection_validation = getattr(collection, "validation", None)
         collection_dq = getattr(collection_validation, "data_quality", None)
         collection_optimization = getattr(collection_validation, "optimization", None)
+        collection_result_consistency = getattr(collection_validation, "result_consistency", None)
         return {
             "data_quality": self._serialize_data_quality_profile(collection_dq),
             "optimization": (
@@ -444,6 +470,19 @@ class BacktestRunner:
                     "dof_multiplier": getattr(collection_optimization, "dof_multiplier", None),
                 }
                 if collection_optimization is not None
+                else None
+            ),
+            "result_consistency": (
+                {
+                    "slices": getattr(collection_result_consistency, "slices", None),
+                    "profit_share_threshold": getattr(
+                        collection_result_consistency, "profit_share_threshold", None
+                    ),
+                    "trade_share_threshold": getattr(
+                        collection_result_consistency, "trade_share_threshold", None
+                    ),
+                }
+                if collection_result_consistency is not None
                 else None
             ),
         }
@@ -882,7 +921,7 @@ class BacktestRunner:
         timeframe: str,
         fractional: bool,
         periods_per_year: int,
-    ) -> tuple[pd.Series, pd.Series, dict[str, Any]] | None:
+    ) -> tuple[pd.Series, pd.Series, dict[str, Any], pd.DataFrame] | None:
         strategy_cls, config_cls, fee_mode_cls, price_type_cls, data_col_enum = (
             self._ensure_pybroker()
         )
@@ -966,13 +1005,9 @@ class BacktestRunner:
         else:
             trades_frame = pd.DataFrame()
 
-        trades_records: list[dict[str, Any]] = []
         if not trades_frame.empty:
             for column in trades_frame.columns:
                 trades_frame[column] = trades_frame[column].map(self._convert_decimal)
-                if pd.api.types.is_datetime64_any_dtype(trades_frame[column]):
-                    trades_frame[column] = trades_frame[column].dt.strftime("%Y-%m-%dT%H:%M:%S")
-            trades_records = trades_frame.head(50).to_dict("records")
 
         trade_count = int(getattr(result.metrics, "trade_count", len(trades_frame)))
         omega = float(omega_ratio(returns))
@@ -1010,9 +1045,8 @@ class BacktestRunner:
             "calmar": calmar,
             "equity_curve": self._sample_series(equity_curve),
             "drawdown_curve": self._sample_series(drawdown_series),
-            "trades_log": trades_records,
         }
-        return returns, equity_curve, stats
+        return returns, equity_curve, stats, trades_frame
 
     def _failure_record(self, payload: dict[str, Any]) -> None:
         self.failures.append(payload)
@@ -1431,6 +1465,11 @@ class BacktestRunner:
         if policy is None:
             return None
         return policy.on_fail, policy.min_bars, policy.dof_multiplier
+
+    @staticmethod
+    def _load_result_consistency_policy(collection: CollectionConfig) -> ResultConsistencyConfig | None:
+        collection_validation = getattr(collection, "validation", None)
+        return getattr(collection_validation, "result_consistency", None)
 
     @staticmethod
     def _continuity_threshold_reason(
@@ -1872,6 +1911,7 @@ class BacktestRunner:
         entries = entries.reindex(validated_data.raw_df.index, fill_value=False)
         exits = exits.reindex(validated_data.raw_df.index, fill_value=False)
 
+        result_consistency_policy = self._load_result_consistency_policy(state.job.collection)
         request = EvaluationRequest(
             collection=state.job.collection.name,
             symbol=state.job.symbol,
@@ -1885,6 +1925,16 @@ class BacktestRunner:
             slippage=prepared.slippage,
             bars_per_year=prepared.bars_per_year,
             mode_config=self.mode_config,
+            result_consistency_slices=(
+                result_consistency_policy.slices
+                if result_consistency_policy is not None
+                else None
+            ),
+            result_consistency_profit_share_threshold=(
+                result_consistency_policy.profit_share_threshold
+                if result_consistency_policy is not None
+                else None
+            ),
         )
 
         cached = self.evaluation_cache.get(
@@ -2093,8 +2143,39 @@ class BacktestRunner:
         )
         return self._compose_gate_decisions("strategy_validation", common_decision, mode_decision)
 
-    @staticmethod
-    def _strategy_validate_results_common(context: ValidationContext) -> GateDecision:
+    def _outlier_dependency_reason(
+        self,
+        stats: dict[str, Any],
+        policy: ResultConsistencyConfig,
+    ) -> str | None:
+        trade_meta = stats.get("trade_meta")
+        if not isinstance(trade_meta, dict):
+            return None
+        if not bool(trade_meta.get("is_complete", False)):
+            return None
+        dominant_trade_share_raw = trade_meta.get("dominant_trade_share_for_profit_share")
+        if dominant_trade_share_raw is None:
+            return None
+        dominant_trade_share = float(dominant_trade_share_raw)
+        if dominant_trade_share >= policy.trade_share_threshold:
+            return None
+        dominant_trade_count = trade_meta.get("dominant_trade_count_for_profit_share")
+        slice_concentration = trade_meta.get("max_slice_profit_share")
+
+        reason = (
+            "outlier_dependency_exceeded("
+            f"dominant_trade_share={dominant_trade_share:.4f}, "
+            f"dominant_trade_count={dominant_trade_count}, "
+            f"profit_share_threshold={policy.profit_share_threshold}, "
+            f"trade_share_threshold={policy.trade_share_threshold}, "
+            f"slices={policy.slices}"
+        )
+        if isinstance(slice_concentration, (float, int)):
+            reason += f", max_slice_profit_share={float(slice_concentration):.4f}"
+        reason += ")"
+        return reason
+
+    def _strategy_validate_results_common(self, context: ValidationContext) -> GateDecision:
         # Keep this gate lightweight for now; stricter schema checks can be added later.
         outcome = context.outcome
         if outcome is None:
@@ -2105,6 +2186,11 @@ class BacktestRunner:
         reasons: list[str] = []
         if not np.isfinite(outcome.best_val):
             reasons.append("best_metric_not_finite")
+        policy = self._load_result_consistency_policy(context.job.collection)
+        if policy is not None and isinstance(outcome.best_stats, dict):
+            reason = self._outlier_dependency_reason(outcome.best_stats, policy)
+            if reason is not None:
+                reasons.append(reason)
         if reasons:
             decision = GateDecision(False, "reject_result", reasons, "strategy_validation")
         else:

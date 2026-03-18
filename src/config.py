@@ -76,6 +76,7 @@ class ValidationOutlierDetectionConfig:
 class ValidationConfig:
     data_quality: ValidationDataQualityConfig | None = None
     optimization: "OptimizationPolicyConfig | None" = None
+    result_consistency: "ResultConsistencyConfig | None" = None
 
 
 @dataclass
@@ -83,6 +84,13 @@ class OptimizationPolicyConfig:
     on_fail: str
     min_bars: int
     dof_multiplier: int
+
+
+@dataclass
+class ResultConsistencyConfig:
+    slices: int
+    profit_share_threshold: float
+    trade_share_threshold: float
 
 
 @dataclass
@@ -175,6 +183,32 @@ def _merge_optimization_config(
         dof_multiplier=int(dof_multiplier),
     )
 
+
+def _merge_result_consistency_config(
+    base: ResultConsistencyConfig | None,
+    override: ResultConsistencyConfig | None,
+) -> ResultConsistencyConfig | None:
+    if base is None and override is None:
+        return None
+    slices = _merged_field(base, override, "slices")
+    if slices is None:
+        raise ValueError("Invalid `validation.result_consistency`: missing required field(s): slices")
+    profit_share_threshold = _merged_field(base, override, "profit_share_threshold")
+    if profit_share_threshold is None:
+        raise ValueError(
+            "Invalid `validation.result_consistency`: missing required field(s): profit_share_threshold"
+        )
+    trade_share_threshold = _merged_field(base, override, "trade_share_threshold")
+    if trade_share_threshold is None:
+        raise ValueError(
+            "Invalid `validation.result_consistency`: missing required field(s): trade_share_threshold"
+        )
+    return ResultConsistencyConfig(
+        slices=int(slices),
+        profit_share_threshold=float(profit_share_threshold),
+        trade_share_threshold=float(trade_share_threshold),
+    )
+
 def _merge_continuity_config(
     base: ValidationContinuityConfig | None,
     override: ValidationContinuityConfig | None,
@@ -238,7 +272,7 @@ def _merge_outlier_detection_config(
 def resolve_validation_overrides(cfg: Config) -> None:
     """Resolve effective collection-level validation policies.
 
-    For each module (`data_quality`, `optimization`):
+    For each module (`data_quality`, `optimization`, `result_consistency`):
     effective policy = merge(global_policy, collection_override).
     """
     validation_cfg = cfg.validation
@@ -248,68 +282,45 @@ def resolve_validation_overrides(cfg: Config) -> None:
     global_optimization_policy = (
         validation_cfg.optimization if validation_cfg is not None else None
     )
+    global_result_consistency_policy = (
+        validation_cfg.result_consistency if validation_cfg is not None else None
+    )
+    # Normalize global module policies through the same merge path used for collection
+    # resolution, so required-field checks and canonicalization stay consistent.
     if validation_cfg is not None and global_data_quality_policy is not None:
         validation_cfg.data_quality = _merge_data_quality_config(global_data_quality_policy, None)
     if validation_cfg is not None and global_optimization_policy is not None:
         validation_cfg.optimization = _merge_optimization_config(global_optimization_policy, None)
+    if validation_cfg is not None and global_result_consistency_policy is not None:
+        validation_cfg.result_consistency = _merge_result_consistency_config(
+            global_result_consistency_policy, None
+        )
 
     for collection in cfg.collections:
-        resolved_data_quality = _resolve_collection_data_quality_policy(
-            global_data_quality_policy=global_data_quality_policy,
-            collection_data_quality_override=(
-                getattr(collection.validation, "data_quality", None)
-                if collection.validation is not None
-                else None
-            ),
+        collection_validation = collection.validation
+        resolved_data_quality = _merge_data_quality_config(
+            global_data_quality_policy,
+            getattr(collection_validation, "data_quality", None),
         )
-        resolved_optimization = _resolve_collection_optimization_policy(
-            global_optimization_policy=global_optimization_policy,
-            collection_optimization_override=(
-                getattr(collection.validation, "optimization", None)
-                if collection.validation is not None
-                else None
-            ),
+        resolved_optimization = _merge_optimization_config(
+            global_optimization_policy,
+            getattr(collection_validation, "optimization", None),
         )
-        if resolved_data_quality is None and resolved_optimization is None:
+        resolved_result_consistency = _merge_result_consistency_config(
+            global_result_consistency_policy,
+            getattr(collection_validation, "result_consistency", None),
+        )
+        if (
+            resolved_data_quality is None
+            and resolved_optimization is None
+            and resolved_result_consistency is None
+        ):
             continue
         collection.validation = ValidationConfig(
             data_quality=resolved_data_quality,
             optimization=resolved_optimization,
+            result_consistency=resolved_result_consistency,
         )
-
-
-def _resolve_collection_data_quality_policy(
-    *,
-    global_data_quality_policy: ValidationDataQualityConfig | None,
-    collection_data_quality_override: ValidationDataQualityConfig | None,
-) -> ValidationDataQualityConfig | None:
-    if collection_data_quality_override is None:
-        if global_data_quality_policy is None:
-            return None
-        # No collection override: inherit normalized global data-quality policy.
-        return _merge_data_quality_config(global_data_quality_policy, None)
-    if global_data_quality_policy is None:
-        # Collection-only data-quality policy: normalize and keep as effective policy.
-        return _merge_data_quality_config(collection_data_quality_override, None)
-    # Both global and collection are set: collection values override global field-by-field.
-    return _merge_data_quality_config(global_data_quality_policy, collection_data_quality_override)
-
-
-def _resolve_collection_optimization_policy(
-    *,
-    global_optimization_policy: OptimizationPolicyConfig | None,
-    collection_optimization_override: OptimizationPolicyConfig | None,
-) -> OptimizationPolicyConfig | None:
-    if collection_optimization_override is None:
-        if global_optimization_policy is None:
-            return None
-        # No collection override: inherit normalized global optimization policy.
-        return _merge_optimization_config(global_optimization_policy, None)
-    if global_optimization_policy is None:
-        # Collection-only optimization policy: normalize and keep as effective policy.
-        return _merge_optimization_config(collection_optimization_override, None)
-    # Both global and collection are set: collection values override global field-by-field.
-    return _merge_optimization_config(global_optimization_policy, collection_optimization_override)
 
 
 def require_mapping(raw: Any, prefix: str) -> dict[str, Any]:
@@ -545,6 +556,9 @@ def _parse_validation(raw: Any, prefix: str) -> ValidationConfig | None:
     optimization_raw = parsed_raw.get("optimization")
     if optimization_raw is not None and not isinstance(optimization_raw, dict):
         raise ValueError(f"Invalid `{prefix}.optimization`: expected a mapping")
+    result_consistency_raw = parsed_raw.get("result_consistency")
+    if result_consistency_raw is not None and not isinstance(result_consistency_raw, dict):
+        raise ValueError(f"Invalid `{prefix}.result_consistency`: expected a mapping")
 
     data_quality_cfg = (
         _parse_validation_data_quality(data_quality_raw, f"{prefix}.data_quality")
@@ -556,11 +570,20 @@ def _parse_validation(raw: Any, prefix: str) -> ValidationConfig | None:
         if isinstance(optimization_raw, dict)
         else None
     )
+    result_consistency_cfg = (
+        _parse_result_consistency(result_consistency_raw, f"{prefix}.result_consistency")
+        if isinstance(result_consistency_raw, dict)
+        else None
+    )
 
-    if data_quality_cfg is None and optimization_cfg is None:
+    if data_quality_cfg is None and optimization_cfg is None and result_consistency_cfg is None:
         # Keep validation fully optional; no synthetic policy object when both modules are absent.
         return None
-    return ValidationConfig(data_quality=data_quality_cfg, optimization=optimization_cfg)
+    return ValidationConfig(
+        data_quality=data_quality_cfg,
+        optimization=optimization_cfg,
+        result_consistency=result_consistency_cfg,
+    )
 
 
 def _parse_optimization_policy(raw: Any, prefix: str) -> OptimizationPolicyConfig | None:
@@ -580,6 +603,32 @@ def _parse_optimization_policy(raw: Any, prefix: str) -> OptimizationPolicyConfi
         on_fail=on_fail,
         min_bars=min_bars,
         dof_multiplier=dof_multiplier,
+    )
+
+
+def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    slices = parse_required_int(parsed_raw, prefix, "slices", min_value=2)
+    profit_share_threshold = parse_required_float(
+        parsed_raw,
+        prefix,
+        "profit_share_threshold",
+        min_value=0.0,
+        max_value=1.0,
+    )
+    trade_share_threshold = parse_required_float(
+        parsed_raw,
+        prefix,
+        "trade_share_threshold",
+        min_value=0.0,
+        max_value=1.0,
+    )
+    return ResultConsistencyConfig(
+        slices=slices,
+        profit_share_threshold=float(profit_share_threshold),
+        trade_share_threshold=float(trade_share_threshold),
     )
 
 
