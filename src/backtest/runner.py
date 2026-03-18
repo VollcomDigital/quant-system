@@ -366,6 +366,26 @@ class BacktestRunner:
         }
 
     @staticmethod
+    def _serialize_optimization_profile(optimization: Any) -> dict[str, Any] | None:
+        if optimization is None:
+            return None
+        return {
+            "on_fail": getattr(optimization, "on_fail", None),
+            "min_bars": getattr(optimization, "min_bars", None),
+            "dof_multiplier": getattr(optimization, "dof_multiplier", None),
+        }
+
+    @staticmethod
+    def _serialize_result_consistency_profile(result_consistency: Any) -> dict[str, Any] | None:
+        if result_consistency is None:
+            return None
+        return {
+            "slices": getattr(result_consistency, "slices", None),
+            "profit_share_threshold": getattr(result_consistency, "profit_share_threshold", None),
+            "trade_share_threshold": getattr(result_consistency, "trade_share_threshold", None),
+        }
+
+    @staticmethod
     def _active_data_quality_gates(data_quality: Any) -> set[str]:
         active: set[str] = set()
         if data_quality is None:
@@ -419,27 +439,9 @@ class BacktestRunner:
                     "collection": collection.name,
                     "source": collection.source,
                     "data_quality": self._serialize_data_quality_profile(collection_dq),
-                    "optimization": (
-                        {
-                            "on_fail": getattr(collection_optimization, "on_fail", None),
-                            "min_bars": getattr(collection_optimization, "min_bars", None),
-                            "dof_multiplier": getattr(collection_optimization, "dof_multiplier", None),
-                        }
-                        if collection_optimization is not None
-                        else None
-                    ),
-                    "result_consistency": (
-                        {
-                            "slices": getattr(collection_result_consistency, "slices", None),
-                            "profit_share_threshold": getattr(
-                                collection_result_consistency, "profit_share_threshold", None
-                            ),
-                            "trade_share_threshold": getattr(
-                                collection_result_consistency, "trade_share_threshold", None
-                            ),
-                        }
-                        if collection_result_consistency is not None
-                        else None
+                    "optimization": self._serialize_optimization_profile(collection_optimization),
+                    "result_consistency": self._serialize_result_consistency_profile(
+                        collection_result_consistency
                     ),
                     "active_gates": sorted(collection_active),
                 }
@@ -463,27 +465,9 @@ class BacktestRunner:
         collection_result_consistency = getattr(collection_validation, "result_consistency", None)
         return {
             "data_quality": self._serialize_data_quality_profile(collection_dq),
-            "optimization": (
-                {
-                    "on_fail": getattr(collection_optimization, "on_fail", None),
-                    "min_bars": getattr(collection_optimization, "min_bars", None),
-                    "dof_multiplier": getattr(collection_optimization, "dof_multiplier", None),
-                }
-                if collection_optimization is not None
-                else None
-            ),
-            "result_consistency": (
-                {
-                    "slices": getattr(collection_result_consistency, "slices", None),
-                    "profit_share_threshold": getattr(
-                        collection_result_consistency, "profit_share_threshold", None
-                    ),
-                    "trade_share_threshold": getattr(
-                        collection_result_consistency, "trade_share_threshold", None
-                    ),
-                }
-                if collection_result_consistency is not None
-                else None
+            "optimization": self._serialize_optimization_profile(collection_optimization),
+            "result_consistency": self._serialize_result_consistency_profile(
+                collection_result_consistency
             ),
         }
 
