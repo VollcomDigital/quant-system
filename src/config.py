@@ -295,6 +295,10 @@ def resolve_validation_overrides(cfg: Config) -> None:
         validation_cfg.result_consistency = _merge_result_consistency_config(
             global_result_consistency_policy, None
         )
+    if validation_cfg is not None:
+        global_data_quality_policy = validation_cfg.data_quality
+        global_optimization_policy = validation_cfg.optimization
+        global_result_consistency_policy = validation_cfg.result_consistency
 
     for collection in cfg.collections:
         collection_validation = collection.validation
