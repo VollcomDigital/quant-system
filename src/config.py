@@ -166,6 +166,8 @@ def _parse_validation_data_quality_thresholds(
     )
     if cfg.min_continuity_score is not None and not 0.0 <= cfg.min_continuity_score <= 1.0:
         raise ValueError(f"`{prefix}.min_continuity_score` must be between 0 and 1")
+    if cfg.max_missing_bar_pct is not None and not 0.0 <= cfg.max_missing_bar_pct <= 100.0:
+        raise ValueError(f"`{prefix}.max_missing_bar_pct` must be between 0 and 100")
     return cfg
 
 

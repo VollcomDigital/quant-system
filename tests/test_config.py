@@ -150,8 +150,9 @@ validation:
     [
         "on_fail: abort_run",
         "min_continuity_score: 1.2",
+        "max_missing_bar_pct: 101",
     ],
-    ids=["invalid_on_fail", "invalid_continuity_score"],
+    ids=["invalid_on_fail", "invalid_continuity_score", "invalid_max_missing_bar_pct"],
 )
 def test_load_config_reliability_thresholds_invalid_values(tmp_path: Path, reliability_yaml: str):
     config_text = f"""
