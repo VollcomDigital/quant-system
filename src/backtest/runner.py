@@ -203,6 +203,7 @@ class BacktestRunner:
         self.mode_config_hash = self.evaluation_cache.hash_mode_config(self.mode_config)
         self._result_store_write_failures = 0
         self._evaluation_cache_write_failures = 0
+        self._evaluator: BacktestEvaluator | None = None
 
     def _ensure_pybroker(self) -> tuple[Any, ...]:
         if self._pybroker_components is None:
@@ -274,9 +275,11 @@ class BacktestRunner:
                 )
 
     def _get_evaluator(self) -> BacktestEvaluator:
-        # Resolve evaluator at call-time so monkeypatches and future mode dispatch
-        # are reflected without recreating runner instances.
-        return BacktestEvaluator(self._run_pybroker_simulation, self._evaluate_metric)
+        if self._evaluator is None:
+            # Lazily resolve evaluator once per run to keep monkeypatch flexibility
+            # while avoiding per-evaluation object churn.
+            self._evaluator = BacktestEvaluator(self._run_pybroker_simulation, self._evaluate_metric)
+        return self._evaluator
 
     def _make_source(self, col: CollectionConfig) -> DataSource:
         cache_dir = Path(self.cfg.cache_dir)
@@ -1917,6 +1920,7 @@ class BacktestRunner:
         self._cache_write_failures = 0
         self._result_store_write_failures = 0
         self._evaluation_cache_write_failures = 0
+        self._evaluator = None
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
         )
