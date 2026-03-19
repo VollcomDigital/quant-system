@@ -36,59 +36,31 @@ class BacktestEvaluator:
         self._metric_fn = metric_fn
 
     @staticmethod
-    def _extract_trade_pnl(trade: dict[str, Any]) -> float | None:
+    def _extract_trade_pnl_series(trades_frame: pd.DataFrame) -> pd.Series:
         for key in ("pnl", "profit", "net_profit", "pl", "p/l"):
-            if key not in trade:
+            if key not in trades_frame.columns:
                 continue
-            try:
-                value = float(trade[key])
-            except (TypeError, ValueError):
-                continue
-            if np.isfinite(value):
-                return value
-        return None
+            values = pd.to_numeric(trades_frame[key], errors="coerce")
+            values = values.replace([np.inf, -np.inf], np.nan)
+            return values
+        return pd.Series(np.nan, index=trades_frame.index, dtype=float)
 
     @staticmethod
-    def _extract_trade_timestamp(trade: dict[str, Any]) -> pd.Timestamp | None:
+    def _extract_trade_timestamp_series(trades_frame: pd.DataFrame) -> pd.Series:
         for key in ("exit_date", "exit_time", "close_date", "date", "entry_date", "entry_time"):
-            if key not in trade:
+            if key not in trades_frame.columns:
                 continue
-            parsed = pd.to_datetime(trade[key], errors="coerce")
-            if pd.isna(parsed):
-                continue
-            return pd.Timestamp(parsed)
-        return None
-
-    @staticmethod
-    def _normalized_trades_for_analysis(
-        trades_frame: pd.DataFrame,
-        stats: dict[str, Any],
-    ) -> tuple[list[dict[str, Any]], int, bool, str | None]:
-        if not trades_frame.empty:
-            records = trades_frame.to_dict("records")
-            return records, len(records), True, None
-
-        trades_log = stats.get("trades_log")
-        if not isinstance(trades_log, list):
-            return [], int(stats.get("trades", 0)), False, "missing_trades_log"
-        total_trades = int(stats.get("trades", len(trades_log)))
-        if total_trades != len(trades_log):
-            return trades_log, total_trades, False, "truncated_trades_log"
-        return trades_log, total_trades, True, None
+            return pd.to_datetime(trades_frame[key], errors="coerce")
+        return pd.Series(pd.NaT, index=trades_frame.index)
 
     @classmethod
-    def _build_report_trades_log(
-        cls, trades_frame: pd.DataFrame, stats: dict[str, Any]
-    ) -> list[dict[str, Any]]:
+    def _build_report_trades_log(cls, trades_frame: pd.DataFrame) -> list[dict[str, Any]]:
         if not trades_frame.empty:
             serialized = trades_frame.copy()
             for column in serialized.columns:
                 if pd.api.types.is_datetime64_any_dtype(serialized[column]):
                     serialized[column] = serialized[column].dt.strftime("%Y-%m-%dT%H:%M:%S")
             return serialized.head(cls._TRADES_LOG_LIMIT).to_dict("records")
-        trades_log = stats.get("trades_log")
-        if isinstance(trades_log, list):
-            return [trade for trade in trades_log if isinstance(trade, dict)]
         return []
 
     def _build_trade_meta(
@@ -97,37 +69,55 @@ class BacktestEvaluator:
         stats: dict[str, Any],
         request: EvaluationRequest,
     ) -> dict[str, Any]:
-        trades_rows, total_trades, is_complete, reason = self._normalized_trades_for_analysis(
-            trades_frame, stats
-        )
-        if not is_complete:
+        total_trades = int(len(trades_frame))
+        raw_trade_count = stats.get("trades")
+        if raw_trade_count is None:
             return {
-                "is_complete": bool(is_complete),
-                "trades_log_count": len(trades_rows),
+                "is_complete": False,
+                "analyzed_trades_count": total_trades,
                 "total_trades": total_trades,
-                "reason": str(reason),
+                "reason": "missing_trade_count_metric",
+            }
+        try:
+            expected_trades = int(raw_trade_count)
+        except (TypeError, ValueError):
+            return {
+                "is_complete": False,
+                "analyzed_trades_count": total_trades,
+                "total_trades": total_trades,
+                "reason": "invalid_trade_count_metric",
+            }
+        if expected_trades != total_trades:
+            return {
+                "is_complete": False,
+                "analyzed_trades_count": total_trades,
+                "total_trades": expected_trades,
+                "reason": "truncated_trades_frame",
             }
 
-        pnls: list[float] = []
-        exit_times: list[pd.Timestamp] = []
-        for trade in trades_rows:
-            pnl = self._extract_trade_pnl(trade)
-            if pnl is None:
-                continue
-            pnls.append(pnl)
-            ts = self._extract_trade_timestamp(trade)
-            if ts is not None:
-                exit_times.append(ts)
+        pnl_series = self._extract_trade_pnl_series(trades_frame)
+        valid_pnl = pnl_series.notna()
+        pnls = pnl_series[valid_pnl].to_numpy(dtype=float)
+        exit_series = self._extract_trade_timestamp_series(trades_frame)
+        # Slice concentration requires both valid pnl and valid timestamp for each trade.
+        valid_exit = exit_series.notna()
+        paired = valid_pnl & valid_exit
+        paired_pnls = pnl_series[paired].to_numpy(dtype=float)
+        exit_times = pd.DatetimeIndex(exit_series[paired])
 
         total_positive_profit = float(sum(v for v in pnls if v > 0))
         dominant_trade_count: int | None = None
         dominant_trade_share: float | None = None
         threshold = request.result_consistency_profit_share_threshold
         if threshold is not None and total_positive_profit > 0:
+            # Find the smallest winner subset that reaches configured profit share.
             winners_desc = np.sort(np.asarray([v for v in pnls if v > 0], dtype=float))[::-1]
             if winners_desc.size > 0:
-                required_profit = float(threshold) * total_positive_profit
                 cumulative = np.cumsum(winners_desc)
+                # `cumulative[k]` is profit explained by top-(k+1) winning trades.
+                # Anchor target profit to `cumulative[-1]` (same numeric path) to
+                # avoid float-mismatch artifacts with separate total computations.
+                required_profit = float(threshold) * float(cumulative[-1])
                 dominant_trade_count = int(np.searchsorted(cumulative, required_profit, side="left") + 1)
                 if len(pnls) > 0:
                     dominant_trade_share = dominant_trade_count / float(len(pnls))
@@ -137,17 +127,16 @@ class BacktestEvaluator:
         if (
             slices is not None
             and slices >= 2
-            and len(exit_times) == len(pnls)
-            and len(pnls) >= slices
+            and len(paired_pnls) >= slices
         ):
-            timeline = pd.DatetimeIndex(exit_times)
-            start = timeline.min()
-            end = timeline.max()
+            start = exit_times.min()
+            end = exit_times.max()
             if start < end:
-                positive_pnls = np.asarray([v if v > 0 else 0.0 for v in pnls], dtype=float)
+                # Concentration diagnostic: largest temporal slice share of positive pnl.
+                positive_pnls = np.where(paired_pnls > 0, paired_pnls, 0.0)
                 grouped = (
-                    pd.Series(positive_pnls, index=timeline)
-                    .groupby(pd.cut(timeline, bins=slices), observed=False)
+                    pd.Series(positive_pnls, index=exit_times)
+                    .groupby(pd.cut(exit_times, bins=slices), observed=False)
                     .sum()
                 )
                 grouped_sum = float(grouped.sum())
@@ -156,9 +145,9 @@ class BacktestEvaluator:
 
         return {
             "is_complete": True,
-            "trades_log_count": len(trades_rows),
+            "analyzed_trades_count": total_trades,
             "total_trades": total_trades,
-            "trade_count_with_pnl": len(pnls),
+            "trade_count_with_pnl": int(len(pnls)),
             "total_positive_profit": total_positive_profit,
             "profit_share_threshold_used": threshold,
             "dominant_trade_count_for_profit_share": dominant_trade_count,
@@ -199,17 +188,12 @@ class BacktestEvaluator:
                 reject_reason="simulation_failed",
             )
 
-        if len(sim_result) == 4:
-            returns, equity_curve, stats, trades_frame = sim_result
-            if not isinstance(trades_frame, pd.DataFrame):
-                trades_frame = pd.DataFrame(trades_frame)
-        else:
-            # Backward-compat path for test doubles still returning 3-tuple.
-            returns, equity_curve, stats = sim_result
-            trades_frame = pd.DataFrame()
+        returns, equity_curve, stats, trades_frame = sim_result
+        if not isinstance(trades_frame, pd.DataFrame):
+            raise ValueError("simulation_fn must return a pandas DataFrame for trades_frame")
         stats = dict(stats)
         # Derive reporting log and consistency metadata from full trades when available.
-        stats["trades_log"] = self._build_report_trades_log(trades_frame, stats)
+        stats["trades_log"] = self._build_report_trades_log(trades_frame)
         stats["trade_meta"] = self._build_trade_meta(trades_frame, stats, request)
         metric_val = self._metric_fn(
             request.metric_name,

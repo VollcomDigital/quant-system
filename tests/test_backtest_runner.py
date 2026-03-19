@@ -226,7 +226,7 @@ def _make_runner(
     if patch_sim:
 
         def _fake_sim(self, *args, **kwargs):
-            return returns, equity, stats
+            return returns, equity, stats, pd.DataFrame()
 
         monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _fake_sim)
 
@@ -672,7 +672,7 @@ def test_run_all_handles_failed_and_nan_metrics(tmp_path, monkeypatch):
                 "calmar": 0.0,
             }
         )
-        return returns, equity, stats
+        return returns, equity, stats, pd.DataFrame()
 
     monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _sim_with_none)
     monkeypatch.setattr(
@@ -875,7 +875,7 @@ def _patch_pybroker_simulation(monkeypatch) -> dict[str, int]:
             "drawdown_curve": [],
             "trades_log": [],
         }
-        return returns, equity, stats
+        return returns, equity, stats, pd.DataFrame()
 
     monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _fake_sim)
     return eval_calls
@@ -1415,7 +1415,7 @@ def test_strategy_plan_skip_optimization_does_not_leak_to_next_strategy(tmp_path
             "drawdown_curve": [],
             "trades_log": [],
         }
-        return returns, equity, stats
+        return returns, equity, stats, pd.DataFrame()
 
     monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _counting_sim)
     monkeypatch.setattr(
@@ -1666,6 +1666,7 @@ def test_run_all_rejects_result_on_outlier_dependency(tmp_path, monkeypatch):
         trades_log = [
             {"pnl": 1.0, "exit_date": f"2024-01-{(i % 28) + 1:02d}"} for i in range(99)
         ] + [{"pnl": 500.0, "exit_date": "2024-03-15"}]
+        trades_frame = pd.DataFrame(trades_log)
         stats = {
             "sharpe": 1.0,
             "sortino": 1.0,
@@ -1679,9 +1680,9 @@ def test_run_all_rejects_result_on_outlier_dependency(tmp_path, monkeypatch):
             "calmar": 1.0,
             "equity_curve": [],
             "drawdown_curve": [],
-            "trades_log": trades_log,
+            "trades_log": [],
         }
-        return returns, equity, stats
+        return returns, equity, stats, trades_frame
 
     monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _sim_with_concentrated_pnl)
     results = runner.run_all()
@@ -1726,7 +1727,7 @@ def test_trade_meta_slice_profit_share_includes_earliest_exit_timestamp(tmp_path
     assert trade_meta["max_slice_profit_share"] == pytest.approx(0.5)
 
 
-def test_run_all_result_consistency_skips_check_for_truncated_trade_log(tmp_path, monkeypatch):
+def test_run_all_result_consistency_skips_check_for_missing_trades_frame(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
     runner.cfg.validation = ValidationConfig(
         result_consistency=ResultConsistencyConfig(
@@ -1737,11 +1738,10 @@ def test_run_all_result_consistency_skips_check_for_truncated_trade_log(tmp_path
     )
     resolve_validation_overrides(runner.cfg)
 
-    def _sim_with_truncated_log(self, *args, **kwargs):
+    def _sim_with_missing_trades_frame(self, *args, **kwargs):
         dates = pd.date_range("2024-01-01", periods=120, freq="D")
         returns = pd.Series([0.001] * 120, index=dates)
         equity = (1 + returns).cumprod()
-        trades_log = [{"pnl": 1.0, "exit_date": "2024-01-10"} for _ in range(50)]
         stats = {
             "sharpe": 1.0,
             "sortino": 1.0,
@@ -1755,11 +1755,11 @@ def test_run_all_result_consistency_skips_check_for_truncated_trade_log(tmp_path
             "calmar": 1.0,
             "equity_curve": [],
             "drawdown_curve": [],
-            "trades_log": trades_log,
+            "trades_log": [],
         }
-        return returns, equity, stats
+        return returns, equity, stats, pd.DataFrame()
 
-    monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _sim_with_truncated_log)
+    monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _sim_with_missing_trades_frame)
     results = runner.run_all()
 
     assert len(results) >= 1
