@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 
 import pytest
 
@@ -103,3 +104,29 @@ def test_result_store_insert_is_idempotent_per_record_identity(tmp_path: Path):
     rows = store.list_by_run("run-1")
     assert len(rows) == 1
     assert rows[0]["metric_value"] == pytest.approx(2.0)
+
+
+def test_result_store_repairs_malformed_identity_index(tmp_path: Path):
+    store = ResultStore(tmp_path)
+    con = sqlite3.connect(store.db_path)
+    try:
+        con.execute("DROP INDEX IF EXISTS idx_result_records_identity")
+        con.execute(
+            "CREATE INDEX idx_result_records_identity ON result_records(run_id, collection)"
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    repaired = ResultStore(tmp_path)
+    con = sqlite3.connect(repaired.db_path)
+    try:
+        index_rows = con.execute("PRAGMA index_list('result_records')").fetchall()
+        identity_rows = [row for row in index_rows if row[1] == "idx_result_records_identity"]
+        assert len(identity_rows) == 1
+        assert int(identity_rows[0][2]) == 1
+        index_info = con.execute("PRAGMA index_info('idx_result_records_identity')").fetchall()
+        index_columns = [row[2] for row in sorted(index_info, key=lambda row: int(row[0]))]
+        assert index_columns == list(ResultStore._IDENTITY_COLUMNS)
+    finally:
+        con.close()
