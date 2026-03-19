@@ -196,7 +196,8 @@ class ResultsCache:
             FROM results_legacy
             """
         )
-        con.execute("DROP TABLE results_legacy")
+        # Intentionally keep results_legacy as a backup to avoid extra DDL and
+        # to allow recovery if needed; do not drop it automatically here.
 
     def get(
         self,
