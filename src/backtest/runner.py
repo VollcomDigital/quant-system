@@ -991,8 +991,8 @@ class BacktestRunner:
             "baseline_only": 1,
             "skip_optimization": 2,
             "skip_job": 3,
-            "skip_collection": 4,
-            "reject_result": 5,
+            "reject_result": 4,
+            "skip_collection": 5,
         }
         return order.get(action, -1)
 
@@ -1793,7 +1793,7 @@ class BacktestRunner:
             return search_method
         try:
             import optuna  # noqa: F401
-        except Exception:
+        except ImportError:
             return "grid"
         return "optuna"
 
@@ -1993,8 +1993,8 @@ class BacktestRunner:
             if not prep_decision.passed or prepared is None:
                 continue
 
-            self.metrics["symbols_tested"] += 1
             for strat_name in self.external_index.keys():
+                self.metrics["symbols_tested"] += 1
                 # Strategy stage: create plan -> validate plan -> run -> validate results.
                 plan = self._strategy_create_plan(state, strat_name)
                 self._apply_policy_constraints_to_plan(state, validated_data, plan)
