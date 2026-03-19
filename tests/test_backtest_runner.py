@@ -368,6 +368,17 @@ def test_compute_continuity_score_exchange_calendar_ignores_market_holiday():
     assert exchange_continuity["score"] == pytest.approx(1.0)
 
 
+def test_compute_continuity_score_exchange_calendar_invalid_exchange_raises_value_error():
+    pytest.importorskip("exchange_calendars")
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    df = pd.DataFrame({"Close": [100.0, 101.0, 102.0, 103.0, 104.0]}, index=idx)
+
+    with pytest.raises(ValueError, match="Failed to use exchange calendar"):
+        BacktestRunner.compute_continuity_score(
+            df, "1d", calendar_kind="exchange", exchange_calendar="INVALID_EXCHANGE"
+        )
+
+
 def test_data_validation_calendar_timezone_changes_weekday_continuity(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(

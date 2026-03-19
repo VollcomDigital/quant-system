@@ -468,6 +468,12 @@ class BacktestRunner:
             # is not installed; behaves like weekday expectations.
             expected_idx = cls._weekday_expected_index(idx, expected_delta)
             return cls._count_missing_from_expected_index(expected_idx, idx)
+        except Exception as exc:
+            # Surface invalid exchange-calendar usage as a validation-style error
+            # so data-validation gates can convert it to skip decisions.
+            raise ValueError(
+                f"Failed to use exchange calendar '{exchange_calendar}': {exc}"
+            ) from exc
 
     @classmethod
     def _expected_missing_counts(
