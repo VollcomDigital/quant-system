@@ -4,8 +4,10 @@
 This repo is a Dockerized, cache-aware backtesting system for running multiple strategies across asset collections (crypto, stocks, bonds, commodities, FX). The CLI lives in `src/main.py` and loads YAML collection configs under `config/collections/`.
 
 ## How to run
+- Make (recommended):
+  - Prefer project `make` targets for tests, runs, and checks (for example `make tests`, `make run`, `make precommit-coverage`) instead of ad-hoc command variants whenever an equivalent target exists.
 
-- Docker (recommended):
+- Docker :
   - `docker-compose run --rm app bash -lc "poetry run python -m src.main run --config config/collections/crypto.yaml"`
 - Local (Poetry):
   - `poetry run python -m src.main run --config config/collections/crypto.yaml`
@@ -39,3 +41,9 @@ This repo is a Dockerized, cache-aware backtesting system for running multiple s
 - `poetry run quant-system manifest-status --reports-dir reports --latest`
 - `poetry run quant-system ingest-data --source yfinance --symbols GC,CL --timeframe 1d`
 - `poetry run quant-system clean-cache --cache-dir .cache/data --dry-run`
+
+## Design rules
+
+- For all new implementations and significant refactors, keep function Cognitive Complexity at `<= 15`.
+- If a function exceeds `15`, split logic into focused helper functions before merging.
+- Preserve behavior when reducing complexity; add/update tests when control flow changes.
