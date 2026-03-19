@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 ENGINE_VERSION = "1"
-_DUPLICATE_COLUMN_NAME_ERR = "duplicate column name"
 
 
 def _normalize_evaluation_mode(value: Any) -> str:
@@ -79,31 +78,23 @@ class ResultsCache:
         con = sqlite3.connect(self.db_path)
         try:
             self._create_results_table(con)
-            # Backward-compat: ensure run_id column exists
-            try:
+            existing_columns = self._get_results_table_columns(con)
+            # Backward-compat: add columns only when missing (avoid exception-driven control flow).
+            if "run_id" not in existing_columns:
                 con.execute("ALTER TABLE results ADD COLUMN run_id TEXT")
-            except sqlite3.OperationalError as e:
-                # Only ignore the expected "column already exists" case.
-                if _DUPLICATE_COLUMN_NAME_ERR not in str(e).lower():
-                    raise
-            try:
-                con.execute(
-                    "ALTER TABLE results ADD COLUMN evaluation_mode TEXT DEFAULT 'backtest'"
-                )
-            except sqlite3.OperationalError as e:
-                # Only ignore the expected "column already exists" case.
-                if _DUPLICATE_COLUMN_NAME_ERR not in str(e).lower():
-                    raise
-            try:
+            if "evaluation_mode" not in existing_columns:
+                con.execute("ALTER TABLE results ADD COLUMN evaluation_mode TEXT DEFAULT 'backtest'")
+            if "mode_config_hash" not in existing_columns:
                 con.execute("ALTER TABLE results ADD COLUMN mode_config_hash TEXT DEFAULT ''")
-            except sqlite3.OperationalError as e:
-                # Only ignore the expected "column already exists" case.
-                if _DUPLICATE_COLUMN_NAME_ERR not in str(e).lower():
-                    raise
             self._migrate_legacy_primary_key(con)
             con.commit()
         finally:
             con.close()
+
+    @staticmethod
+    def _get_results_table_columns(con: sqlite3.Connection) -> set[str]:
+        cursor = con.execute("PRAGMA table_info(results)")
+        return {str(row[1]) for row in cursor.fetchall()}
 
     @staticmethod
     def _create_results_table(con: sqlite3.Connection) -> None:
