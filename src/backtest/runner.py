@@ -1007,9 +1007,12 @@ class BacktestRunner:
             for reason in decision.reasons:
                 if reason not in reasons:
                     reasons.append(reason)
-        action = chosen.action
-        passed = action in {"continue", "skip_optimization", "baseline_only"}
-        return GateDecision(passed=passed, action=action, reasons=reasons, stage=stage)
+        return GateDecision(
+            passed=chosen.passed,
+            action=chosen.action,
+            reasons=reasons,
+            stage=stage,
+        )
 
     def _collection_validation(self, state: JobState) -> tuple[GateDecision, DataSource | None]:
         context = ValidationContext(
