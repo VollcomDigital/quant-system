@@ -2,7 +2,7 @@ import logging
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import typer
 
@@ -38,11 +38,13 @@ SUMMARY_JSON_FILENAME = "summary.json"
 @app.command()
 def run(
     config: str = typer.Option("config/example.yaml", help="Path to YAML config"),
-    output_dir: str = typer.Option(None, help="Reports root directory (default: reports/<run_id>)"),
-    strategies_path: str = typer.Option(
+    output_dir: Optional[str] = typer.Option(
+        None, help="Reports root directory (default: reports/<run_id>)"
+    ),
+    strategies_path: Optional[str] = typer.Option(
         None, help="Path to external strategies repo (overrides env STRATEGIES_PATH)"
     ),
-    evaluation_mode: str = typer.Option(
+    evaluation_mode: Optional[str] = typer.Option(
         None,
         help="Evaluation mode override (backtest or walk_forward). Defaults to config value.",
     ),
