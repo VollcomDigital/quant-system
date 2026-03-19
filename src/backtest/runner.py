@@ -1146,6 +1146,13 @@ class BacktestRunner:
         if fetched_data.raw_df.empty:
             return GateDecision(False, "skip_job", ["empty_dataframe"], "data_validation"), None
 
+        global_validation = getattr(self.cfg, "validation", None)
+        collection_validation = getattr(context.job.collection, "validation", None)
+        has_data_quality_policy = (
+            getattr(global_validation, "data_quality", None) is not None
+            or getattr(collection_validation, "data_quality", None) is not None
+        )
+
         (
             reliability_on_fail,
             min_data_points,
@@ -1167,7 +1174,10 @@ class BacktestRunner:
                 calendar_timezone=calendar_timezone,
             )
         except ValueError as exc:
-            return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
+            # Preserve pre-validation behavior unless a data-quality policy is configured.
+            if has_data_quality_policy:
+                return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
+            continuity = {}
         reliability_reasons = self._collect_reliability_reasons(
             raw_df=fetched_data.raw_df,
             continuity=continuity,

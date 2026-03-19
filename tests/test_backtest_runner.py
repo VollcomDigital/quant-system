@@ -400,6 +400,24 @@ def test_data_validation_calendar_timezone_changes_weekday_continuity(tmp_path, 
     assert validated_data.continuity["missing_bars"] == 0
 
 
+def test_data_validation_without_data_quality_does_not_skip_on_continuity_errors(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    df = pd.DataFrame({"Close": [100.0]}, index=pd.to_datetime(["2024-01-01"]))
+    context = SimpleNamespace(
+        job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
+        fetched_data=SimpleNamespace(raw_df=df),
+    )
+
+    decision, validated_data = runner._data_validation_common(context)
+
+    assert decision.passed
+    assert decision.action == "continue"
+    assert validated_data is not None
+    assert validated_data.continuity == {}
+
+
 def test_sample_series_preserves_last_point():
     idx = pd.date_range("2024-01-01", periods=3, freq="D")
     series = pd.Series([1.0, 2.0, 3.0], index=idx)
