@@ -63,38 +63,96 @@ class BacktestEvaluator:
             return serialized.head(cls._TRADES_LOG_LIMIT).to_dict("records")
         return []
 
+    @staticmethod
+    def _build_incomplete_trade_meta(
+        analyzed_trades_count: int,
+        total_trades: int,
+        reason: str,
+    ) -> dict[str, Any]:
+        return {
+            "is_complete": False,
+            "analyzed_trades_count": analyzed_trades_count,
+            "total_trades": total_trades,
+            "reason": reason,
+        }
+
+    def _validate_trade_counts(
+        self, trades_frame: pd.DataFrame, stats: dict[str, Any]
+    ) -> tuple[bool, dict[str, Any] | None]:
+        total_trades = int(len(trades_frame))
+        raw_trade_count = stats.get("trades")
+        if raw_trade_count is None:
+            return False, self._build_incomplete_trade_meta(
+                analyzed_trades_count=total_trades,
+                total_trades=total_trades,
+                reason="missing_trade_count_metric",
+            )
+        try:
+            expected_trades = int(raw_trade_count)
+        except (TypeError, ValueError):
+            return False, self._build_incomplete_trade_meta(
+                analyzed_trades_count=total_trades,
+                total_trades=total_trades,
+                reason="invalid_trade_count_metric",
+            )
+        if expected_trades != total_trades:
+            return False, self._build_incomplete_trade_meta(
+                analyzed_trades_count=total_trades,
+                total_trades=expected_trades,
+                reason="truncated_trades_frame",
+            )
+        return True, None
+
+    @staticmethod
+    def _compute_dominant_trade_share(
+        pnls: np.ndarray,
+        threshold: float | None,
+    ) -> tuple[int | None, float | None]:
+        if threshold is None or pnls.size == 0:
+            return None, None
+        winners_desc = np.sort(pnls[pnls > 0])[::-1]
+        if winners_desc.size == 0:
+            return None, None
+        cumulative = np.cumsum(winners_desc)
+        required_profit = float(threshold) * float(cumulative[-1])
+        dominant_trade_count = int(np.searchsorted(cumulative, required_profit, side="left") + 1)
+        dominant_trade_share = dominant_trade_count / float(pnls.size)
+        return dominant_trade_count, dominant_trade_share
+
+    @staticmethod
+    def _compute_max_slice_profit_share(
+        paired_pnls: np.ndarray,
+        exit_times: pd.DatetimeIndex,
+        slices: int | None,
+    ) -> float | None:
+        if slices is None or slices < 2 or len(paired_pnls) < slices:
+            return None
+        start = exit_times.min()
+        end = exit_times.max()
+        if not (start < end):
+            return None
+        positive_pnls = np.where(paired_pnls > 0, paired_pnls, 0.0)
+        grouped = (
+            pd.Series(positive_pnls, index=exit_times)
+            .groupby(pd.cut(exit_times, bins=slices), observed=False)
+            .sum()
+        )
+        grouped_sum = float(grouped.sum())
+        if grouped_sum <= 0:
+            return None
+        return float(grouped.max() / grouped_sum)
+
     def _build_trade_meta(
         self,
         trades_frame: pd.DataFrame,
         stats: dict[str, Any],
         request: EvaluationRequest,
     ) -> dict[str, Any]:
-        total_trades = int(len(trades_frame))
-        raw_trade_count = stats.get("trades")
-        if raw_trade_count is None:
-            return {
-                "is_complete": False,
-                "analyzed_trades_count": total_trades,
-                "total_trades": total_trades,
-                "reason": "missing_trade_count_metric",
-            }
-        try:
-            expected_trades = int(raw_trade_count)
-        except (TypeError, ValueError):
-            return {
-                "is_complete": False,
-                "analyzed_trades_count": total_trades,
-                "total_trades": total_trades,
-                "reason": "invalid_trade_count_metric",
-            }
-        if expected_trades != total_trades:
-            return {
-                "is_complete": False,
-                "analyzed_trades_count": total_trades,
-                "total_trades": expected_trades,
-                "reason": "truncated_trades_frame",
-            }
+        is_complete, incomplete_meta = self._validate_trade_counts(trades_frame, stats)
+        if not is_complete and isinstance(incomplete_meta, dict):
+            return incomplete_meta
 
+        total_trades = int(len(trades_frame))
         pnl_series = self._extract_trade_pnl_series(trades_frame)
         valid_pnl = pnl_series.notna()
         pnls = pnl_series[valid_pnl].to_numpy(dtype=float)
@@ -105,43 +163,18 @@ class BacktestEvaluator:
         paired_pnls = pnl_series[paired].to_numpy(dtype=float)
         exit_times = pd.DatetimeIndex(exit_series[paired])
 
-        total_positive_profit = float(sum(v for v in pnls if v > 0))
-        dominant_trade_count: int | None = None
-        dominant_trade_share: float | None = None
+        total_positive_profit = float(np.where(pnls > 0, pnls, 0.0).sum())
         threshold = request.result_consistency_profit_share_threshold
-        if threshold is not None and total_positive_profit > 0:
-            # Find the smallest winner subset that reaches configured profit share.
-            winners_desc = np.sort(np.asarray([v for v in pnls if v > 0], dtype=float))[::-1]
-            if winners_desc.size > 0:
-                cumulative = np.cumsum(winners_desc)
-                # `cumulative[k]` is profit explained by top-(k+1) winning trades.
-                # Anchor target profit to `cumulative[-1]` (same numeric path) to
-                # avoid float-mismatch artifacts with separate total computations.
-                required_profit = float(threshold) * float(cumulative[-1])
-                dominant_trade_count = int(np.searchsorted(cumulative, required_profit, side="left") + 1)
-                if len(pnls) > 0:
-                    dominant_trade_share = dominant_trade_count / float(len(pnls))
-
-        max_slice_profit_share: float | None = None
+        dominant_trade_count, dominant_trade_share = self._compute_dominant_trade_share(
+            pnls,
+            threshold,
+        )
         slices = request.result_consistency_slices
-        if (
-            slices is not None
-            and slices >= 2
-            and len(paired_pnls) >= slices
-        ):
-            start = exit_times.min()
-            end = exit_times.max()
-            if start < end:
-                # Concentration diagnostic: largest temporal slice share of positive pnl.
-                positive_pnls = np.where(paired_pnls > 0, paired_pnls, 0.0)
-                grouped = (
-                    pd.Series(positive_pnls, index=exit_times)
-                    .groupby(pd.cut(exit_times, bins=slices), observed=False)
-                    .sum()
-                )
-                grouped_sum = float(grouped.sum())
-                if grouped_sum > 0:
-                    max_slice_profit_share = float(grouped.max() / grouped_sum)
+        max_slice_profit_share = self._compute_max_slice_profit_share(
+            paired_pnls,
+            exit_times,
+            slices,
+        )
 
         return {
             "is_complete": True,
