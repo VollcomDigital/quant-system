@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 ENGINE_VERSION = "1"
+_DUPLICATE_COLUMN_NAME_ERR = "duplicate column name"
 
 
 def _normalize_evaluation_mode(value: Any) -> str:
@@ -81,21 +82,24 @@ class ResultsCache:
             # Backward-compat: ensure run_id column exists
             try:
                 con.execute("ALTER TABLE results ADD COLUMN run_id TEXT")
-            except Exception:
-                # Column already exists or migration not needed; safe to ignore.
-                pass
+            except sqlite3.OperationalError as e:
+                # Only ignore the expected "column already exists" case.
+                if _DUPLICATE_COLUMN_NAME_ERR not in str(e).lower():
+                    raise
             try:
                 con.execute(
                     "ALTER TABLE results ADD COLUMN evaluation_mode TEXT DEFAULT 'backtest'"
                 )
-            except Exception:
-                # Column already exists or migration not needed; safe to ignore.
-                pass
+            except sqlite3.OperationalError as e:
+                # Only ignore the expected "column already exists" case.
+                if _DUPLICATE_COLUMN_NAME_ERR not in str(e).lower():
+                    raise
             try:
                 con.execute("ALTER TABLE results ADD COLUMN mode_config_hash TEXT DEFAULT ''")
-            except Exception:
-                # Column already exists or migration not needed; safe to ignore.
-                pass
+            except sqlite3.OperationalError as e:
+                # Only ignore the expected "column already exists" case.
+                if _DUPLICATE_COLUMN_NAME_ERR not in str(e).lower():
+                    raise
             self._migrate_legacy_primary_key(con)
             con.commit()
         finally:
