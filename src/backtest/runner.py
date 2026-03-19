@@ -1407,9 +1407,10 @@ class BacktestRunner:
             )
             fractional = self._fractional_enabled(context.job.collection, context.job.symbol)
             bars_per_year = self._bars_per_year(context.job.timeframe)
-            price = validated_data.raw_df[
-                "Close" if "Close" in validated_data.raw_df.columns else "close"
-            ].astype(float)
+            close_col = self._resolve_close_column(validated_data.raw_df)
+            if close_col is None:
+                raise ValueError("missing close column")
+            price = validated_data.raw_df[close_col].astype(float)
             fingerprint = (
                 f"{len(validated_data.raw_df)}:{validated_data.raw_df.index[-1].isoformat()}:{float(price.iloc[-1])}"
             )
