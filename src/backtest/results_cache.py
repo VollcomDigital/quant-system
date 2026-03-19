@@ -313,6 +313,7 @@ class ResultsCache:
 
     def list_by_run(self, run_id: str) -> list[dict[str, Any]]:
         con = sqlite3.connect(self.db_path)
+        con.row_factory = sqlite3.Row
         try:
             cur = con.execute(
                 """
@@ -322,27 +323,17 @@ class ResultsCache:
                 (run_id,),
             )
             rows = []
-            for r in cur.fetchall():
-                (
-                    collection,
-                    symbol,
-                    timeframe,
-                    strategy,
-                    params_json,
-                    metric_name,
-                    metric_value,
-                    stats_json,
-                ) = r
+            for row in cur.fetchall():
                 rows.append(
                     {
-                        "collection": collection,
-                        "symbol": symbol,
-                        "timeframe": timeframe,
-                        "strategy": strategy,
-                        "params": json.loads(params_json),
-                        "metric": metric_name,
-                        "metric_value": float(metric_value),
-                        "stats": json.loads(stats_json),
+                        "collection": row["collection"],
+                        "symbol": row["symbol"],
+                        "timeframe": row["timeframe"],
+                        "strategy": row["strategy"],
+                        "params": json.loads(row["params_json"]),
+                        "metric": row["metric_name"],
+                        "metric_value": float(row["metric_value"]),
+                        "stats": json.loads(row["stats_json"]),
                     }
                 )
             return rows
