@@ -1242,7 +1242,7 @@ def test_run_all_fetches_once_per_symbol_timeframe_with_multiple_strategies(tmp_
     results = runner.run_all()
     assert fetch_calls["count"] == 1
     assert len(results) == 2
-    assert runner.metrics["symbols_tested"] == 1
+    assert runner.metrics["symbols_tested"] == 2
 
 
 def test_run_all_skip_evaluation_adds_single_failure_for_multiple_strategies(tmp_path, monkeypatch):
