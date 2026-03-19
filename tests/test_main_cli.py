@@ -191,6 +191,87 @@ def test_run_command_success(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     assert export_calls["markdown"] == 1
 
 
+def test_run_command_uses_result_store_adapter_for_dashboard_payload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    (tmp_path / "strategies").mkdir()
+    export_calls: dict[str, int] = {}
+    captured: dict[str, object] = {}
+
+    class DummyRunner:
+        def __init__(self, cfg, strategies_root, run_id, **kwargs):
+            self.cfg = cfg
+            self.strategies_root = strategies_root
+            self.run_id = run_id
+            self.external_index = {"stratA": object()}
+            self.results_cache = object()
+            self.failures = []
+            self._rows = [
+                {
+                    "collection": "test",
+                    "symbol": "AAPL",
+                    "timeframe": "1d",
+                    "strategy": "stratA",
+                    "params": {"x": 1},
+                    "metric": "sharpe",
+                    "metric_value": 1.5,
+                    "stats": {"sharpe": 1.5},
+                }
+            ]
+
+        def run_all(self, only_cached: bool = False):
+            return [
+                SimpleNamespace(
+                    collection="test",
+                    symbol="AAPL",
+                    timeframe="1d",
+                    strategy="stratA",
+                    params={"x": 1},
+                    metric_name="sharpe",
+                    metric_value=1.5,
+                    stats={"sharpe": 1.5},
+                )
+            ]
+
+        def list_result_rows_for_run(self, _run_id: str):
+            return list(self._rows)
+
+    def _build_dashboard_payload(cache, run_id, results):
+        captured["run_id"] = run_id
+        captured["rows"] = cache.list_by_run(run_id)
+        return {
+            "run_id": run_id,
+            "rows": [],
+            "summary": {"counts": {"results": len(results)}},
+            "available_metrics": ["sharpe"],
+            "highlights": {},
+        }
+
+    monkeypatch.setattr("src.main.BacktestRunner", DummyRunner)
+    _patch_common(monkeypatch, export_calls)
+    monkeypatch.setattr("src.main.build_dashboard_payload", _build_dashboard_payload)
+    monkeypatch.setattr(
+        "src.main.collect_runs_manifest",
+        lambda reports_root, run_id, summary, meta: [{"run_id": "old-run", "summary": summary}],
+    )
+    monkeypatch.setattr(
+        "src.main.refresh_manifest",
+        lambda reports_root, base_out, cache, payload: [
+            {"run_id": "old-run", "message": "refreshed"}
+        ],
+    )
+    monkeypatch.setattr("src.main.notify_all", lambda *_args, **_kwargs: [])
+    monkeypatch.setenv("EVALUATION_RESULTS_SOURCE", "result_store")
+
+    result = runner.invoke(app, _run_args(tmp_path))
+    assert result.exit_code == 0
+    assert captured["run_id"]
+    rows = captured["rows"]
+    assert isinstance(rows, list)
+    assert len(rows) == 1
+    assert rows[0]["strategy"] == "stratA"
+
+
 def test_run_command_evaluation_mode_override(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     (tmp_path / "strategies").mkdir()
     seen: dict[str, str] = {}
