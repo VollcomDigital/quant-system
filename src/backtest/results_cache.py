@@ -9,6 +9,11 @@ from typing import Any, Mapping
 ENGINE_VERSION = "1"
 
 
+def _normalize_evaluation_mode(value: Any) -> str:
+    mode = str(value or "backtest").strip().lower()
+    return mode or "backtest"
+
+
 @dataclass(frozen=True)
 class ResultsCacheRecord:
     collection: str
@@ -57,7 +62,7 @@ class ResultsCacheRecord:
             fees=float(payload["fees"]),
             slippage=float(payload["slippage"]),
             run_id=str(payload["run_id"]) if payload.get("run_id") is not None else None,
-            evaluation_mode=str(payload.get("evaluation_mode", "backtest")),
+            evaluation_mode=_normalize_evaluation_mode(payload.get("evaluation_mode", "backtest")),
             mode_config_hash=str(payload.get("mode_config_hash", "")),
         )
 
@@ -207,6 +212,7 @@ class ResultsCache:
         mode_config_hash: str = "",
     ) -> dict[str, Any] | None:
         params_json = json.dumps(params, sort_keys=True)
+        normalized_mode = _normalize_evaluation_mode(evaluation_mode)
         con = sqlite3.connect(self.db_path)
         try:
             cur = con.execute(
@@ -229,7 +235,7 @@ class ResultsCache:
                     fees,
                     slippage,
                     ENGINE_VERSION,
-                    evaluation_mode,
+                    normalized_mode,
                     mode_config_hash,
                 ),
             )

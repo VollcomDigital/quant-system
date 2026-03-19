@@ -106,3 +106,34 @@ def test_results_cache_keeps_distinct_mode_entries(tmp_path: Path):
     assert walk_forward_hit["metric_value"] == pytest.approx(0.75)
     assert backtest_hit["stats"]["mode"] == "backtest"
     assert walk_forward_hit["stats"]["mode"] == "walk_forward"
+
+
+def test_results_cache_normalizes_evaluation_mode_for_set_and_get(tmp_path: Path):
+    cache = ResultsCache(tmp_path)
+    common = {
+        "collection": "demo",
+        "symbol": "AAPL",
+        "timeframe": "1d",
+        "strategy": "strat",
+        "params": {"x": 1},
+        "metric_name": "sharpe",
+        "data_fingerprint": "fp-1",
+        "fees": 0.001,
+        "slippage": 0.002,
+        "run_id": "run-1",
+        "mode_config_hash": "",
+    }
+    cache.set(
+        **common,
+        metric_value=1.25,
+        stats={"sharpe": 1.25, "mode": "backtest"},
+        evaluation_mode=" BackTest ",
+    )
+
+    hit = cache.get(
+        **common,
+        evaluation_mode="BACKTEST",
+    )
+
+    assert hit is not None
+    assert hit["metric_value"] == pytest.approx(1.25)
