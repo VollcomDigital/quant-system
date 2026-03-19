@@ -77,3 +77,29 @@ def test_result_store_round_trip(tmp_path: Path):
     assert row["metric"] == "sharpe"
     assert row["metric_value"] == pytest.approx(1.5)
     assert row["params"] == {"x": 1}
+
+
+def test_result_store_insert_is_idempotent_per_record_identity(tmp_path: Path):
+    store = ResultStore(tmp_path)
+    base = dict(
+        run_id="run-1",
+        evaluation_mode="backtest",
+        collection="c",
+        symbol="AAPL",
+        timeframe="1d",
+        source="yfinance",
+        strategy="s",
+        params={"x": 1},
+        metric_name="sharpe",
+        data_fingerprint="fp",
+        fees=0.0,
+        slippage=0.0,
+        mode_config_hash="abc",
+    )
+
+    store.insert(ResultRecord(metric_value=1.5, stats={"sharpe": 1.5}, **base))
+    store.insert(ResultRecord(metric_value=2.0, stats={"sharpe": 2.0}, **base))
+
+    rows = store.list_by_run("run-1")
+    assert len(rows) == 1
+    assert rows[0]["metric_value"] == pytest.approx(2.0)

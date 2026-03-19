@@ -223,6 +223,49 @@ class ResultStore:
                 ON result_records(run_id, collection, symbol, timeframe, strategy)
                 """
             )
+            con.execute(
+                """
+                DELETE FROM result_records
+                WHERE rowid NOT IN (
+                    SELECT MIN(rowid)
+                    FROM result_records
+                    GROUP BY
+                        run_id,
+                        evaluation_mode,
+                        collection,
+                        symbol,
+                        timeframe,
+                        source,
+                        strategy,
+                        params_json,
+                        metric_name,
+                        data_fingerprint,
+                        fees,
+                        slippage,
+                        mode_config_hash
+                )
+                """
+            )
+            con.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_result_records_identity
+                ON result_records(
+                    run_id,
+                    evaluation_mode,
+                    collection,
+                    symbol,
+                    timeframe,
+                    source,
+                    strategy,
+                    params_json,
+                    metric_name,
+                    data_fingerprint,
+                    fees,
+                    slippage,
+                    mode_config_hash
+                )
+                """
+            )
             con.commit()
         finally:
             con.close()
@@ -251,6 +294,24 @@ class ResultStore:
                     mode_config_hash
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(
+                    run_id,
+                    evaluation_mode,
+                    collection,
+                    symbol,
+                    timeframe,
+                    source,
+                    strategy,
+                    params_json,
+                    metric_name,
+                    data_fingerprint,
+                    fees,
+                    slippage,
+                    mode_config_hash
+                ) DO UPDATE SET
+                    metric_value = excluded.metric_value,
+                    stats_json = excluded.stats_json,
+                    created_at = CURRENT_TIMESTAMP
                 """,
                 (
                     record.run_id,

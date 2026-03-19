@@ -199,7 +199,7 @@ class BacktestRunner:
                 "Use evaluation_mode=backtest for now."
             )
         self.evaluation_mode = requested_mode
-        self.mode_config = EvaluationModeConfig(mode="backtest", payload={})
+        self.mode_config = EvaluationModeConfig(mode=requested_mode, payload={})
         self.mode_config_hash = self.evaluation_cache.hash_mode_config(self.mode_config)
         self._result_store_write_failures = 0
         self._evaluation_cache_write_failures = 0
