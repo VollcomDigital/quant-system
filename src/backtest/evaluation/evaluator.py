@@ -129,7 +129,7 @@ class BacktestEvaluator:
             return None
         start = exit_times.min()
         end = exit_times.max()
-        if not (start < end):
+        if start >= end:
             return None
         positive_pnls = np.where(paired_pnls > 0, paired_pnls, 0.0)
         grouped = (
