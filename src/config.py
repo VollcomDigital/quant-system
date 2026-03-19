@@ -276,29 +276,27 @@ def resolve_validation_overrides(cfg: Config) -> None:
     effective policy = merge(global_policy, collection_override).
     """
     validation_cfg = cfg.validation
-    global_data_quality_policy = (
-        validation_cfg.data_quality if validation_cfg is not None else None
-    )
-    global_optimization_policy = (
-        validation_cfg.optimization if validation_cfg is not None else None
-    )
-    global_result_consistency_policy = (
-        validation_cfg.result_consistency if validation_cfg is not None else None
-    )
-    # Normalize global module policies through the same merge path used for collection
-    # resolution, so required-field checks and canonicalization stay consistent.
-    if validation_cfg is not None and global_data_quality_policy is not None:
-        validation_cfg.data_quality = _merge_data_quality_config(global_data_quality_policy, None)
-    if validation_cfg is not None and global_optimization_policy is not None:
-        validation_cfg.optimization = _merge_optimization_config(global_optimization_policy, None)
-    if validation_cfg is not None and global_result_consistency_policy is not None:
-        validation_cfg.result_consistency = _merge_result_consistency_config(
-            global_result_consistency_policy, None
+    if validation_cfg is None:
+        global_data_quality_policy = None
+        global_optimization_policy = None
+        global_result_consistency_policy = None
+    else:
+        # Build normalized runtime globals without mutating the source config object.
+        global_data_quality_policy = (
+            _merge_data_quality_config(validation_cfg.data_quality, None)
+            if validation_cfg.data_quality is not None
+            else None
         )
-    if validation_cfg is not None:
-        global_data_quality_policy = validation_cfg.data_quality
-        global_optimization_policy = validation_cfg.optimization
-        global_result_consistency_policy = validation_cfg.result_consistency
+        global_optimization_policy = (
+            _merge_optimization_config(validation_cfg.optimization, None)
+            if validation_cfg.optimization is not None
+            else None
+        )
+        global_result_consistency_policy = (
+            _merge_result_consistency_config(validation_cfg.result_consistency, None)
+            if validation_cfg.result_consistency is not None
+            else None
+        )
 
     for collection in cfg.collections:
         collection_validation = collection.validation
