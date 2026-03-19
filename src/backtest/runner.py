@@ -991,8 +991,8 @@ class BacktestRunner:
             "baseline_only": 1,
             "skip_optimization": 2,
             "skip_job": 3,
-            "skip_collection": 4,
-            "reject_result": 5,
+            "reject_result": 4,
+            "skip_collection": 5,
         }
         return order.get(action, -1)
 

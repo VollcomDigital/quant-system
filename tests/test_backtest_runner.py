@@ -624,6 +624,28 @@ def test_run_all_skips_strategy_when_plan_gate_fails(tmp_path, monkeypatch):
     assert runner.failures[0]["error"] == "plan_gate_blocked"
 
 
+def test_compose_gate_decisions_prefers_skip_collection_over_reject_result(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+
+    reject_result = GateDecision(
+        False,
+        "reject_result",
+        ["reject_reason"],
+        "strategy_validation",
+    )
+    skip_collection = GateDecision(
+        False,
+        "skip_collection",
+        ["collection_reason"],
+        "strategy_validation",
+    )
+
+    decision = runner._compose_gate_decisions("strategy_validation", reject_result, skip_collection)
+    assert decision.action == "skip_collection"
+    assert decision.passed is False
+    assert set(decision.reasons) == {"reject_reason", "collection_reason"}
+
+
 def test_run_all_strategy_skip_job_stops_remaining_strategies_for_job(tmp_path, monkeypatch):
     class _AltStrategy(BaseStrategy):
         name = "alt"
