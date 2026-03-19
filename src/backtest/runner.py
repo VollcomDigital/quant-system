@@ -1793,7 +1793,7 @@ class BacktestRunner:
             return search_method
         try:
             import optuna  # noqa: F401
-        except Exception:
+        except ImportError:
             return "grid"
         return "optuna"
 
