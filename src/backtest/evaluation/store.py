@@ -228,7 +228,7 @@ class ResultStore:
             f"""
             DELETE FROM result_records
             WHERE rowid NOT IN (
-                SELECT MIN(rowid)
+                SELECT MAX(rowid)
                 FROM result_records
                 GROUP BY {group_by}
             )

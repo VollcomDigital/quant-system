@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sqlite3
 
@@ -117,6 +118,99 @@ def test_result_store_repairs_malformed_identity_index(tmp_path: Path):
         con.commit()
     finally:
         con.close()
+
+
+def test_result_store_repair_deduplicates_with_last_write_wins(tmp_path: Path):
+    store = ResultStore(tmp_path)
+    base = {
+        "run_id": "run-1",
+        "evaluation_mode": "backtest",
+        "collection": "c",
+        "symbol": "AAPL",
+        "timeframe": "1d",
+        "source": "yfinance",
+        "strategy": "s",
+        "params": {"x": 1},
+        "metric_name": "sharpe",
+        "data_fingerprint": "fp",
+        "fees": 0.0,
+        "slippage": 0.0,
+        "mode_config_hash": "abc",
+    }
+
+    con = sqlite3.connect(store.db_path)
+    try:
+        con.execute("DROP INDEX IF EXISTS idx_result_records_identity")
+        con.execute(
+            "CREATE INDEX idx_result_records_identity ON result_records(run_id, collection)"
+        )
+        params_json = json.dumps(base["params"], sort_keys=True)
+        first_stats = json.dumps({"sharpe": 1.5}, sort_keys=True)
+        second_stats = json.dumps({"sharpe": 2.0}, sort_keys=True)
+        con.execute(
+            """
+            INSERT INTO result_records
+            (
+                run_id, evaluation_mode, collection, symbol, timeframe, source, strategy,
+                params_json, metric_name, metric_value, stats_json, data_fingerprint, fees,
+                slippage, mode_config_hash
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                base["run_id"],
+                base["evaluation_mode"],
+                base["collection"],
+                base["symbol"],
+                base["timeframe"],
+                base["source"],
+                base["strategy"],
+                params_json,
+                base["metric_name"],
+                1.5,
+                first_stats,
+                base["data_fingerprint"],
+                base["fees"],
+                base["slippage"],
+                base["mode_config_hash"],
+            ),
+        )
+        con.execute(
+            """
+            INSERT INTO result_records
+            (
+                run_id, evaluation_mode, collection, symbol, timeframe, source, strategy,
+                params_json, metric_name, metric_value, stats_json, data_fingerprint, fees,
+                slippage, mode_config_hash
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                base["run_id"],
+                base["evaluation_mode"],
+                base["collection"],
+                base["symbol"],
+                base["timeframe"],
+                base["source"],
+                base["strategy"],
+                params_json,
+                base["metric_name"],
+                2.0,
+                second_stats,
+                base["data_fingerprint"],
+                base["fees"],
+                base["slippage"],
+                base["mode_config_hash"],
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    repaired = ResultStore(tmp_path)
+    rows = repaired.list_by_run("run-1")
+    assert len(rows) == 1
+    assert rows[0]["metric_value"] == pytest.approx(2.0)
 
     repaired = ResultStore(tmp_path)
     con = sqlite3.connect(repaired.db_path)
