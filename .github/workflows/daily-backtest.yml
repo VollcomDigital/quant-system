@@ -12,13 +12,14 @@ jobs:
     runs-on: ubuntu-latest
     env:
       STRATEGIES_DIR: strategies
-      STRATEGIES_REPO: ${{ secrets.STRATEGIES_REPO }}
-      GH_TOKEN: ${{ secrets.GH_TOKEN }}
     steps:
       - name: Checkout quant-system
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Checkout strategies repo
+        env:
+          STRATEGIES_REPO: ${{ secrets.STRATEGIES_REPO }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
         if: ${{ env.STRATEGIES_REPO != '' && env.GH_TOKEN != '' }}
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
