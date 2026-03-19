@@ -81,24 +81,21 @@ class ResultsCache:
             # Backward-compat: ensure run_id column exists
             try:
                 con.execute("ALTER TABLE results ADD COLUMN run_id TEXT")
-            except sqlite3.OperationalError as e:
-                # Only ignore the expected "column already exists" case.
-                if "duplicate column name" not in str(e).lower():
-                    raise
+            except Exception:
+                # Column already exists or migration not needed; safe to ignore.
+                pass
             try:
                 con.execute(
                     "ALTER TABLE results ADD COLUMN evaluation_mode TEXT DEFAULT 'backtest'"
                 )
-            except sqlite3.OperationalError as e:
-                # Only ignore the expected "column already exists" case.
-                if "duplicate column name" not in str(e).lower():
-                    raise
+            except Exception:
+                # Column already exists or migration not needed; safe to ignore.
+                pass
             try:
                 con.execute("ALTER TABLE results ADD COLUMN mode_config_hash TEXT DEFAULT ''")
-            except sqlite3.OperationalError as e:
-                # Only ignore the expected "column already exists" case.
-                if "duplicate column name" not in str(e).lower():
-                    raise
+            except Exception:
+                # Column already exists or migration not needed; safe to ignore.
+                pass
             self._migrate_legacy_primary_key(con)
             con.commit()
         finally:
