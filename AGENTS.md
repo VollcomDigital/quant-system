@@ -5,7 +5,7 @@ This repo is a Dockerized, cache-aware backtesting system for running multiple s
 
 ## How to run
 - Make (recommended):
-  - Prefer project `make` targets for tests, runs, and checks (for example `make tests`, `make run`, `make pre`) instead of ad-hoc command variants whenever an equivalent target exists.
+  - Prefer project `make` targets for tests, runs, and checks (for example `make tests`, `make run`, `make precommit-coverage`) instead of ad-hoc command variants whenever an equivalent target exists.
 
 - Docker :
   - `docker-compose run --rm app bash -lc "poetry run python -m src.main run --config config/collections/crypto.yaml"`
