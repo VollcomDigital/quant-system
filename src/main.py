@@ -29,6 +29,14 @@ from .utils.symbols import DiscoverOptions, discover_ccxt_symbols
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 
+
+class _ResultStoreCacheAdapter:
+    def __init__(self, rows: list[dict[str, Any]]):
+        self._rows = rows
+
+    def list_by_run(self, _run_id: str) -> list[dict[str, Any]]:
+        return list(self._rows)
+
 DATA_SOURCES = {
     "yfinance": YFinanceSource,
 }
@@ -165,13 +173,6 @@ def run(
     duration = (end_ts - start_ts).total_seconds()
     dashboard_cache = runner.results_cache
     if os.environ.get("EVALUATION_RESULTS_SOURCE", "").strip().lower() == "result_store":
-        class _ResultStoreCacheAdapter:
-            def __init__(self, rows: list[dict[str, Any]]):
-                self._rows = rows
-
-            def list_by_run(self, _run_id: str) -> list[dict[str, Any]]:
-                return list(self._rows)
-
         dashboard_cache = _ResultStoreCacheAdapter(runner.list_result_rows_for_run(run_id))
 
     dashboard_payload = build_dashboard_payload(dashboard_cache, run_id, results)
