@@ -86,7 +86,7 @@ def run(
     strategies_root = (
         Path(strategies_path)
         if strategies_path
-        else Path(os.environ.get("STRATEGIES_PATH", "/ext/strategies"))
+        else Path(os.environ.get("STRATEGIES_PATH") or "/ext/strategies")
     )
 
     start_ts = datetime.now(UTC)
@@ -264,7 +264,7 @@ def list_strategies(
     strategies_root = (
         Path(strategies_path)
         if strategies_path
-        else Path(os.environ.get("STRATEGIES_PATH", "/ext/strategies"))
+        else Path(os.environ.get("STRATEGIES_PATH") or "/ext/strategies")
     )
     index = discover_external_strategies(strategies_root)
     if not index:
