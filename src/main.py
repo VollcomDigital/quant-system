@@ -36,7 +36,7 @@ def _load_dotenv_if_available() -> None:
 
         load_dotenv()
     except Exception as exc:
-        logging.getLogger("quant.main").debug("dotenv load failed", exc_info=exc)
+        logging.debug("Optional dotenv loading failed; continuing without .env: %s", exc)
 
 
 @app.callback()
