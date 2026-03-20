@@ -20,5 +20,6 @@ http_cache.sqlite
 .DS_Store
 
 # Editors/IDE
+.cursor/
 .vscode/
 .idea/

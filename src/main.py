@@ -29,6 +29,21 @@ from .utils.symbols import DiscoverOptions, discover_ccxt_symbols
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 
+
+def _load_dotenv_if_available() -> None:
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except Exception as exc:
+        logging.debug("Optional dotenv loading failed; continuing without .env: %s", exc)
+
+
+@app.callback()
+def _cli_bootstrap() -> None:
+    _load_dotenv_if_available()
+
+
 DATA_SOURCES = {
     "yfinance": YFinanceSource,
 }
@@ -45,13 +60,6 @@ def run(
     top_n: int = typer.Option(3, help="Top-N per symbol for CSV/HTML reports"),
     inline_css: bool = typer.Option(False, help="Inline minimal CSS for offline HTML report"),
 ):
-    # Load .env if present
-    try:
-        from dotenv import load_dotenv
-
-        load_dotenv()
-    except Exception as exc:
-        logging.getLogger("quant.main").debug("dotenv load failed", exc_info=exc)
     # Basic logging
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"))
     logger = logging.getLogger("quant.main")
@@ -78,7 +86,7 @@ def run(
     strategies_root = (
         Path(strategies_path)
         if strategies_path
-        else Path(os.environ.get("STRATEGIES_PATH", "/ext/strategies"))
+        else Path(os.environ.get("STRATEGIES_PATH") or "/ext/strategies")
     )
 
     start_ts = datetime.now(UTC)
@@ -256,7 +264,7 @@ def list_strategies(
     strategies_root = (
         Path(strategies_path)
         if strategies_path
-        else Path(os.environ.get("STRATEGIES_PATH", "/ext/strategies"))
+        else Path(os.environ.get("STRATEGIES_PATH") or "/ext/strategies")
     )
     index = discover_external_strategies(strategies_root)
     if not index:

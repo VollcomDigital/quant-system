@@ -10,7 +10,8 @@ This repo is a Dockerized, cache-aware backtesting system for running multiple s
 - Local (Poetry):
   - `poetry run python -m src.main run --config config/collections/crypto.yaml`
 - List discovered strategies:
-  - `docker-compose run --rm app bash -lc "poetry run python -m src.main list-strategies --strategies-path /ext/strategies"`
+  - Local: `poetry run python -m src.main list-strategies` (uses `.env` / `STRATEGIES_PATH` on the host)
+  - Docker: `docker-compose run --rm app bash -lc "poetry run python -m src.main list-strategies --strategies-path /ext/strategies"`
 
 ## Configuration conventions
 
@@ -23,15 +24,18 @@ This repo is a Dockerized, cache-aware backtesting system for running multiple s
 - Outputs go to `reports/<timestamp>/` and include `summary.csv`, `all_results.csv`, `report.md`, `tradingview.md`, `summary.json`, and `metrics.prom`.
 - Caches live under `.cache/` (data and results). Use `quant-system clean-cache` to prune.
 - The dashboard uses `summary.json`; older runs without it may log missing-summary warnings.
+- On Windows, writers for Unicode-heavy exports (e.g. `tradingview.md`) must use UTF-8 explicitly; relying on the default locale encoding can raise `UnicodeEncodeError`.
 
 ## External strategies repo
 
-- Strategies are discovered from an external repo; set `STRATEGIES_PATH` (local) or `HOST_STRATEGIES_PATH` for docker-compose.
+- Strategies are discovered from an external repo. Set `STRATEGIES_PATH` to the strategies root **on the machine running the CLI** (absolute host path for local Poetry). Inside the app container use `/ext/strategies`; a container-only path on the host (e.g. Windows resolving `/ext/...`) will not discover modules.
+- `HOST_STRATEGIES_PATH` in docker-compose only defines the bind mount into the container; it does not set `STRATEGIES_PATH` for Poetry on the host.
 - All discovered strategies run by default; `strategies:` in YAML only overrides parameter grids.
 
 ## Environment
 
 - API keys live in `.env` (copy from `.env.example`). Do not commit secrets.
+- The CLI loads `.env` once at startup for all Typer commands (not only `run`), so variables like `STRATEGIES_PATH` apply to `list-strategies` and other subcommands without shell exports.
 
 ## Useful CLI commands
 
