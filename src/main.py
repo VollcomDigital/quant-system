@@ -35,8 +35,8 @@ def _load_dotenv_if_available() -> None:
         from dotenv import load_dotenv
 
         load_dotenv()
-    except Exception:
-        pass
+    except Exception as exc:
+        logging.getLogger("quant.main").debug("dotenv load failed", exc_info=exc)
 
 
 @app.callback()
