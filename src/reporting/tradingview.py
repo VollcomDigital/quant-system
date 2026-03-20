@@ -56,4 +56,4 @@ class TradingViewExporter:
             lines.append("")
 
         path = self.out_dir / "tradingview.md"
-        path.write_text("\n".join(lines))
+        path.write_text("\n".join(lines), encoding="utf-8")
