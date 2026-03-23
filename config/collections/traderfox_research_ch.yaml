@@ -15,4 +15,5 @@ collections:
   - NOVN.SW
 timeframes:
 - 1d
+- 1wk
 strategies: []

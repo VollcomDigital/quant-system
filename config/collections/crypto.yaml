@@ -113,6 +113,6 @@ collections:
       - FRAX/USDT
       - S/USDT
       - RAY/USDT
-timeframes: ["1d", "4h", "1h"]
+timeframes: ["1d", "1w", "4h", "1h"]
 
 strategies: []

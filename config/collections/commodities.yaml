@@ -42,6 +42,6 @@ collections:
       - OJ=F
       - LBR=F
 
-timeframes: ["1d"]
+timeframes: ["1d", "1wk", "1h"]
 
 strategies: []

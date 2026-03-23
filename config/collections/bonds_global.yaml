@@ -111,6 +111,6 @@ collections:
       - STXT
       - APCB
       - CBON
-timeframes: ["1d"]
+timeframes: ["1d", "1wk"]
 
 strategies: []

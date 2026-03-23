@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,8 @@ def refresh_manifest(
             )
             continue
         summary = _load_json(summary_path)
+        if summary is None:
+            summary = _summary_stub_from_csv(run_dir)
         if run_dir == current_run_dir:
             dash_path.write_text(
                 safe_json_dumps(current_payload, indent=2),
@@ -88,6 +91,27 @@ def refresh_manifest(
     return actions
 
 
+def _summary_stub_from_csv(run_dir: Path) -> dict[str, Any] | None:
+    """Rebuild dashboard.json for runs that never wrote summary.json (CSV-only legacy)."""
+    csv_path = run_dir / "all_results.csv"
+    if not csv_path.is_file():
+        return None
+    try:
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                metric = (row.get("metric") or "").strip()
+                if metric:
+                    return {
+                        "metric": metric,
+                        "results_count": 0,
+                        "base_dir": str(run_dir),
+                    }
+    except Exception:
+        return None
+    return None
+
+
 def _build_payload_from_summary(
     summary: dict[str, Any], run_id: str, cache: ResultsCache
 ) -> dict[str, Any] | None:
@@ -129,10 +153,8 @@ def _build_payload_from_summary(
 
 
 def _rows_from_csv(csv_path: Path) -> list[dict[str, Any]]:
-    import csv
-
     rows: list[dict[str, Any]] = []
-    with open(csv_path, newline="") as f:
+    with open(csv_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
             stats = {

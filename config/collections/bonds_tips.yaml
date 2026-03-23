@@ -112,6 +112,6 @@ collections:
       - 0P0001COEN.L
       - 0P0001COEO.L
 
-timeframes: ["1d"]
+timeframes: ["1d", "1wk"]
 
 strategies: []

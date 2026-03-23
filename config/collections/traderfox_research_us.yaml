@@ -589,4 +589,5 @@ collections:
   - MNDY
 timeframes:
 - 1d
+- 1wk
 strategies: []

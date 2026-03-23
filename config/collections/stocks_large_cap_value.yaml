@@ -113,4 +113,5 @@ collections:
   - KINV-B.ST
 timeframes:
 - 1d
+- 1wk
 strategies: []

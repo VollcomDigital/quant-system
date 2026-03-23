@@ -110,5 +110,6 @@ collections:
     - MPLX
 timeframes:
 - 1d
+- 1wk
 
 strategies: []

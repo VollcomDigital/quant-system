@@ -113,4 +113,5 @@ collections:
   - ENS
 timeframes:
 - 1d
+- 1wk
 strategies: []
