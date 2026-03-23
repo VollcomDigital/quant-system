@@ -1926,7 +1926,13 @@ def test_trade_meta_slice_profit_share_includes_earliest_exit_timestamp(tmp_path
         }
     )
     dates = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"])
-    trade_meta = evaluator._build_trade_meta(trades_frame, data_frame, dates, {"trades": 3}, request)
+    trade_meta = evaluator._build_trade_meta(
+        trades_frame,
+        data_frame,
+        dates,
+        3,
+        request,
+    )
 
     assert trade_meta["outlier_dependency"]["max_slice_profit_share"] == pytest.approx(0.5)
 

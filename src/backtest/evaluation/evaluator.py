@@ -93,18 +93,19 @@ class BacktestEvaluator:
         }
 
     def _validate_trade_counts(
-        self, trades_frame: pd.DataFrame, stats: dict[str, Any]
+        self,
+        trades_frame: pd.DataFrame,
+        expected_trade_count_raw: Any,
     ) -> tuple[bool, dict[str, Any] | None]:
         total_trades = int(len(trades_frame))
-        raw_trade_count = stats.get("trades")
-        if raw_trade_count is None:
+        if expected_trade_count_raw is None:
             return False, self._build_incomplete_trade_meta(
                 analyzed_trades_count=total_trades,
                 total_trades=total_trades,
                 reason="missing_trade_count_metric",
             )
         try:
-            expected_trades = int(raw_trade_count)
+            expected_trades = int(expected_trade_count_raw)
         except (TypeError, ValueError):
             return False, self._build_incomplete_trade_meta(
                 analyzed_trades_count=total_trades,
@@ -163,10 +164,14 @@ class BacktestEvaluator:
         trades_frame: pd.DataFrame,
         data_frame: pd.DataFrame,
         dates: pd.DatetimeIndex,
-        stats: dict[str, Any],
+        expected_trade_count_raw: Any,
         request: EvaluationRequest,
     ) -> dict[str, Any]:
-        outlier_meta = self._build_outlier_dependency_meta(trades_frame, stats, request)
+        outlier_meta = self._build_outlier_dependency_meta(
+            trades_frame,
+            expected_trade_count_raw,
+            request,
+        )
 
         execution_variance_meta = self._build_execution_price_variance_meta(
             trades_frame,
@@ -183,10 +188,13 @@ class BacktestEvaluator:
     def _build_outlier_dependency_meta(
         self,
         trades_frame: pd.DataFrame,
-        stats: dict[str, Any],
+        expected_trade_count_raw: Any,
         request: EvaluationRequest,
     ) -> dict[str, Any]:
-        is_complete, incomplete_meta = self._validate_trade_counts(trades_frame, stats)
+        is_complete, incomplete_meta = self._validate_trade_counts(
+            trades_frame,
+            expected_trade_count_raw,
+        )
         if not is_complete and isinstance(incomplete_meta, dict):
             return dict(incomplete_meta)
 
@@ -449,13 +457,14 @@ class BacktestEvaluator:
         if not isinstance(trades_frame, pd.DataFrame):
             raise ValueError("simulation_fn must return a pandas DataFrame for trades_frame")
         stats = dict(stats)
+        expected_trade_count_raw = stats.get("trades")
         # Derive reporting log and consistency metadata from full trades when available.
         stats["trades_log"] = self._build_report_trades_log(trades_frame)
         stats["trade_meta"] = self._build_trade_meta(
             trades_frame,
             data_frame,
             dates,
-            stats,
+            expected_trade_count_raw,
             request,
         )
         metric_val = self._metric_fn(
