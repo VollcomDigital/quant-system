@@ -151,6 +151,7 @@ See new collection examples under `config/collections/` for FX intraday via Finn
 - Copy `.env.example` to `.env` and fill keys: `POLYGON_API_KEY`, `TIINGO_API_KEY`, `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY`, `FINNHUB_API_KEY`, `TWELVEDATA_API_KEY`, `ALPHAVANTAGE_API_KEY`.
 - `docker-compose` loads `.env` automatically; the app also loads `.env` at startup.
 - Override cache and strategies path via `DATA_CACHE_DIR` and `STRATEGIES_PATH`.
+- Optional reporting source switch: set `EVALUATION_RESULTS_SOURCE=result_store` to build dashboard payload rows from the normalized evaluation result store adapter.
 - For docker-compose host mount, set `HOST_STRATEGIES_PATH` to your local strategies repo; if unset, it falls back to `./external-strategies`.
 - Provider keys for scheduled runs can be set as repository secrets and are exported in `.github/workflows/daily-backtest.yml`.
 
@@ -166,7 +167,9 @@ See new collection examples under `config/collections/` for FX intraday via Finn
 ## New CLI Options and Outputs
 
 - `--only-cached`: avoid API calls and use cached Parquet data only; errors on cache miss.
+- `--evaluation-mode`: override config mode (`backtest` or `walk_forward`). Current runtime support is `backtest`; `walk_forward` currently fails fast as not implemented.
 - Emits `summary.json` (run summary + counts) and `metrics.prom` (Prometheus-style gauges) alongside CSV/Markdown exports in `reports/<timestamp>/`.
+- Run summary and `metrics.prom` include `fresh_simulation_runs` and `fresh_metric_evals` for clearer runtime accounting.
 - `discover-symbols`: fetch top symbols from one or more CCXT exchanges, merge by quote, and emit a YAML stub. Supports multiple `--exchange` flags, `--max-per-exchange` before merging, exclusions via `--exclude-symbol/--exclude-pattern`, manual additions with `--extra-symbol`, and `--annotate` to include volume/exchange metadata.
 - `ingest-data`: on-demand cache refresher. Accepts a `--source` (currently `yfinance`), target symbols, and `--timeframe` flags to pull fresh OHLCV data into `.cache/data`.
 - `fundamentals`: snapshot yfinance fundamentals (info, splits, dividends, financial statements) for a symbol in JSON or YAML format.
@@ -191,6 +194,38 @@ See new collection examples under `config/collections/` for FX intraday via Finn
   ```bash
   poetry run quant-system clean-cache --cache-dir .cache/data --dry-run
   ```
+
+### Validation & Optimization Policy
+
+- `validation` is optional. When present, you can configure either section independently:
+  - `validation.data_quality` only
+  - `validation.optimization` only
+  - or both together
+- `validation.data_quality` controls job-level data gates (for collection/symbol/timeframe):
+  - `calendar` controls continuity expectations:
+    - `kind: auto | crypto_24_7 | weekday | exchange`
+    - `timezone: UTC or UTC±HH:MM`
+    - `auto` resolves to `crypto_24_7` for crypto sources and `weekday` otherwise
+    - `exchange` uses `exchange_calendars` for daily session-aware continuity (holidays excluded)
+    - non-daily checks use fixed-delta continuity (not weekday filtering)
+  - `min_data_points`: minimum number of bars required
+  - `min_continuity_score`: minimum continuity score (0..1)
+  - `max_missing_bar_pct`: maximum missing bars percentage across expected bars
+  - `max_kurtosis`: maximum kurtosis of close-to-close returns
+  - `on_fail: skip_job | skip_collection | skip_optimization`
+  - `skip_optimization` means optimization is disabled for all strategies on that job.
+- `validation.optimization` controls strategy-level search feasibility:
+  - `on_fail: baseline_only | skip_job`
+  - `min_bars`: minimum bars required for optimization
+  - `dof_multiplier`: multiplies parameter dimensions for the DoF guard
+  - `baseline_only` runs a single baseline evaluation without parameter search.
+
+Structured logs reflect this directly via gate actions:
+- `data_validation_gate` can emit `skip_optimization` (job-level optimization disable).
+- `strategy_optimization_gate` can emit `baseline_only` (strategy-level baseline fallback) or `skip_job`.
+
+For implementation details (continuity decision flow, weekday filtering scope, and
+vectorized gap counting), see `DEVELOPMENT.md`.
 
 ### Dashboard
 
