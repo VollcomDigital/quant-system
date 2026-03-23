@@ -31,6 +31,9 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Normalize GHCR owner
+        run: echo "OWNER_LC=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+
       - name: Build and push image
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
@@ -38,5 +41,5 @@ jobs:
           file: docker/Dockerfile
           push: true
           tags: |
-            ghcr.io/${{ toLower(github.repository_owner) }}/quant-system:${{ github.ref_name }}
-            ghcr.io/${{ toLower(github.repository_owner) }}/quant-system:latest
+            ghcr.io/${{ env.OWNER_LC }}/quant-system:${{ github.ref_name }}
+            ghcr.io/${{ env.OWNER_LC }}/quant-system:latest

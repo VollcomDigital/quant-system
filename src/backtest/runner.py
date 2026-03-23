@@ -7,7 +7,7 @@ import hashlib
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
@@ -219,13 +219,14 @@ class BacktestRunner:
                 "Use evaluation_mode=backtest for now."
             )
         self.evaluation_mode = requested_mode
-        self.mode_config = EvaluationModeConfig(mode="backtest", payload={})
+        self.mode_config = EvaluationModeConfig(mode=requested_mode, payload={})
         self.mode_config_hash = self.evaluation_cache.hash_mode_config(self.mode_config)
         self._result_store_write_failures = 0
         self._evaluation_cache_write_failures = 0
         self.validation_metadata: dict[str, Any] = {}
         self.active_validation_gates: list[str] = []
         self.inactive_validation_gates: list[str] = []
+        self._evaluator: BacktestEvaluator | None = None
 
     def _ensure_pybroker(self) -> tuple[Any, ...]:
         if self._pybroker_components is None:
@@ -477,9 +478,11 @@ class BacktestRunner:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _get_evaluator(self) -> BacktestEvaluator:
-        # Resolve evaluator at call-time so monkeypatches and future mode dispatch
-        # are reflected without recreating runner instances.
-        return BacktestEvaluator(self._run_pybroker_simulation, self._evaluate_metric)
+        if self._evaluator is None:
+            # Lazily resolve evaluator once per run to keep monkeypatch flexibility
+            # while avoiding per-evaluation object churn.
+            self._evaluator = BacktestEvaluator(self._run_pybroker_simulation, self._evaluate_metric)
+        return self._evaluator
 
     def _make_source(self, col: CollectionConfig) -> DataSource:
         cache_dir = Path(self.cfg.cache_dir)
@@ -668,6 +671,12 @@ class BacktestRunner:
             # is not installed; behaves like weekday expectations.
             expected_idx = cls._weekday_expected_index(idx, expected_delta)
             return cls._count_missing_from_expected_index(expected_idx, idx)
+        except Exception as exc:
+            # Surface invalid exchange-calendar usage as a validation-style error
+            # so data-validation gates can convert it to skip decisions.
+            raise ValueError(
+                f"Failed to use exchange calendar '{exchange_calendar}': {exc}"
+            ) from exc
 
     @classmethod
     def _expected_missing_counts(
@@ -695,6 +704,31 @@ class BacktestRunner:
         expected_bars = unique_bars + missing_bars
         return expected_bars, missing_bars, largest_gap_bars
 
+    @staticmethod
+    def _parse_calendar_timezone(calendar_timezone: str | None) -> timezone | None:
+        if calendar_timezone is None:
+            return None
+        normalized = calendar_timezone.strip().upper()
+        if normalized == "UTC":
+            return timezone.utc
+        try:
+            sign = 1 if normalized[3] == "+" else -1
+            hours = int(normalized[4:6])
+            minutes = int(normalized[7:9])
+        except (IndexError, ValueError) as exc:
+            raise ValueError(f"unsupported_calendar_timezone: {calendar_timezone}") from exc
+        return timezone(sign * timedelta(hours=hours, minutes=minutes))
+
+    @classmethod
+    def _normalize_for_calendar_timezone(
+        cls, idx: pd.DatetimeIndex, calendar_timezone: str | None
+    ) -> pd.DatetimeIndex:
+        parsed_timezone = cls._parse_calendar_timezone(calendar_timezone)
+        if parsed_timezone is None:
+            return idx
+        localized_idx = idx.tz_localize(timezone.utc) if idx.tz is None else idx
+        return localized_idx.tz_convert(parsed_timezone).tz_localize(None)
+
     @classmethod
     def compute_continuity_score(
         cls,
@@ -702,10 +736,11 @@ class BacktestRunner:
         timeframe: str,
         calendar_kind: str = "crypto_24_7",
         exchange_calendar: str | None = None,
+        calendar_timezone: str | None = None,
     ) -> dict[str, float | int]:
         raw_idx = pd.DatetimeIndex(pd.to_datetime(df.index)).sort_values()
-        actual_bars = int(len(raw_idx))
-        idx = raw_idx
+        idx = cls._normalize_for_calendar_timezone(raw_idx, calendar_timezone).sort_values()
+        actual_bars = int(len(idx))
         if idx.has_duplicates:
             idx = idx[~idx.duplicated(keep="first")]
         unique_bars = int(len(idx))
@@ -1154,8 +1189,8 @@ class BacktestRunner:
             "baseline_only": 1,
             "skip_optimization": 2,
             "skip_job": 3,
-            "skip_collection": 4,
-            "reject_result": 5,
+            "reject_result": 4,
+            "skip_collection": 5,
         }
         return order.get(action, -1)
 
@@ -1170,9 +1205,12 @@ class BacktestRunner:
             for reason in decision.reasons:
                 if reason not in reasons:
                     reasons.append(reason)
-        action = chosen.action
-        passed = action in {"continue", "skip_optimization", "baseline_only"}
-        return GateDecision(passed=passed, action=action, reasons=reasons, stage=stage)
+        return GateDecision(
+            passed=chosen.passed,
+            action=chosen.action,
+            reasons=reasons,
+            stage=stage,
+        )
 
     def _collection_validation(self, state: JobState) -> tuple[GateDecision, DataSource | None]:
         context = ValidationContext(
@@ -1306,6 +1344,13 @@ class BacktestRunner:
         if fetched_data.raw_df.empty:
             return GateDecision(False, "skip_job", ["empty_dataframe"], "data_validation"), None
 
+        global_validation = getattr(self.cfg, "validation", None)
+        collection_validation = getattr(context.job.collection, "validation", None)
+        has_data_quality_policy = (
+            getattr(global_validation, "data_quality", None) is not None
+            or getattr(collection_validation, "data_quality", None) is not None
+        )
+
         (
             reliability_on_fail,
             min_data_points_cfg,
@@ -1314,6 +1359,7 @@ class BacktestRunner:
             outlier_detection,
             calendar_kind,
             calendar_exchange,
+            calendar_timezone,
         ) = (
             self._load_data_quality_policy(context.job.collection)
         )
@@ -1322,8 +1368,8 @@ class BacktestRunner:
         if reliability_on_fail is None:
             # Even with policy disabled, we keep best-effort continuity diagnostics in result stats.
             continuity: dict[str, float | int] = {}
-            default_calendar_kind, default_calendar_exchange = self._resolve_calendar_policy(
-                None, context.job.source
+            default_calendar_kind, default_calendar_exchange, _ = self._resolve_calendar_policy(
+                None, context.job.collection.source
             )
             try:
                 continuity = self.compute_continuity_score(
@@ -1347,8 +1393,8 @@ class BacktestRunner:
         continuity_calendar_kind = calendar_kind
         continuity_calendar_exchange = calendar_exchange
         if continuity_calendar_kind is None:
-            continuity_calendar_kind, continuity_calendar_exchange = self._resolve_calendar_policy(
-                None, context.job.source
+            continuity_calendar_kind, continuity_calendar_exchange, _ = self._resolve_calendar_policy(
+                None, context.job.collection.source
             )
         try:
             continuity = self.compute_continuity_score(
@@ -1356,9 +1402,13 @@ class BacktestRunner:
                 context.job.timeframe,
                 calendar_kind=continuity_calendar_kind,
                 exchange_calendar=continuity_calendar_exchange,
+                calendar_timezone=calendar_timezone,
             )
         except ValueError as exc:
-            return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
+            # Preserve pre-validation behavior unless a data-quality policy is configured.
+            if has_data_quality_policy:
+                return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
+            continuity = {}
         reliability_reasons = self._collect_reliability_reasons(
             raw_df=fetched_data.raw_df,
             continuity=continuity,
@@ -1394,12 +1444,13 @@ class BacktestRunner:
         ValidationOutlierDetectionConfig | None,
         str | None,
         str | None,
+        str | None,
     ]:
         collection_validation = getattr(collection, "validation", None)
         resolved_dq = getattr(collection_validation, "data_quality", None) if collection_validation else None
         if resolved_dq is None:
             # Sentinel for "no data-quality policy configured for this collection".
-            return None, None, None, None, None, None, None
+            return None, None, None, None, None, None, None, None
         on_fail = resolved_dq.on_fail
         min_data_points_cfg = resolved_dq.min_data_points
         continuity_cfg = resolved_dq.continuity
@@ -1407,8 +1458,9 @@ class BacktestRunner:
         outlier_detection = resolved_dq.outlier_detection
         calendar_kind: str | None = None
         calendar_exchange: str | None = None
+        calendar_timezone: str | None = None
         if continuity_cfg is not None:
-            calendar_kind, calendar_exchange = self._resolve_calendar_policy(
+            calendar_kind, calendar_exchange, calendar_timezone = self._resolve_calendar_policy(
                 continuity_cfg.calendar, collection.source
             )
         return (
@@ -1419,13 +1471,14 @@ class BacktestRunner:
             outlier_detection,
             calendar_kind,
             calendar_exchange,
+            calendar_timezone,
         )
 
     def _resolve_calendar_policy(
         self,
         calendar_cfg: Any,
         source: str,
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str | None, str | None]:
         if calendar_cfg is None:
             calendar_kind = (
                 "crypto_24_7"
@@ -1433,14 +1486,16 @@ class BacktestRunner:
                 else "weekday"
             )
             calendar_exchange = None
-            return calendar_kind, calendar_exchange
+            calendar_timezone = None
+            return calendar_kind, calendar_exchange, calendar_timezone
         calendar_kind = calendar_cfg.kind
         calendar_exchange = calendar_cfg.exchange
+        calendar_timezone = calendar_cfg.timezone
         if calendar_kind == "auto":
             calendar_kind = (
                 "crypto_24_7" if source.strip().lower() in self._CRYPTO_SOURCE_NAMES else "weekday"
             )
-        return calendar_kind, calendar_exchange
+        return calendar_kind, calendar_exchange, calendar_timezone
 
     def _load_optimization_policy(self, collection: CollectionConfig) -> tuple[str, int, int] | None:
         # `validation.optimization` is optional per collection; when omitted no feasibility gate is applied.
@@ -1665,9 +1720,10 @@ class BacktestRunner:
             )
             fractional = self._fractional_enabled(context.job.collection, context.job.symbol)
             bars_per_year = self._bars_per_year(context.job.timeframe)
-            price = validated_data.raw_df[
-                "Close" if "Close" in validated_data.raw_df.columns else "close"
-            ].astype(float)
+            close_col = self._resolve_close_column(validated_data.raw_df)
+            if close_col is None:
+                raise ValueError("missing close column")
+            price = validated_data.raw_df[close_col].astype(float)
             fingerprint = (
                 f"{len(validated_data.raw_df)}:{validated_data.raw_df.index[-1].isoformat()}:{float(price.iloc[-1])}"
             )
@@ -2064,7 +2120,7 @@ class BacktestRunner:
             return search_method
         try:
             import optuna  # noqa: F401
-        except Exception:
+        except ImportError:
             return "grid"
         return "optuna"
 
@@ -2236,6 +2292,7 @@ class BacktestRunner:
         self._cache_write_failures = 0
         self._result_store_write_failures = 0
         self._evaluation_cache_write_failures = 0
+        self._evaluator = None
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
         )
@@ -2314,8 +2371,8 @@ class BacktestRunner:
             state.validation_config_hash = self._hash_validation_profile(
                 self._build_job_validation_profile(state.job.collection)
             )
-            self.metrics["symbols_tested"] += 1
             for strat_name in self.external_index.keys():
+                self.metrics["symbols_tested"] += 1
                 # Strategy stage: create plan -> validate plan -> run -> validate results.
                 plan = self._strategy_create_plan(state, strat_name)
                 self._apply_policy_constraints_to_plan(state, validated_data, plan)
@@ -2330,6 +2387,8 @@ class BacktestRunner:
                     blocked_collections=blocked_collections,
                 )
                 if not plan_decision.passed:
+                    if plan_decision.action in {"skip_job", "skip_collection"}:
+                        break
                     continue
                 self.metrics["strategies_used"].add(plan.strategy.name)
                 outcome = self._strategy_run(plan, state, validated_data, prepared)
@@ -2342,6 +2401,8 @@ class BacktestRunner:
                     blocked_collections=blocked_collections,
                 )
                 if not validation_decision.passed:
+                    if validation_decision.action in {"skip_job", "skip_collection"}:
+                        break
                     continue
 
                 best = BestResult(

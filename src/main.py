@@ -2,7 +2,7 @@ import logging
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import typer
 
@@ -29,6 +29,14 @@ from .utils.symbols import DiscoverOptions, discover_ccxt_symbols
 
 app = typer.Typer(add_completion=False, no_args_is_help=True)
 
+
+class _ResultStoreCacheAdapter:
+    def __init__(self, rows: list[dict[str, Any]]):
+        self._rows = rows
+
+    def list_by_run(self, _run_id: str) -> list[dict[str, Any]]:
+        return list(self._rows)
+
 DATA_SOURCES = {
     "yfinance": YFinanceSource,
 }
@@ -38,11 +46,13 @@ SUMMARY_JSON_FILENAME = "summary.json"
 @app.command()
 def run(
     config: str = typer.Option("config/example.yaml", help="Path to YAML config"),
-    output_dir: str = typer.Option(None, help="Reports root directory (default: reports/<run_id>)"),
-    strategies_path: str = typer.Option(
+    output_dir: Optional[str] = typer.Option(
+        None, help="Reports root directory (default: reports/<run_id>)"
+    ),
+    strategies_path: Optional[str] = typer.Option(
         None, help="Path to external strategies repo (overrides env STRATEGIES_PATH)"
     ),
-    evaluation_mode: str = typer.Option(
+    evaluation_mode: Optional[str] = typer.Option(
         None,
         help="Evaluation mode override (backtest or walk_forward). Defaults to config value.",
     ),
@@ -163,13 +173,6 @@ def run(
     duration = (end_ts - start_ts).total_seconds()
     dashboard_cache = runner.results_cache
     if os.environ.get("EVALUATION_RESULTS_SOURCE", "").strip().lower() == "result_store":
-        class _ResultStoreCacheAdapter:
-            def __init__(self, rows: list[dict[str, Any]]):
-                self._rows = rows
-
-            def list_by_run(self, _run_id: str) -> list[dict[str, Any]]:
-                return list(self._rows)
-
         dashboard_cache = _ResultStoreCacheAdapter(runner.list_result_rows_for_run(run_id))
 
     dashboard_payload = build_dashboard_payload(dashboard_cache, run_id, results)

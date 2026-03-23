@@ -16,6 +16,7 @@ from src.config import (
     OptimizationPolicyConfig,
     ResultConsistencyConfig,
     StrategyConfig,
+    ValidationCalendarConfig,
     ValidationConfig,
     ValidationContinuityConfig,
     ValidationDataQualityConfig,
@@ -391,6 +392,60 @@ def test_compute_continuity_score_exchange_calendar_ignores_market_holiday():
     assert exchange_continuity["score"] == pytest.approx(1.0)
 
 
+def test_compute_continuity_score_exchange_calendar_invalid_exchange_raises_value_error():
+    pytest.importorskip("exchange_calendars")
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    df = pd.DataFrame({"Close": [100.0, 101.0, 102.0, 103.0, 104.0]}, index=idx)
+
+    with pytest.raises(ValueError, match="Failed to use exchange calendar"):
+        BacktestRunner.compute_continuity_score(
+            df, "1d", calendar_kind="exchange", exchange_calendar="INVALID_EXCHANGE"
+        )
+
+
+def test_data_validation_calendar_timezone_changes_weekday_continuity(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            continuity=ValidationContinuityConfig(
+                calendar=ValidationCalendarConfig(kind="weekday", timezone="UTC-05:00")
+            ),
+            on_fail="skip_job",
+        )
+    )
+    resolve_validation_overrides(runner.cfg)
+    idx = pd.to_datetime(["2024-01-06 00:30:00+00:00", "2024-01-09 00:30:00+00:00"], utc=True)
+    df = pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
+    context = SimpleNamespace(
+        job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
+        fetched_data=SimpleNamespace(raw_df=df),
+    )
+
+    decision, validated_data = runner._data_validation_common(context)
+
+    assert decision.passed
+    assert validated_data is not None
+    assert validated_data.continuity["missing_bars"] == 0
+
+
+def test_data_validation_without_data_quality_does_not_skip_on_continuity_errors(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    df = pd.DataFrame({"Close": [100.0]}, index=pd.to_datetime(["2024-01-01"]))
+    context = SimpleNamespace(
+        job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
+        fetched_data=SimpleNamespace(raw_df=df),
+    )
+
+    decision, validated_data = runner._data_validation_common(context)
+
+    assert decision.passed
+    assert decision.action == "continue"
+    assert validated_data is not None
+    assert validated_data.continuity == {}
+
+
 def test_sample_series_preserves_last_point():
     idx = pd.date_range("2024-01-01", periods=3, freq="D")
     series = pd.Series([1.0, 2.0, 3.0], index=idx)
@@ -613,6 +668,132 @@ def test_run_all_skips_strategy_when_plan_gate_fails(tmp_path, monkeypatch):
     assert runner.failures
     assert runner.failures[0]["stage"] == "strategy_optimization"
     assert runner.failures[0]["error"] == "plan_gate_blocked"
+
+
+def test_compose_gate_decisions_prefers_skip_collection_over_reject_result(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+
+    reject_result = GateDecision(
+        False,
+        "reject_result",
+        ["reject_reason"],
+        "strategy_validation",
+    )
+    skip_collection = GateDecision(
+        False,
+        "skip_collection",
+        ["collection_reason"],
+        "strategy_validation",
+    )
+
+    decision = runner._compose_gate_decisions("strategy_validation", reject_result, skip_collection)
+    assert decision.action == "skip_collection"
+    assert decision.passed is False
+    assert set(decision.reasons) == {"reject_reason", "collection_reason"}
+
+
+def test_run_all_strategy_skip_job_stops_remaining_strategies_for_job(tmp_path, monkeypatch):
+    class _AltStrategy(BaseStrategy):
+        name = "alt"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    monkeypatch.setattr(
+        "src.backtest.runner.discover_external_strategies",
+        lambda root: {"dummy": _DummyStrategy, "alt": _AltStrategy},
+    )
+    runner.external_index = {"dummy": _DummyStrategy, "alt": _AltStrategy}
+
+    def _plan_gate(self, state, validated_data, plan):
+        if plan.strategy.name == "dummy":
+            return GateDecision(False, "skip_job", ["plan_gate_blocked"], "strategy_optimization")
+        return GateDecision(True, "continue", [], "strategy_optimization")
+
+    original_strategy_run = BacktestRunner._strategy_run
+    strategy_runs = {"count": 0}
+
+    def _count_strategy_run(self, plan, state, validated_data, prepared):
+        strategy_runs["count"] += 1
+        return original_strategy_run(self, plan, state, validated_data, prepared)
+
+    monkeypatch.setattr(BacktestRunner, "_strategy_validate_plan", _plan_gate)
+    monkeypatch.setattr(BacktestRunner, "_strategy_run", _count_strategy_run)
+
+    results = runner.run_all()
+    assert results == []
+    assert strategy_runs["count"] == 0
+    assert len(runner.failures) == 1
+    assert runner.failures[0]["stage"] == "strategy_optimization"
+    assert runner.failures[0]["strategy"] == "dummy"
+
+
+def test_run_all_strategy_skip_collection_blocks_current_and_remaining_jobs(tmp_path, monkeypatch):
+    class _AltStrategy(BaseStrategy):
+        name = "alt"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    collections = [
+        CollectionConfig(
+            name="demo",
+            source="custom",
+            symbols=["AAPL", "MSFT"],
+            fees=0.0004,
+            slippage=0.0003,
+        )
+    ]
+    runner = _make_runner(tmp_path, monkeypatch, collections=collections)
+    runner.cfg.strategies = []
+    monkeypatch.setattr(
+        "src.backtest.runner.discover_external_strategies",
+        lambda root: {"dummy": _DummyStrategy, "alt": _AltStrategy},
+    )
+    runner.external_index = {"dummy": _DummyStrategy, "alt": _AltStrategy}
+
+    fetch_calls = {"count": 0}
+
+    class _Source:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            fetch_calls["count"] += 1
+            return _make_ohlcv(20)
+
+    def _plan_gate(self, state, validated_data, plan):
+        if plan.strategy.name == "dummy":
+            return GateDecision(False, "skip_collection", ["plan_gate_blocked"], "strategy_optimization")
+        return GateDecision(True, "continue", [], "strategy_optimization")
+
+    original_strategy_run = BacktestRunner._strategy_run
+    strategy_runs = {"count": 0}
+
+    def _count_strategy_run(self, plan, state, validated_data, prepared):
+        strategy_runs["count"] += 1
+        return original_strategy_run(self, plan, state, validated_data, prepared)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
+    monkeypatch.setattr(BacktestRunner, "_strategy_validate_plan", _plan_gate)
+    monkeypatch.setattr(BacktestRunner, "_strategy_run", _count_strategy_run)
+
+    results = runner.run_all()
+    assert results == []
+    assert fetch_calls["count"] == 1
+    assert strategy_runs["count"] == 0
+    assert len(runner.failures) == 1
+    assert runner.failures[0]["stage"] == "strategy_optimization"
+    assert runner.failures[0]["strategy"] == "dummy"
 
 
 def test_run_all_uses_cached_results(tmp_path, monkeypatch):
@@ -1246,7 +1427,7 @@ def test_run_all_fetches_once_per_symbol_timeframe_with_multiple_strategies(tmp_
     results = runner.run_all()
     assert fetch_calls["count"] == 1
     assert len(results) == 2
-    assert runner.metrics["symbols_tested"] == 1
+    assert runner.metrics["symbols_tested"] == 2
 
 
 def test_run_all_skip_evaluation_adds_single_failure_for_multiple_strategies(tmp_path, monkeypatch):

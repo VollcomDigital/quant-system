@@ -9,6 +9,11 @@ from typing import Any, Mapping
 ENGINE_VERSION = "1"
 
 
+def _normalize_evaluation_mode(value: Any) -> str:
+    mode = str(value or "backtest").strip().lower()
+    return mode or "backtest"
+
+
 @dataclass(frozen=True)
 class ResultsCacheRecord:
     collection: str
@@ -57,7 +62,7 @@ class ResultsCacheRecord:
             fees=float(payload["fees"]),
             slippage=float(payload["slippage"]),
             run_id=str(payload["run_id"]) if payload.get("run_id") is not None else None,
-            evaluation_mode=str(payload.get("evaluation_mode", "backtest")),
+            evaluation_mode=_normalize_evaluation_mode(payload.get("evaluation_mode", "backtest")),
             mode_config_hash=str(payload.get("mode_config_hash", "")),
         )
 
@@ -73,28 +78,23 @@ class ResultsCache:
         con = sqlite3.connect(self.db_path)
         try:
             self._create_results_table(con)
-            # Backward-compat: ensure run_id column exists
-            try:
+            existing_columns = self._get_results_table_columns(con)
+            # Backward-compat: add columns only when missing (avoid exception-driven control flow).
+            if "run_id" not in existing_columns:
                 con.execute("ALTER TABLE results ADD COLUMN run_id TEXT")
-            except Exception:
-                # Column already exists or migration not needed; safe to ignore.
-                pass
-            try:
-                con.execute(
-                    "ALTER TABLE results ADD COLUMN evaluation_mode TEXT DEFAULT 'backtest'"
-                )
-            except Exception:
-                # Column already exists or migration not needed; safe to ignore.
-                pass
-            try:
+            if "evaluation_mode" not in existing_columns:
+                con.execute("ALTER TABLE results ADD COLUMN evaluation_mode TEXT DEFAULT 'backtest'")
+            if "mode_config_hash" not in existing_columns:
                 con.execute("ALTER TABLE results ADD COLUMN mode_config_hash TEXT DEFAULT ''")
-            except Exception:
-                # Column already exists or migration not needed; safe to ignore.
-                pass
             self._migrate_legacy_primary_key(con)
             con.commit()
         finally:
             con.close()
+
+    @staticmethod
+    def _get_results_table_columns(con: sqlite3.Connection) -> set[str]:
+        cursor = con.execute("PRAGMA table_info(results)")
+        return {str(row[1]) for row in cursor.fetchall()}
 
     @staticmethod
     def _create_results_table(con: sqlite3.Connection) -> None:
@@ -207,6 +207,7 @@ class ResultsCache:
         mode_config_hash: str = "",
     ) -> dict[str, Any] | None:
         params_json = json.dumps(params, sort_keys=True)
+        normalized_mode = _normalize_evaluation_mode(evaluation_mode)
         con = sqlite3.connect(self.db_path)
         try:
             cur = con.execute(
@@ -229,7 +230,7 @@ class ResultsCache:
                     fees,
                     slippage,
                     ENGINE_VERSION,
-                    evaluation_mode,
+                    normalized_mode,
                     mode_config_hash,
                 ),
             )
@@ -254,6 +255,7 @@ class ResultsCache:
             record = ResultsCacheRecord.from_mapping(payload)
         elif payload:
             raise ValueError("Pass either record or keyword payload to ResultsCache.set, not both")
+        normalized_mode = _normalize_evaluation_mode(record.evaluation_mode)
         params_json = json.dumps(record.params, sort_keys=True)
         con = sqlite3.connect(self.db_path)
         try:
@@ -292,7 +294,7 @@ class ResultsCache:
                     record.fees,
                     record.slippage,
                     record.run_id,
-                    record.evaluation_mode,
+                    normalized_mode,
                     record.mode_config_hash,
                     ENGINE_VERSION,
                 ),
@@ -303,6 +305,7 @@ class ResultsCache:
 
     def list_by_run(self, run_id: str) -> list[dict[str, Any]]:
         con = sqlite3.connect(self.db_path)
+        con.row_factory = sqlite3.Row
         try:
             cur = con.execute(
                 """
@@ -312,27 +315,17 @@ class ResultsCache:
                 (run_id,),
             )
             rows = []
-            for r in cur.fetchall():
-                (
-                    collection,
-                    symbol,
-                    timeframe,
-                    strategy,
-                    params_json,
-                    metric_name,
-                    metric_value,
-                    stats_json,
-                ) = r
+            for row in cur.fetchall():
                 rows.append(
                     {
-                        "collection": collection,
-                        "symbol": symbol,
-                        "timeframe": timeframe,
-                        "strategy": strategy,
-                        "params": json.loads(params_json),
-                        "metric": metric_name,
-                        "metric_value": float(metric_value),
-                        "stats": json.loads(stats_json),
+                        "collection": row["collection"],
+                        "symbol": row["symbol"],
+                        "timeframe": row["timeframe"],
+                        "strategy": row["strategy"],
+                        "params": json.loads(row["params_json"]),
+                        "metric": row["metric_name"],
+                        "metric_value": float(row["metric_value"]),
+                        "stats": json.loads(row["stats_json"]),
                     }
                 )
             return rows

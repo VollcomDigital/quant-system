@@ -177,11 +177,64 @@ class EvaluationCache:
 
 
 class ResultStore:
+    _IDENTITY_COLUMNS = (
+        "run_id",
+        "evaluation_mode",
+        "collection",
+        "symbol",
+        "timeframe",
+        "source",
+        "strategy",
+        "params_json",
+        "metric_name",
+        "data_fingerprint",
+        "fees",
+        "slippage",
+        "mode_config_hash",
+    )
+
     def __init__(self, root: Path):
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.db_path = self.root / "result_store.sqlite"
         self._ensure()
+
+    @classmethod
+    def _identity_index_matches_expected(cls, con: sqlite3.Connection) -> tuple[bool, bool]:
+        index_rows = con.execute("PRAGMA index_list('result_records')").fetchall()
+        for row in index_rows:
+            index_name = row[1]
+            if index_name != "idx_result_records_identity":
+                continue
+            is_unique = bool(row[2])
+            info_rows = con.execute("PRAGMA index_info('idx_result_records_identity')").fetchall()
+            index_columns = tuple(col[2] for col in sorted(info_rows, key=lambda col: int(col[0])))
+            return True, is_unique and index_columns == cls._IDENTITY_COLUMNS
+        return False, False
+
+    @classmethod
+    def _deduplicate_identity_rows(cls, con: sqlite3.Connection) -> None:
+        group_by = ", ".join(cls._IDENTITY_COLUMNS)
+        con.execute(
+            f"""
+            DELETE FROM result_records
+            WHERE rowid NOT IN (
+                SELECT MAX(rowid)
+                FROM result_records
+                GROUP BY {group_by}
+            )
+            """
+        )
+
+    @classmethod
+    def _create_identity_unique_index(cls, con: sqlite3.Connection) -> None:
+        columns = ", ".join(cls._IDENTITY_COLUMNS)
+        con.execute(
+            f"""
+            CREATE UNIQUE INDEX idx_result_records_identity
+            ON result_records({columns})
+            """
+        )
 
     def _ensure(self) -> None:
         con = sqlite3.connect(self.db_path)
@@ -227,6 +280,13 @@ class ResultStore:
                 )
                 """
             )
+            has_identity_index, identity_index_valid = self._identity_index_matches_expected(con)
+            if has_identity_index and not identity_index_valid:
+                con.execute("DROP INDEX IF EXISTS idx_result_records_identity")
+            if not identity_index_valid:
+                # One-time cleanup before creating the unique identity index.
+                self._deduplicate_identity_rows(con)
+                self._create_identity_unique_index(con)
             con.commit()
         finally:
             con.close()
@@ -255,6 +315,24 @@ class ResultStore:
                     mode_config_hash
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(
+                    run_id,
+                    evaluation_mode,
+                    collection,
+                    symbol,
+                    timeframe,
+                    source,
+                    strategy,
+                    params_json,
+                    metric_name,
+                    data_fingerprint,
+                    fees,
+                    slippage,
+                    mode_config_hash
+                ) DO UPDATE SET
+                    metric_value = excluded.metric_value,
+                    stats_json = excluded.stats_json,
+                    created_at = CURRENT_TIMESTAMP
                 """,
                 (
                     record.run_id,
