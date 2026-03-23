@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 from math import isfinite
 from types import SimpleNamespace
@@ -8,7 +9,11 @@ from types import MethodType
 import pandas as pd
 import pytest
 
-from src.backtest.evaluation.contracts import EvaluationModeConfig, EvaluationRequest
+from src.backtest.evaluation.contracts import (
+    EvaluationModeConfig,
+    EvaluationOutcome,
+    EvaluationRequest,
+)
 from src.backtest.runner import BacktestRunner, BestResult, GateDecision
 from src.config import (
     CollectionConfig,
@@ -829,6 +834,84 @@ def test_run_all_uses_cached_results(tmp_path, monkeypatch):
     assert runner.metrics["result_cache_misses"] == 0
     assert runner.metrics["fresh_metric_evals"] == 0
     assert runner.results_cache.set_calls == runner.metrics["result_cache_hits"]
+
+
+def test_run_all_cached_invalid_outcomes_remain_invalid(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+
+    class _ReplayEvaluationCache(_StubEvaluationCache):
+        def __init__(self):
+            super().__init__()
+            self._store = {}
+
+        @staticmethod
+        def _cache_key(payload):
+            return (
+                payload["collection"],
+                payload["symbol"],
+                payload["timeframe"],
+                payload["strategy"],
+                json.dumps(payload["params"], sort_keys=True),
+                payload["metric_name"],
+                payload["data_fingerprint"],
+                float(payload["fees"]),
+                float(payload["slippage"]),
+                payload["evaluation_mode"],
+                payload["mode_config_hash"],
+                payload["validation_config_hash"],
+            )
+
+        def get(self, **kwargs):
+            self.retrieved.append(kwargs)
+            return self._store.get(self._cache_key(kwargs))
+
+        def set(self, **kwargs):
+            self.saved.append(kwargs)
+            self._store[self._cache_key(kwargs)] = {
+                "metric_value": float(kwargs["metric_value"]),
+                "stats": dict(kwargs["stats"]),
+            }
+
+    class _AlwaysInvalidEvaluator:
+        def __init__(self, calls):
+            self._calls = calls
+
+        def evaluate(self, *args, **kwargs):
+            self._calls["count"] += 1
+            return EvaluationOutcome(
+                metric_value=123.0,
+                stats={"forced_invalid": True},
+                valid=False,
+                attempted=True,
+                simulation_executed=True,
+                metric_computed=True,
+                reject_reason="forced_invalid",
+            )
+
+    runner.evaluation_cache = _ReplayEvaluationCache()
+    runner.mode_config_hash = runner.evaluation_cache.hash_mode_config(runner.mode_config)
+    eval_calls = {"count": 0}
+    monkeypatch.setattr(
+        BacktestRunner,
+        "_get_evaluator",
+        lambda self: _AlwaysInvalidEvaluator(eval_calls),
+    )
+
+    first_results = runner.run_all()
+    assert first_results == []
+    assert eval_calls["count"] > 0
+    assert runner.evaluation_cache.saved
+    assert all(
+        saved["metric_value"] == float("-inf") for saved in runner.evaluation_cache.saved
+    )
+
+    def _fail_if_fresh_eval(self):
+        raise AssertionError("Fresh evaluator should not run when evaluation cache is warm")
+
+    monkeypatch.setattr(BacktestRunner, "_get_evaluator", _fail_if_fresh_eval)
+    second_results = runner.run_all()
+    assert second_results == []
+    assert runner.metrics["result_cache_hits"] > 0
 
 
 def test_run_all_handles_failed_and_nan_metrics(tmp_path, monkeypatch):

@@ -2092,6 +2092,7 @@ class BacktestRunner:
         plan.evaluations += 1
         self._track_fresh_evaluation_metrics(outcome)
         metric_val = float(outcome.metric_value)
+        cached_metric_val = metric_val if outcome.valid else float("-inf")
         if outcome.valid or outcome.metric_computed:
             self._evaluation_cache_set(
                 collection=request.collection,
@@ -2100,7 +2101,7 @@ class BacktestRunner:
                 strategy=request.strategy,
                 params=request.params,
                 metric_name=request.metric_name,
-                metric_value=metric_val,
+                metric_value=cached_metric_val,
                 stats=raw_stats,
                 data_fingerprint=request.data_fingerprint,
                 fees=request.fees,
@@ -2116,7 +2117,7 @@ class BacktestRunner:
                 strategy=request.strategy,
                 params=request.params,
                 metric_name=request.metric_name,
-                metric_value=metric_val,
+                metric_value=cached_metric_val,
                 stats=stats,
                 data_fingerprint=request.data_fingerprint,
                 fees=request.fees,
