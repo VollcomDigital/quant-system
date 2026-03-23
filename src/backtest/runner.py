@@ -18,6 +18,8 @@ import pandas as pd
 from ..config import (
     CollectionConfig,
     Config,
+    ResultConsistencyExecutionPriceVarianceConfig,
+    ResultConsistencyOutlierDependencyConfig,
     ValidationContinuityConfig,
     ValidationOutlierDetectionConfig,
     ResultConsistencyConfig,
@@ -186,6 +188,7 @@ class BacktestRunner:
         "data_quality.outlier_detection",
         "optimization.feasibility",
         "result_consistency.outlier_dependency",
+        "result_consistency.execution_price_variance",
     )
 
     def __init__(
@@ -380,10 +383,25 @@ class BacktestRunner:
     def _serialize_result_consistency_profile(result_consistency: Any) -> dict[str, Any] | None:
         if result_consistency is None:
             return None
+        outlier_dependency = getattr(result_consistency, "outlier_dependency", None)
+        execution_price_variance = getattr(result_consistency, "execution_price_variance", None)
         return {
-            "slices": getattr(result_consistency, "slices", None),
-            "profit_share_threshold": getattr(result_consistency, "profit_share_threshold", None),
-            "trade_share_threshold": getattr(result_consistency, "trade_share_threshold", None),
+            "outlier_dependency": (
+                {
+                    "slices": getattr(outlier_dependency, "slices", None),
+                    "profit_share_threshold": getattr(outlier_dependency, "profit_share_threshold", None),
+                    "trade_share_threshold": getattr(outlier_dependency, "trade_share_threshold", None),
+                }
+                if outlier_dependency is not None
+                else None
+            ),
+            "execution_price_variance": (
+                {
+                    "price_tolerance_bps": getattr(execution_price_variance, "price_tolerance_bps", None),
+                }
+                if execution_price_variance is not None
+                else None
+            ),
         }
 
     @staticmethod
@@ -418,7 +436,12 @@ class BacktestRunner:
     def _active_result_consistency_gates(result_consistency: Any) -> set[str]:
         if result_consistency is None:
             return set()
-        return {"result_consistency.outlier_dependency"}
+        active: set[str] = set()
+        if getattr(result_consistency, "outlier_dependency", None) is not None:
+            active.add("result_consistency.outlier_dependency")
+        if getattr(result_consistency, "execution_price_variance", None) is not None:
+            active.add("result_consistency.execution_price_variance")
+        return active
 
     def _build_validation_metadata(self) -> dict[str, Any]:
         collection_profiles: list[dict[str, Any]] = []
@@ -1967,14 +1990,22 @@ class BacktestRunner:
             slippage=prepared.slippage,
             bars_per_year=prepared.bars_per_year,
             mode_config=self.mode_config,
-            result_consistency_slices=(
-                result_consistency_policy.slices
+            result_consistency_outlier_dependency_slices=(
+                result_consistency_policy.outlier_dependency.slices
                 if result_consistency_policy is not None
+                and result_consistency_policy.outlier_dependency is not None
                 else None
             ),
-            result_consistency_profit_share_threshold=(
-                result_consistency_policy.profit_share_threshold
+            result_consistency_outlier_dependency_profit_share_threshold=(
+                result_consistency_policy.outlier_dependency.profit_share_threshold
                 if result_consistency_policy is not None
+                and result_consistency_policy.outlier_dependency is not None
+                else None
+            ),
+            result_consistency_execution_price_tolerance_bps=(
+                result_consistency_policy.execution_price_variance.price_tolerance_bps
+                if result_consistency_policy is not None
+                and result_consistency_policy.execution_price_variance is not None
                 else None
             ),
         )
@@ -2188,21 +2219,24 @@ class BacktestRunner:
     def _outlier_dependency_reason(
         self,
         stats: dict[str, Any],
-        policy: ResultConsistencyConfig,
+        policy: ResultConsistencyOutlierDependencyConfig,
     ) -> str | None:
         trade_meta = stats.get("trade_meta")
         if not isinstance(trade_meta, dict):
             return None
-        if not bool(trade_meta.get("is_complete", False)):
+        outlier_meta = trade_meta.get("outlier_dependency")
+        if not isinstance(outlier_meta, dict):
             return None
-        dominant_trade_share_raw = trade_meta.get("dominant_trade_share_for_profit_share")
+        if not bool(outlier_meta.get("is_complete", False)):
+            return None
+        dominant_trade_share_raw = outlier_meta.get("dominant_trade_share_for_profit_share")
         if dominant_trade_share_raw is None:
             return None
         dominant_trade_share = float(dominant_trade_share_raw)
         if dominant_trade_share >= policy.trade_share_threshold:
             return None
-        dominant_trade_count = trade_meta.get("dominant_trade_count_for_profit_share")
-        slice_concentration = trade_meta.get("max_slice_profit_share")
+        dominant_trade_count = outlier_meta.get("dominant_trade_count_for_profit_share")
+        slice_concentration = outlier_meta.get("max_slice_profit_share")
 
         reason = (
             "outlier_dependency_exceeded("
@@ -2217,6 +2251,37 @@ class BacktestRunner:
         reason += ")"
         return reason
 
+    @staticmethod
+    def _execution_price_variance_reason(
+        stats: dict[str, Any],
+        policy: ResultConsistencyExecutionPriceVarianceConfig,
+    ) -> str | None:
+        trade_meta = stats.get("trade_meta")
+        if not isinstance(trade_meta, dict):
+            return None
+        execution_meta = trade_meta.get("execution_price_variance")
+        if not isinstance(execution_meta, dict):
+            return None
+        # Missing metadata is explicitly non-blocking for this gate.
+        if not bool(execution_meta.get("is_complete", False)):
+            return None
+        violations_raw = execution_meta.get("violations")
+        if violations_raw is None:
+            return None
+        violations = int(violations_raw)
+        if violations <= 0:
+            return None
+        checked_fills = execution_meta.get("checked_fills")
+        violation_ratio = execution_meta.get("violation_ratio")
+        return (
+            "execution_price_variance_exceeded("
+            f"violations={violations}, "
+            f"checked_fills={checked_fills}, "
+            f"violation_ratio={violation_ratio}, "
+            f"price_tolerance_bps={policy.price_tolerance_bps}"
+            ")"
+        )
+
     def _strategy_validate_results_common(self, context: ValidationContext) -> GateDecision:
         # Keep this gate lightweight for now; stricter schema checks can be added later.
         outcome = context.outcome
@@ -2230,9 +2295,19 @@ class BacktestRunner:
             reasons.append("best_metric_not_finite")
         policy = self._load_result_consistency_policy(context.job.collection)
         if policy is not None and isinstance(outcome.best_stats, dict):
-            reason = self._outlier_dependency_reason(outcome.best_stats, policy)
-            if reason is not None:
-                reasons.append(reason)
+            outlier_policy = policy.outlier_dependency
+            if outlier_policy is not None:
+                reason = self._outlier_dependency_reason(outcome.best_stats, outlier_policy)
+                if reason is not None:
+                    reasons.append(reason)
+            execution_price_policy = policy.execution_price_variance
+            if execution_price_policy is not None:
+                reason = self._execution_price_variance_reason(
+                    outcome.best_stats,
+                    execution_price_policy,
+                )
+                if reason is not None:
+                    reasons.append(reason)
         if reasons:
             decision = GateDecision(False, "reject_result", reasons, "strategy_validation")
         else:

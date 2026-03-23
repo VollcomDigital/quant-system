@@ -35,9 +35,12 @@ validation:
     dof_multiplier: 100
   # Optional result-level robustness check.
   result_consistency:
-    slices: 5  # split trade history into N equal time-slices for diagnostics
-    profit_share_threshold: 0.80
-    trade_share_threshold: 0.05
+    outlier_dependency:
+      slices: 5  # split trade history into N equal time-slices for diagnostics
+      profit_share_threshold: 0.80
+      trade_share_threshold: 0.05
+    execution_price_variance:
+      price_tolerance_bps: 1.0  # tiny tolerance for float/tick rounding
 
 collections:
   # Stocks (large-cap growth)

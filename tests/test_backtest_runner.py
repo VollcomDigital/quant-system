@@ -15,6 +15,8 @@ from src.config import (
     Config,
     OptimizationPolicyConfig,
     ResultConsistencyConfig,
+    ResultConsistencyExecutionPriceVarianceConfig,
+    ResultConsistencyOutlierDependencyConfig,
     StrategyConfig,
     ValidationCalendarConfig,
     ValidationConfig,
@@ -1842,9 +1844,11 @@ def test_run_all_rejects_result_on_outlier_dependency(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
     runner.cfg.validation = ValidationConfig(
         result_consistency=ResultConsistencyConfig(
-            slices=5,
-            profit_share_threshold=0.80,
-            trade_share_threshold=0.05,
+            outlier_dependency=ResultConsistencyOutlierDependencyConfig(
+                slices=5,
+                profit_share_threshold=0.80,
+                trade_share_threshold=0.05,
+            ),
         ),
     )
     resolve_validation_overrides(runner.cfg)
@@ -1901,8 +1905,8 @@ def test_trade_meta_slice_profit_share_includes_earliest_exit_timestamp(tmp_path
         slippage=0.0,
         bars_per_year=252,
         mode_config=EvaluationModeConfig(mode="backtest", payload={}),
-        result_consistency_slices=2,
-        result_consistency_profit_share_threshold=None,
+        result_consistency_outlier_dependency_slices=2,
+        result_consistency_outlier_dependency_profit_share_threshold=None,
     )
     trades_frame = pd.DataFrame(
         [
@@ -1912,18 +1916,33 @@ def test_trade_meta_slice_profit_share_includes_earliest_exit_timestamp(tmp_path
         ]
     )
 
-    trade_meta = evaluator._build_trade_meta(trades_frame, {"trades": 3}, request)
+    data_frame = pd.DataFrame(
+        {
+            "open": [10.0, 10.0, 10.0],
+            "high": [11.0, 11.0, 11.0],
+            "low": [9.0, 9.0, 9.0],
+            "close": [10.0, 10.0, 10.0],
+            "volume": [100.0, 100.0, 100.0],
+        }
+    )
+    dates = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"])
+    trade_meta = evaluator._build_trade_meta(trades_frame, data_frame, dates, {"trades": 3}, request)
 
-    assert trade_meta["max_slice_profit_share"] == pytest.approx(0.5)
+    assert trade_meta["outlier_dependency"]["max_slice_profit_share"] == pytest.approx(0.5)
 
 
 def test_run_all_result_consistency_skips_check_for_missing_trades_frame(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
     runner.cfg.validation = ValidationConfig(
         result_consistency=ResultConsistencyConfig(
-            slices=5,
-            profit_share_threshold=0.80,
-            trade_share_threshold=0.05,
+            outlier_dependency=ResultConsistencyOutlierDependencyConfig(
+                slices=5,
+                profit_share_threshold=0.80,
+                trade_share_threshold=0.05,
+            ),
+            execution_price_variance=ResultConsistencyExecutionPriceVarianceConfig(
+                price_tolerance_bps=1.0
+            ),
         ),
     )
     resolve_validation_overrides(runner.cfg)
@@ -1954,6 +1973,61 @@ def test_run_all_result_consistency_skips_check_for_missing_trades_frame(tmp_pat
 
     assert len(results) >= 1
     assert not any("outlier_dependency_exceeded" in failure["error"] for failure in runner.failures)
+    assert not any("execution_price_variance_exceeded" in failure["error"] for failure in runner.failures)
+
+
+def test_run_all_rejects_result_on_execution_price_variance(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
+    runner.cfg.validation = ValidationConfig(
+        result_consistency=ResultConsistencyConfig(
+            execution_price_variance=ResultConsistencyExecutionPriceVarianceConfig(
+                price_tolerance_bps=0.0
+            )
+        ),
+    )
+    resolve_validation_overrides(runner.cfg)
+
+    def _sim_with_impossible_fill(self, *args, **kwargs):
+        dates = pd.date_range("2024-01-01", periods=3, freq="D")
+        returns = pd.Series([0.01, -0.005, 0.002], index=dates)
+        equity = (1 + returns).cumprod()
+        trades_frame = pd.DataFrame(
+            [
+                {
+                    "entry_price": 120.0,
+                    "entry_date": "2024-01-01",
+                    "exit_price": 90.0,
+                    "exit_date": "2024-01-02",
+                    "pnl": -1.0,
+                }
+            ]
+        )
+        stats = {
+            "sharpe": 1.0,
+            "sortino": 1.0,
+            "omega": 1.0,
+            "tail_ratio": 1.0,
+            "profit": 1.0,
+            "pain_index": 0.0,
+            "trades": 1,
+            "max_drawdown": -0.1,
+            "cagr": 0.1,
+            "calmar": 1.0,
+            "equity_curve": [],
+            "drawdown_curve": [],
+            "trades_log": [],
+        }
+        return returns, equity, stats, trades_frame
+
+    monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _sim_with_impossible_fill)
+    results = runner.run_all()
+
+    assert results == []
+    assert any(
+        failure["stage"] == "strategy_validation"
+        and "execution_price_variance_exceeded" in failure["error"]
+        for failure in runner.failures
+    )
 
 
 def test_runner_rejects_walk_forward_mode_until_implemented(tmp_path, monkeypatch):

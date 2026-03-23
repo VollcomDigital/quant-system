@@ -30,8 +30,9 @@ class EvaluationRequest(EvaluationSharedFields):
     source: str
     bars_per_year: int
     mode_config: EvaluationModeConfig
-    result_consistency_slices: int | None = None
-    result_consistency_profit_share_threshold: float | None = None
+    result_consistency_outlier_dependency_slices: int | None = None
+    result_consistency_outlier_dependency_profit_share_threshold: float | None = None
+    result_consistency_execution_price_tolerance_bps: float | None = None
 
 
 @dataclass(frozen=True)

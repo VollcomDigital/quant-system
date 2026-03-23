@@ -351,9 +351,12 @@ timeframes: ['1d']
 metric: sharpe
 validation:
   result_consistency:
-    slices: 6
-    profit_share_threshold: 0.80
-    trade_share_threshold: 0.05
+    outlier_dependency:
+      slices: 6
+      profit_share_threshold: 0.80
+      trade_share_threshold: 0.05
+    execution_price_variance:
+      price_tolerance_bps: 1.0
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -361,15 +364,30 @@ validation:
     cfg = load_config(path)
     assert cfg.validation is not None
     assert cfg.validation.result_consistency is not None
-    assert cfg.validation.result_consistency.slices == 6
-    assert cfg.validation.result_consistency.profit_share_threshold == pytest.approx(0.80)
-    assert cfg.validation.result_consistency.trade_share_threshold == pytest.approx(0.05)
+    assert cfg.validation.result_consistency.outlier_dependency is not None
+    assert cfg.validation.result_consistency.execution_price_variance is not None
+    assert cfg.validation.result_consistency.outlier_dependency.slices == 6
+    assert cfg.validation.result_consistency.outlier_dependency.profit_share_threshold == pytest.approx(
+        0.80
+    )
+    assert cfg.validation.result_consistency.outlier_dependency.trade_share_threshold == pytest.approx(
+        0.05
+    )
+    assert (
+        cfg.validation.result_consistency.execution_price_variance.price_tolerance_bps
+        == pytest.approx(1.0)
+    )
     col = cfg.collections[0]
     assert col.validation is not None
     assert col.validation.result_consistency is not None
-    assert col.validation.result_consistency.slices == 6
-    assert col.validation.result_consistency.profit_share_threshold == pytest.approx(0.80)
-    assert col.validation.result_consistency.trade_share_threshold == pytest.approx(0.05)
+    assert col.validation.result_consistency.outlier_dependency is not None
+    assert col.validation.result_consistency.outlier_dependency.slices == 6
+    assert col.validation.result_consistency.outlier_dependency.profit_share_threshold == pytest.approx(
+        0.80
+    )
+    assert col.validation.result_consistency.outlier_dependency.trade_share_threshold == pytest.approx(
+        0.05
+    )
 
 
 def test_load_config_result_consistency_collection_override(tmp_path: Path):
@@ -380,16 +398,20 @@ collections:
     symbols: ['AAPL']
     validation:
       result_consistency:
-        slices: 4
-        profit_share_threshold: 0.75
-        trade_share_threshold: 0.10
+        outlier_dependency:
+          slices: 4
+          profit_share_threshold: 0.75
+          trade_share_threshold: 0.10
 timeframes: ['1d']
 metric: sharpe
 validation:
   result_consistency:
-    slices: 8
-    profit_share_threshold: 0.80
-    trade_share_threshold: 0.05
+    outlier_dependency:
+      slices: 8
+      profit_share_threshold: 0.80
+      trade_share_threshold: 0.05
+    execution_price_variance:
+      price_tolerance_bps: 0.5
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -398,9 +420,20 @@ validation:
     col = cfg.collections[0]
     assert col.validation is not None
     assert col.validation.result_consistency is not None
-    assert col.validation.result_consistency.slices == 4
-    assert col.validation.result_consistency.profit_share_threshold == pytest.approx(0.75)
-    assert col.validation.result_consistency.trade_share_threshold == pytest.approx(0.10)
+    assert col.validation.result_consistency.outlier_dependency is not None
+    assert col.validation.result_consistency.outlier_dependency.slices == 4
+    assert col.validation.result_consistency.outlier_dependency.profit_share_threshold == pytest.approx(
+        0.75
+    )
+    assert col.validation.result_consistency.outlier_dependency.trade_share_threshold == pytest.approx(
+        0.10
+    )
+    # Collection inherits global execution_price_variance when not overridden.
+    assert col.validation.result_consistency.execution_price_variance is not None
+    assert (
+        col.validation.result_consistency.execution_price_variance.price_tolerance_bps
+        == pytest.approx(0.5)
+    )
 
 
 def test_load_config_result_consistency_invalid_slices(tmp_path: Path):
@@ -413,9 +446,10 @@ timeframes: ['1d']
 metric: sharpe
 validation:
   result_consistency:
-    slices: 1
-    profit_share_threshold: 0.80
-    trade_share_threshold: 0.05
+    outlier_dependency:
+      slices: 1
+      profit_share_threshold: 0.80
+      trade_share_threshold: 0.05
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -434,8 +468,9 @@ timeframes: ['1d']
 metric: sharpe
 validation:
   result_consistency:
-    slices: 5
-    trade_share_threshold: 0.05
+    outlier_dependency:
+      slices: 5
+      trade_share_threshold: 0.05
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -454,8 +489,9 @@ timeframes: ['1d']
 metric: sharpe
 validation:
   result_consistency:
-    slices: 5
-    profit_share_threshold: 0.80
+    outlier_dependency:
+      slices: 5
+      profit_share_threshold: 0.80
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -474,9 +510,49 @@ timeframes: ['1d']
 metric: sharpe
 validation:
   result_consistency:
-    slices: 5
-    profit_share_threshold: 1.2
-    trade_share_threshold: 0.05
+    outlier_dependency:
+      slices: 5
+      profit_share_threshold: 1.2
+      trade_share_threshold: 0.05
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_result_consistency_execution_price_variance_requires_tolerance(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    execution_price_variance: {}
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_result_consistency_execution_price_variance_tolerance_non_negative(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    execution_price_variance:
+      price_tolerance_bps: -0.1
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)

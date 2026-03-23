@@ -76,6 +76,22 @@ class BacktestEvaluator:
             "reason": reason,
         }
 
+    @staticmethod
+    def _build_execution_variance_incomplete_meta(
+        checked_fills: int,
+        violations: int,
+        reason: str,
+        tolerance_bps: float | None,
+    ) -> dict[str, Any]:
+        return {
+            "is_complete": False,
+            "checked_fills": checked_fills,
+            "violations": violations,
+            "violation_ratio": None,
+            "reason": reason,
+            "price_tolerance_bps_used": tolerance_bps,
+        }
+
     def _validate_trade_counts(
         self, trades_frame: pd.DataFrame, stats: dict[str, Any]
     ) -> tuple[bool, dict[str, Any] | None]:
@@ -145,12 +161,34 @@ class BacktestEvaluator:
     def _build_trade_meta(
         self,
         trades_frame: pd.DataFrame,
+        data_frame: pd.DataFrame,
+        dates: pd.DatetimeIndex,
+        stats: dict[str, Any],
+        request: EvaluationRequest,
+    ) -> dict[str, Any]:
+        outlier_meta = self._build_outlier_dependency_meta(trades_frame, stats, request)
+
+        execution_variance_meta = self._build_execution_price_variance_meta(
+            trades_frame,
+            data_frame,
+            dates,
+            tolerance_bps=request.result_consistency_execution_price_tolerance_bps,
+        )
+
+        return {
+            "outlier_dependency": outlier_meta,
+            "execution_price_variance": execution_variance_meta,
+        }
+
+    def _build_outlier_dependency_meta(
+        self,
+        trades_frame: pd.DataFrame,
         stats: dict[str, Any],
         request: EvaluationRequest,
     ) -> dict[str, Any]:
         is_complete, incomplete_meta = self._validate_trade_counts(trades_frame, stats)
         if not is_complete and isinstance(incomplete_meta, dict):
-            return incomplete_meta
+            return dict(incomplete_meta)
 
         total_trades = int(len(trades_frame))
         pnl_series = self._extract_trade_pnl_series(trades_frame)
@@ -164,18 +202,17 @@ class BacktestEvaluator:
         exit_times = pd.DatetimeIndex(exit_series[paired])
 
         total_positive_profit = float(np.where(pnls > 0, pnls, 0.0).sum())
-        threshold = request.result_consistency_profit_share_threshold
+        threshold = request.result_consistency_outlier_dependency_profit_share_threshold
         dominant_trade_count, dominant_trade_share = self._compute_dominant_trade_share(
             pnls,
             threshold,
         )
-        slices = request.result_consistency_slices
+        slices = request.result_consistency_outlier_dependency_slices
         max_slice_profit_share = self._compute_max_slice_profit_share(
             paired_pnls,
             exit_times,
             slices,
         )
-
         return {
             "is_complete": True,
             "analyzed_trades_count": total_trades,
@@ -187,6 +224,120 @@ class BacktestEvaluator:
             "dominant_trade_share_for_profit_share": dominant_trade_share,
             "slices_used": slices,
             "max_slice_profit_share": max_slice_profit_share,
+        }
+
+    @classmethod
+    def _build_execution_price_variance_meta(
+        cls,
+        trades_frame: pd.DataFrame,
+        data_frame: pd.DataFrame,
+        dates: pd.DatetimeIndex,
+        tolerance_bps: float | None,
+    ) -> dict[str, Any]:
+        if tolerance_bps is None:
+            return cls._build_execution_variance_incomplete_meta(
+                checked_fills=0,
+                violations=0,
+                reason="policy_disabled",
+                tolerance_bps=None,
+            )
+        if trades_frame.empty:
+            return cls._build_execution_variance_incomplete_meta(
+                checked_fills=0,
+                violations=0,
+                reason="missing_trades_frame",
+                tolerance_bps=tolerance_bps,
+            )
+        if "high" not in data_frame.columns or "low" not in data_frame.columns:
+            return cls._build_execution_variance_incomplete_meta(
+                checked_fills=0,
+                violations=0,
+                reason="missing_ohlc_columns",
+                tolerance_bps=tolerance_bps,
+            )
+
+        bars = pd.DataFrame(
+            {
+                "high": pd.to_numeric(data_frame["high"], errors="coerce").to_numpy(dtype=float),
+                "low": pd.to_numeric(data_frame["low"], errors="coerce").to_numpy(dtype=float),
+            },
+            index=pd.to_datetime(dates, errors="coerce", utc=True),
+        )
+        bars = bars.dropna(subset=["high", "low"])
+        if bars.empty:
+            return cls._build_execution_variance_incomplete_meta(
+                checked_fills=0,
+                violations=0,
+                reason="missing_bar_timestamps",
+                tolerance_bps=tolerance_bps,
+            )
+
+        fill_specs = (
+            ("entry_price", ("entry_date", "entry_time", "entry_datetime")),
+            ("exit_price", ("exit_date", "exit_time", "close_date", "close_time")),
+        )
+        has_fill_columns = False
+        checked_fills = 0
+        violations = 0
+        unmatched_timestamps = 0
+
+        for price_col, time_candidates in fill_specs:
+            if price_col not in trades_frame.columns:
+                continue
+            time_col = next((c for c in time_candidates if c in trades_frame.columns), None)
+            if time_col is None:
+                continue
+            has_fill_columns = True
+            price_series = pd.to_numeric(trades_frame[price_col], errors="coerce")
+            ts_series = pd.to_datetime(trades_frame[time_col], errors="coerce", utc=True)
+            valid = price_series.notna() & ts_series.notna()
+            if not valid.any():
+                continue
+
+            for price, ts in zip(price_series[valid].to_numpy(dtype=float), ts_series[valid]):
+                bar = bars.loc[ts] if ts in bars.index else None
+                if bar is None:
+                    unmatched_timestamps += 1
+                    continue
+                if isinstance(bar, pd.DataFrame):
+                    high = float(pd.to_numeric(bar["high"], errors="coerce").iloc[-1])
+                    low = float(pd.to_numeric(bar["low"], errors="coerce").iloc[-1])
+                else:
+                    high = float(bar["high"])
+                    low = float(bar["low"])
+                tol = abs(price) * (float(tolerance_bps) / 10_000.0)
+                checked_fills += 1
+                if price < (low - tol) or price > (high + tol):
+                    violations += 1
+
+        if not has_fill_columns:
+            return cls._build_execution_variance_incomplete_meta(
+                checked_fills=0,
+                violations=0,
+                reason="missing_fill_columns",
+                tolerance_bps=tolerance_bps,
+            )
+        if checked_fills == 0:
+            return cls._build_execution_variance_incomplete_meta(
+                checked_fills=0,
+                violations=0,
+                reason="missing_fill_timestamps",
+                tolerance_bps=tolerance_bps,
+            )
+        if unmatched_timestamps > 0:
+            return cls._build_execution_variance_incomplete_meta(
+                checked_fills=checked_fills,
+                violations=violations,
+                reason="unmatched_fill_timestamps",
+                tolerance_bps=tolerance_bps,
+            )
+        return {
+            "is_complete": True,
+            "checked_fills": checked_fills,
+            "violations": violations,
+            "violation_ratio": float(violations / checked_fills) if checked_fills > 0 else None,
+            "reason": None,
+            "price_tolerance_bps_used": tolerance_bps,
         }
 
     def evaluate(
@@ -227,7 +378,13 @@ class BacktestEvaluator:
         stats = dict(stats)
         # Derive reporting log and consistency metadata from full trades when available.
         stats["trades_log"] = self._build_report_trades_log(trades_frame)
-        stats["trade_meta"] = self._build_trade_meta(trades_frame, stats, request)
+        stats["trade_meta"] = self._build_trade_meta(
+            trades_frame,
+            data_frame,
+            dates,
+            stats,
+            request,
+        )
         metric_val = self._metric_fn(
             request.metric_name,
             returns,

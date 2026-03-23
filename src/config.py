@@ -87,10 +87,21 @@ class OptimizationPolicyConfig:
 
 
 @dataclass
-class ResultConsistencyConfig:
+class ResultConsistencyOutlierDependencyConfig:
     slices: int
     profit_share_threshold: float
     trade_share_threshold: float
+
+
+@dataclass
+class ResultConsistencyExecutionPriceVarianceConfig:
+    price_tolerance_bps: float
+
+
+@dataclass
+class ResultConsistencyConfig:
+    outlier_dependency: ResultConsistencyOutlierDependencyConfig | None = None
+    execution_price_variance: ResultConsistencyExecutionPriceVarianceConfig | None = None
 
 
 @dataclass
@@ -190,23 +201,67 @@ def _merge_result_consistency_config(
 ) -> ResultConsistencyConfig | None:
     if base is None and override is None:
         return None
+    outlier_dependency = _merge_result_consistency_outlier_dependency_config(
+        getattr(base, "outlier_dependency", None),
+        getattr(override, "outlier_dependency", None),
+    )
+    execution_price_variance = _merge_result_consistency_execution_price_variance_config(
+        getattr(base, "execution_price_variance", None),
+        getattr(override, "execution_price_variance", None),
+    )
+    if outlier_dependency is None and execution_price_variance is None:
+        return None
+    return ResultConsistencyConfig(
+        outlier_dependency=outlier_dependency,
+        execution_price_variance=execution_price_variance,
+    )
+
+
+def _merge_result_consistency_outlier_dependency_config(
+    base: ResultConsistencyOutlierDependencyConfig | None,
+    override: ResultConsistencyOutlierDependencyConfig | None,
+) -> ResultConsistencyOutlierDependencyConfig | None:
+    if base is None and override is None:
+        return None
     slices = _merged_field(base, override, "slices")
     if slices is None:
-        raise ValueError("Invalid `validation.result_consistency`: missing required field(s): slices")
+        raise ValueError(
+            "Invalid `validation.result_consistency.outlier_dependency`: "
+            "missing required field(s): slices"
+        )
     profit_share_threshold = _merged_field(base, override, "profit_share_threshold")
     if profit_share_threshold is None:
         raise ValueError(
-            "Invalid `validation.result_consistency`: missing required field(s): profit_share_threshold"
+            "Invalid `validation.result_consistency.outlier_dependency`: "
+            "missing required field(s): profit_share_threshold"
         )
     trade_share_threshold = _merged_field(base, override, "trade_share_threshold")
     if trade_share_threshold is None:
         raise ValueError(
-            "Invalid `validation.result_consistency`: missing required field(s): trade_share_threshold"
+            "Invalid `validation.result_consistency.outlier_dependency`: "
+            "missing required field(s): trade_share_threshold"
         )
-    return ResultConsistencyConfig(
+    return ResultConsistencyOutlierDependencyConfig(
         slices=int(slices),
         profit_share_threshold=float(profit_share_threshold),
         trade_share_threshold=float(trade_share_threshold),
+    )
+
+
+def _merge_result_consistency_execution_price_variance_config(
+    base: ResultConsistencyExecutionPriceVarianceConfig | None,
+    override: ResultConsistencyExecutionPriceVarianceConfig | None,
+) -> ResultConsistencyExecutionPriceVarianceConfig | None:
+    if base is None and override is None:
+        return None
+    price_tolerance_bps = _merged_field(base, override, "price_tolerance_bps")
+    if price_tolerance_bps is None:
+        raise ValueError(
+            "Invalid `validation.result_consistency.execution_price_variance`: "
+            "missing required field(s): price_tolerance_bps"
+        )
+    return ResultConsistencyExecutionPriceVarianceConfig(
+        price_tolerance_bps=float(price_tolerance_bps),
     )
 
 def _merge_continuity_config(
@@ -612,6 +667,49 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
     if raw is None:
         return None
     parsed_raw = require_mapping(raw, prefix)
+
+    outlier_dependency_raw = parsed_raw.get("outlier_dependency")
+    if outlier_dependency_raw is not None and not isinstance(outlier_dependency_raw, dict):
+        raise ValueError(f"Invalid `{prefix}.outlier_dependency`: expected a mapping")
+    execution_price_variance_raw = parsed_raw.get("execution_price_variance")
+    if execution_price_variance_raw is not None and not isinstance(execution_price_variance_raw, dict):
+        raise ValueError(f"Invalid `{prefix}.execution_price_variance`: expected a mapping")
+
+    outlier_dependency = (
+        _parse_result_consistency_outlier_dependency(
+            outlier_dependency_raw,
+            f"{prefix}.outlier_dependency",
+        )
+        if isinstance(outlier_dependency_raw, dict)
+        else None
+    )
+    execution_price_variance = (
+        _parse_result_consistency_execution_price_variance(
+            execution_price_variance_raw,
+            f"{prefix}.execution_price_variance",
+        )
+        if isinstance(execution_price_variance_raw, dict)
+        else None
+    )
+
+    if outlier_dependency is None and execution_price_variance is None:
+        raise ValueError(
+            f"Invalid `{prefix}`: expected at least one configured module "
+            "(`outlier_dependency` or `execution_price_variance`)"
+        )
+
+    return ResultConsistencyConfig(
+        outlier_dependency=outlier_dependency,
+        execution_price_variance=execution_price_variance,
+    )
+
+
+def _parse_result_consistency_outlier_dependency(
+    raw: Any, prefix: str
+) -> ResultConsistencyOutlierDependencyConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
     slices = parse_required_int(parsed_raw, prefix, "slices", min_value=2)
     profit_share_threshold = parse_required_float(
         parsed_raw,
@@ -627,10 +725,27 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
         min_value=0.0,
         max_value=1.0,
     )
-    return ResultConsistencyConfig(
+    return ResultConsistencyOutlierDependencyConfig(
         slices=slices,
         profit_share_threshold=float(profit_share_threshold),
         trade_share_threshold=float(trade_share_threshold),
+    )
+
+
+def _parse_result_consistency_execution_price_variance(
+    raw: Any, prefix: str
+) -> ResultConsistencyExecutionPriceVarianceConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    price_tolerance_bps = parse_required_float(
+        parsed_raw,
+        prefix,
+        "price_tolerance_bps",
+        min_value=0.0,
+    )
+    return ResultConsistencyExecutionPriceVarianceConfig(
+        price_tolerance_bps=float(price_tolerance_bps),
     )
 
 
