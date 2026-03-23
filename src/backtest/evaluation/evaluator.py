@@ -248,7 +248,17 @@ class BacktestEvaluator:
                 reason="missing_trades_frame",
                 tolerance_bps=tolerance_bps,
             )
-        if "high" not in data_frame.columns or "low" not in data_frame.columns:
+        high_col = (
+            "high"
+            if "high" in data_frame.columns
+            else "High" if "High" in data_frame.columns else None
+        )
+        low_col = (
+            "low"
+            if "low" in data_frame.columns
+            else "Low" if "Low" in data_frame.columns else None
+        )
+        if high_col is None or low_col is None:
             return cls._build_execution_variance_incomplete_meta(
                 checked_fills=0,
                 violations=0,
@@ -258,8 +268,8 @@ class BacktestEvaluator:
 
         bars = pd.DataFrame(
             {
-                "high": pd.to_numeric(data_frame["high"], errors="coerce").to_numpy(dtype=float),
-                "low": pd.to_numeric(data_frame["low"], errors="coerce").to_numpy(dtype=float),
+                "high": pd.to_numeric(data_frame[high_col], errors="coerce").to_numpy(dtype=float),
+                "low": pd.to_numeric(data_frame[low_col], errors="coerce").to_numpy(dtype=float),
             },
             index=pd.to_datetime(dates, errors="coerce", utc=True),
         )
