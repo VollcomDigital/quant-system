@@ -127,6 +127,8 @@ class Config:
 
 
 DEFAULT_CALENDAR_KIND = "auto"
+
+
 def _merge_replace(base: Any, override: Any) -> Any:
     return override if override is not None else base
 
