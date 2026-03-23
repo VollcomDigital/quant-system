@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 from src.backtest.evaluation.contracts import EvaluationModeConfig, EvaluationRequest
+from src.backtest.evaluation.evaluator import BacktestEvaluator
 from src.backtest.runner import BacktestRunner, BestResult, GateDecision
 from src.config import (
     CollectionConfig,
@@ -1929,6 +1930,65 @@ def test_trade_meta_slice_profit_share_includes_earliest_exit_timestamp(tmp_path
     trade_meta = evaluator._build_trade_meta(trades_frame, data_frame, dates, {"trades": 3}, request)
 
     assert trade_meta["outlier_dependency"]["max_slice_profit_share"] == pytest.approx(0.5)
+
+
+def test_evaluator_builds_trade_meta_from_simulation_stats_snapshot():
+    dates = pd.date_range("2024-01-01", periods=3, freq="D")
+    data_frame = pd.DataFrame(
+        {
+            "open": [10.0, 10.0, 10.0],
+            "high": [11.0, 11.0, 11.0],
+            "low": [9.0, 9.0, 9.0],
+            "close": [10.0, 10.0, 10.0],
+        },
+        index=dates,
+    )
+    entries = pd.Series([True, False, False], index=dates)
+    exits = pd.Series([False, True, False], index=dates)
+    returns = pd.Series([0.01, 0.0, 0.0], index=dates)
+    equity_curve = (1.0 + returns).cumprod()
+    trades_frame = pd.DataFrame([{"entry_time": dates[0], "exit_time": dates[1], "pnl": 1.0}])
+
+    def _simulation_fn(*args, **kwargs):
+        return returns, equity_curve, {"trades": 1}, trades_frame
+
+    evaluator = BacktestEvaluator(
+        simulation_fn=_simulation_fn,
+        metric_fn=lambda metric_name, returns, equity, bars_per_year: 1.0,
+    )
+    captured_stats: dict[str, object] = {}
+
+    def _capture_trade_meta(self, trades_frame, data_frame, dates, stats, request):
+        captured_stats.update(stats)
+        return {}
+
+    evaluator._build_trade_meta = MethodType(_capture_trade_meta, evaluator)
+    request = EvaluationRequest(
+        collection="demo",
+        symbol="AAPL",
+        timeframe="1d",
+        source="custom",
+        strategy="dummy",
+        params={},
+        metric_name="sharpe",
+        data_fingerprint="fingerprint",
+        fees=0.0,
+        slippage=0.0,
+        bars_per_year=252,
+        mode_config=EvaluationModeConfig(mode="backtest", payload={}),
+    )
+
+    evaluator.evaluate(
+        request=request,
+        data_frame=data_frame,
+        dates=dates,
+        entries=entries,
+        exits=exits,
+        fractional=False,
+    )
+
+    assert captured_stats["trades"] == 1
+    assert "trades_log" not in captured_stats
 
 
 def test_run_all_result_consistency_skips_check_for_missing_trades_frame(tmp_path, monkeypatch):

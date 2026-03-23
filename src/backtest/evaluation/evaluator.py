@@ -386,13 +386,14 @@ class BacktestEvaluator:
         if not isinstance(trades_frame, pd.DataFrame):
             raise ValueError("simulation_fn must return a pandas DataFrame for trades_frame")
         stats = dict(stats)
+        simulation_stats = dict(stats)
         # Derive reporting log and consistency metadata from full trades when available.
         stats["trades_log"] = self._build_report_trades_log(trades_frame)
         stats["trade_meta"] = self._build_trade_meta(
             trades_frame,
             data_frame,
             dates,
-            stats,
+            simulation_stats,
             request,
         )
         metric_val = self._metric_fn(
