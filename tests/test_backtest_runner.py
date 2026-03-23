@@ -1937,7 +1937,7 @@ def test_trade_meta_slice_profit_share_includes_earliest_exit_timestamp(tmp_path
     assert trade_meta["outlier_dependency"]["max_slice_profit_share"] == pytest.approx(0.5)
 
 
-def test_compute_dominant_trade_share_uses_winning_trades_denominator(tmp_path, monkeypatch):
+def test_compute_dominant_trade_share_uses_all_trades_denominator(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     evaluator = runner._get_evaluator()
     pnls = pd.Series([10.0] * 10 + [-1.0] * 90).to_numpy()
@@ -1945,7 +1945,7 @@ def test_compute_dominant_trade_share_uses_winning_trades_denominator(tmp_path, 
     dominant_trade_count, dominant_trade_share = evaluator._compute_dominant_trade_share(pnls, 0.80)
 
     assert dominant_trade_count == 8
-    assert dominant_trade_share == pytest.approx(0.8)
+    assert dominant_trade_share == pytest.approx(0.08)
 
 
 def test_collect_reliability_reasons_dispatches_outlier_reason_to_subclass():
