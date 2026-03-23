@@ -1937,6 +1937,40 @@ def test_trade_meta_slice_profit_share_includes_earliest_exit_timestamp(tmp_path
     assert trade_meta["outlier_dependency"]["max_slice_profit_share"] == pytest.approx(0.5)
 
 
+def test_compute_dominant_trade_share_uses_winning_trades_denominator(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    evaluator = runner._get_evaluator()
+    pnls = pd.Series([10.0] * 10 + [-1.0] * 90).to_numpy()
+
+    dominant_trade_count, dominant_trade_share = evaluator._compute_dominant_trade_share(pnls, 0.80)
+
+    assert dominant_trade_count == 8
+    assert dominant_trade_share == pytest.approx(0.8)
+
+
+def test_collect_reliability_reasons_dispatches_outlier_reason_to_subclass():
+    class _DispatchRunner(BacktestRunner):
+        @classmethod
+        def _outlier_pct_reason(
+            cls,
+            *,
+            raw_df: pd.DataFrame,
+            outlier_detection: ValidationOutlierDetectionConfig | None,
+        ) -> str | None:
+            return "subclass_outlier_reason"
+
+    reasons = _DispatchRunner._collect_reliability_reasons(
+        raw_df=pd.DataFrame({"Close": [1.0, 2.0, 3.0]}),
+        continuity={},
+        min_data_points_cfg=None,
+        continuity_cfg=None,
+        kurtosis_cfg=None,
+        outlier_detection=None,
+    )
+
+    assert reasons == ["subclass_outlier_reason"]
+
+
 def test_run_all_result_consistency_skips_check_for_missing_trades_frame(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
     runner.cfg.validation = ValidationConfig(

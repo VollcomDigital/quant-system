@@ -1613,8 +1613,9 @@ class BacktestRunner:
             )
         return None
 
-    @staticmethod
+    @classmethod
     def _collect_reliability_reasons(
+        cls,
         *,
         raw_df: pd.DataFrame,
         continuity: dict[str, float | int],
@@ -1625,11 +1626,11 @@ class BacktestRunner:
     ) -> list[str]:
         reasons: list[str] = []
         reason_checks = (
-            BacktestRunner._continuity_threshold_reason(continuity, continuity_cfg),
-            BacktestRunner._min_data_points_reason(raw_df, min_data_points_cfg),
-            BacktestRunner._missing_bar_pct_reason(continuity, continuity_cfg),
-            BacktestRunner._max_kurtosis_reason(raw_df, kurtosis_cfg),
-            BacktestRunner._outlier_pct_reason(
+            cls._continuity_threshold_reason(continuity, continuity_cfg),
+            cls._min_data_points_reason(raw_df, min_data_points_cfg),
+            cls._missing_bar_pct_reason(continuity, continuity_cfg),
+            cls._max_kurtosis_reason(raw_df, kurtosis_cfg),
+            cls._outlier_pct_reason(
                 raw_df=raw_df,
                 outlier_detection=outlier_detection,
             ),

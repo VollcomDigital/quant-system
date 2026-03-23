@@ -133,7 +133,7 @@ class BacktestEvaluator:
         cumulative = np.cumsum(winners_desc)
         required_profit = float(threshold) * float(cumulative[-1])
         dominant_trade_count = int(np.searchsorted(cumulative, required_profit, side="left") + 1)
-        dominant_trade_share = dominant_trade_count / float(pnls.size)
+        dominant_trade_share = dominant_trade_count / float(winners_desc.size)
         return dominant_trade_count, dominant_trade_share
 
     @staticmethod
