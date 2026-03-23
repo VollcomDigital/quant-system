@@ -2054,9 +2054,11 @@ class BacktestRunner:
         cached: dict[str, Any],
         full_params: dict[str, Any],
     ) -> float:
-        self.metrics["result_cache_hits"] += 1
-        plan.evaluations += 1
         metric_val = float(cached["metric_value"])
+        plan.evaluations += 1
+        if not np.isfinite(metric_val):
+            return float("-inf")
+        self.metrics["result_cache_hits"] += 1
         stats = self._enrich_evaluation_stats(cached["stats"], plan, validated_data)
         self._cache_set(
             collection=request.collection,

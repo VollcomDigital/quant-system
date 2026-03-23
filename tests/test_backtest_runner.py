@@ -911,7 +911,7 @@ def test_run_all_cached_invalid_outcomes_remain_invalid(tmp_path, monkeypatch):
     monkeypatch.setattr(BacktestRunner, "_get_evaluator", _fail_if_fresh_eval)
     second_results = runner.run_all()
     assert second_results == []
-    assert runner.metrics["result_cache_hits"] > 0
+    assert runner.metrics["result_cache_hits"] == 0
 
 
 def test_run_all_handles_failed_and_nan_metrics(tmp_path, monkeypatch):
