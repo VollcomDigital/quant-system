@@ -1976,39 +1976,7 @@ class BacktestRunner:
         entries = entries.reindex(validated_data.raw_df.index, fill_value=False)
         exits = exits.reindex(validated_data.raw_df.index, fill_value=False)
 
-        result_consistency_policy = self._load_result_consistency_policy(state.job.collection)
-        request = EvaluationRequest(
-            collection=state.job.collection.name,
-            symbol=state.job.symbol,
-            timeframe=state.job.timeframe,
-            source=state.job.source,
-            strategy=plan.strategy.name,
-            params=full_params,
-            metric_name=self.cfg.metric,
-            data_fingerprint=prepared.fingerprint,
-            fees=prepared.fees,
-            slippage=prepared.slippage,
-            bars_per_year=prepared.bars_per_year,
-            mode_config=self.mode_config,
-            result_consistency_outlier_dependency_slices=(
-                result_consistency_policy.outlier_dependency.slices
-                if result_consistency_policy is not None
-                and result_consistency_policy.outlier_dependency is not None
-                else None
-            ),
-            result_consistency_outlier_dependency_profit_share_threshold=(
-                result_consistency_policy.outlier_dependency.profit_share_threshold
-                if result_consistency_policy is not None
-                and result_consistency_policy.outlier_dependency is not None
-                else None
-            ),
-            result_consistency_execution_price_tolerance_bps=(
-                result_consistency_policy.execution_price_variance.price_tolerance_bps
-                if result_consistency_policy is not None
-                and result_consistency_policy.execution_price_variance is not None
-                else None
-            ),
-        )
+        request = self._build_evaluation_request(plan, state, prepared, full_params)
 
         cached = self.evaluation_cache.get(
             collection=request.collection,
@@ -2025,32 +1993,7 @@ class BacktestRunner:
             validation_config_hash=state.validation_config_hash,
         )
         if cached is not None:
-            self.metrics["result_cache_hits"] += 1
-            plan.evaluations += 1
-            val_cached = float(cached["metric_value"])
-            cached_stats = self._enrich_evaluation_stats(cached["stats"], plan, validated_data)
-            # Legacy cache continues to be written for reporting compatibility.
-            self._cache_set(
-                collection=request.collection,
-                symbol=request.symbol,
-                timeframe=request.timeframe,
-                strategy=request.strategy,
-                params=request.params,
-                metric_name=request.metric_name,
-                metric_value=val_cached,
-                stats=cached_stats,
-                data_fingerprint=request.data_fingerprint,
-                fees=request.fees,
-                slippage=request.slippage,
-                run_id=self.run_id,
-                evaluation_mode=self.mode_config.mode,
-                mode_config_hash=self.mode_config_hash,
-            )
-            if val_cached > plan.best_val:
-                plan.best_val = val_cached
-                plan.best_params = full_params.copy()
-                plan.best_stats = cached_stats
-            return val_cached
+            return self._apply_cached_evaluation(plan, validated_data, request, cached, full_params)
 
         self.metrics["result_cache_misses"] += 1
         outcome = self._get_evaluator().evaluate(
@@ -2061,16 +2004,104 @@ class BacktestRunner:
             exits,
             prepared.fractional,
         )
+        return self._apply_fresh_evaluation(
+            plan=plan,
+            state=state,
+            validated_data=validated_data,
+            request=request,
+            outcome=outcome,
+            full_params=full_params,
+        )
+
+    def _build_evaluation_request(
+        self,
+        plan: StrategyPlan,
+        state: JobState,
+        prepared: ExecutionPreparedData,
+        full_params: dict[str, Any],
+    ) -> EvaluationRequest:
+        result_consistency_policy = self._load_result_consistency_policy(state.job.collection)
+        outlier_policy = (
+            result_consistency_policy.outlier_dependency
+            if result_consistency_policy is not None
+            else None
+        )
+        execution_price_policy = (
+            result_consistency_policy.execution_price_variance
+            if result_consistency_policy is not None
+            else None
+        )
+        return EvaluationRequest(
+            collection=state.job.collection.name,
+            symbol=state.job.symbol,
+            timeframe=state.job.timeframe,
+            source=state.job.source,
+            strategy=plan.strategy.name,
+            params=full_params,
+            metric_name=self.cfg.metric,
+            data_fingerprint=prepared.fingerprint,
+            fees=prepared.fees,
+            slippage=prepared.slippage,
+            bars_per_year=prepared.bars_per_year,
+            mode_config=self.mode_config,
+            result_consistency_outlier_dependency_slices=(
+                outlier_policy.slices if outlier_policy is not None else None
+            ),
+            result_consistency_outlier_dependency_profit_share_threshold=(
+                outlier_policy.profit_share_threshold if outlier_policy is not None else None
+            ),
+            result_consistency_execution_price_tolerance_bps=(
+                execution_price_policy.price_tolerance_bps
+                if execution_price_policy is not None
+                else None
+            ),
+        )
+
+    def _apply_cached_evaluation(
+        self,
+        plan: StrategyPlan,
+        validated_data: ValidatedData,
+        request: EvaluationRequest,
+        cached: dict[str, Any],
+        full_params: dict[str, Any],
+    ) -> float:
+        self.metrics["result_cache_hits"] += 1
+        plan.evaluations += 1
+        metric_val = float(cached["metric_value"])
+        stats = self._enrich_evaluation_stats(cached["stats"], plan, validated_data)
+        self._cache_set(
+            collection=request.collection,
+            symbol=request.symbol,
+            timeframe=request.timeframe,
+            strategy=request.strategy,
+            params=request.params,
+            metric_name=request.metric_name,
+            metric_value=metric_val,
+            stats=stats,
+            data_fingerprint=request.data_fingerprint,
+            fees=request.fees,
+            slippage=request.slippage,
+            run_id=self.run_id,
+            evaluation_mode=self.mode_config.mode,
+            mode_config_hash=self.mode_config_hash,
+        )
+        self._update_best_result(plan, metric_val, full_params, stats)
+        return metric_val
+
+    def _apply_fresh_evaluation(
+        self,
+        *,
+        plan: StrategyPlan,
+        state: JobState,
+        validated_data: ValidatedData,
+        request: EvaluationRequest,
+        outcome: EvaluationOutcome,
+        full_params: dict[str, Any],
+    ) -> float:
         raw_stats = dict(outcome.stats)
         stats = self._enrich_evaluation_stats(raw_stats, plan, validated_data)
         plan.evaluations += 1
-        # Evaluator owns execution-state flags; runner only aggregates.
-        if outcome.simulation_executed:
-            self.metrics["fresh_simulation_runs"] += 1
-        if outcome.metric_computed:
-            self.metrics["fresh_metric_evals"] += 1
-            # Backward-compatible alias for existing dashboards/tests.
-            self.metrics["param_evals"] = self.metrics["fresh_metric_evals"]
+        self._track_fresh_evaluation_metrics(outcome)
         metric_val = float(outcome.metric_value)
         if outcome.valid or outcome.metric_computed:
             self._evaluation_cache_set(
@@ -2089,8 +2120,6 @@ class BacktestRunner:
                 mode_config_hash=self.mode_config_hash,
                 validation_config_hash=state.validation_config_hash,
             )
-
-            # Legacy cache remains the compatibility source for current reporters.
             self._cache_set(
                 collection=request.collection,
                 symbol=request.symbol,
@@ -2109,11 +2138,29 @@ class BacktestRunner:
             )
         if not outcome.valid:
             return float("-inf")
+        self._update_best_result(plan, metric_val, full_params, stats)
+        return metric_val
+
+    def _track_fresh_evaluation_metrics(self, outcome: EvaluationOutcome) -> None:
+        # Evaluator owns execution-state flags; runner only aggregates.
+        if outcome.simulation_executed:
+            self.metrics["fresh_simulation_runs"] += 1
+        if outcome.metric_computed:
+            self.metrics["fresh_metric_evals"] += 1
+            # Backward-compatible alias for existing dashboards/tests.
+            self.metrics["param_evals"] = self.metrics["fresh_metric_evals"]
+
+    @staticmethod
+    def _update_best_result(
+        plan: StrategyPlan,
+        metric_val: float,
+        full_params: dict[str, Any],
+        stats: dict[str, Any],
+    ) -> None:
         if metric_val > plan.best_val:
             plan.best_val = metric_val
             plan.best_params = full_params.copy()
             plan.best_stats = stats
-        return float(metric_val)
 
     def _strategy_run(
         self,
@@ -2290,29 +2337,38 @@ class BacktestRunner:
         if not outcome.has_valid_candidate:
             return GateDecision(False, "reject_result", ["no_valid_candidate"], "strategy_validation")
 
-        reasons: list[str] = []
-        if not np.isfinite(outcome.best_val):
-            reasons.append("best_metric_not_finite")
-        policy = self._load_result_consistency_policy(context.job.collection)
-        if policy is not None and isinstance(outcome.best_stats, dict):
-            outlier_policy = policy.outlier_dependency
-            if outlier_policy is not None:
-                reason = self._outlier_dependency_reason(outcome.best_stats, outlier_policy)
-                if reason is not None:
-                    reasons.append(reason)
-            execution_price_policy = policy.execution_price_variance
-            if execution_price_policy is not None:
-                reason = self._execution_price_variance_reason(
-                    outcome.best_stats,
-                    execution_price_policy,
-                )
-                if reason is not None:
-                    reasons.append(reason)
+        reasons = self._collect_strategy_validation_reasons(context, outcome)
         if reasons:
             decision = GateDecision(False, "reject_result", reasons, "strategy_validation")
         else:
             decision = GateDecision(True, "continue", [], "strategy_validation")
         return decision
+
+    def _collect_strategy_validation_reasons(
+        self,
+        context: ValidationContext,
+        outcome: StrategyEvalOutcome,
+    ) -> list[str]:
+        reasons: list[str] = []
+        if not np.isfinite(outcome.best_val):
+            reasons.append("best_metric_not_finite")
+        policy = self._load_result_consistency_policy(context.job.collection)
+        if policy is None or not isinstance(outcome.best_stats, dict):
+            return reasons
+        outlier_policy = policy.outlier_dependency
+        if outlier_policy is not None:
+            reason = self._outlier_dependency_reason(outcome.best_stats, outlier_policy)
+            if reason is not None:
+                reasons.append(reason)
+        execution_price_policy = policy.execution_price_variance
+        if execution_price_policy is not None:
+            reason = self._execution_price_variance_reason(
+                outcome.best_stats,
+                execution_price_policy,
+            )
+            if reason is not None:
+                reasons.append(reason)
+        return reasons
 
     @staticmethod
     def _strategy_validate_results_backtest(_context: ValidationContext) -> GateDecision:

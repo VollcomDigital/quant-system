@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any, Protocol
 
 import numpy as np
@@ -248,21 +248,16 @@ class BacktestEvaluator:
                 reason="missing_trades_frame",
                 tolerance_bps=tolerance_bps,
             )
-        if "high" not in data_frame.columns or "low" not in data_frame.columns:
+        ohlc_columns = cls._resolve_execution_range_columns(data_frame)
+        if ohlc_columns is None:
             return cls._build_execution_variance_incomplete_meta(
                 checked_fills=0,
                 violations=0,
                 reason="missing_ohlc_columns",
                 tolerance_bps=tolerance_bps,
             )
-
-        bars = pd.DataFrame(
-            {
-                "high": pd.to_numeric(data_frame["high"], errors="coerce").to_numpy(dtype=float),
-                "low": pd.to_numeric(data_frame["low"], errors="coerce").to_numpy(dtype=float),
-            },
-            index=pd.to_datetime(dates, errors="coerce", utc=True),
-        )
+        high_col, low_col = ohlc_columns
+        bars = cls._build_execution_bars_lookup(data_frame, dates, high_col, low_col)
         bars = bars.dropna(subset=["high", "low"])
         if bars.empty:
             return cls._build_execution_variance_incomplete_meta(
@@ -276,39 +271,14 @@ class BacktestEvaluator:
             ("entry_price", ("entry_date", "entry_time", "entry_datetime")),
             ("exit_price", ("exit_date", "exit_time", "close_date", "close_time")),
         )
-        has_fill_columns = False
-        checked_fills = 0
-        violations = 0
-        unmatched_timestamps = 0
-
-        for price_col, time_candidates in fill_specs:
-            if price_col not in trades_frame.columns:
-                continue
-            time_col = next((c for c in time_candidates if c in trades_frame.columns), None)
-            if time_col is None:
-                continue
-            has_fill_columns = True
-            price_series = pd.to_numeric(trades_frame[price_col], errors="coerce")
-            ts_series = pd.to_datetime(trades_frame[time_col], errors="coerce", utc=True)
-            valid = price_series.notna() & ts_series.notna()
-            if not valid.any():
-                continue
-
-            for price, ts in zip(price_series[valid].to_numpy(dtype=float), ts_series[valid]):
-                bar = bars.loc[ts] if ts in bars.index else None
-                if bar is None:
-                    unmatched_timestamps += 1
-                    continue
-                if isinstance(bar, pd.DataFrame):
-                    high = float(pd.to_numeric(bar["high"], errors="coerce").iloc[-1])
-                    low = float(pd.to_numeric(bar["low"], errors="coerce").iloc[-1])
-                else:
-                    high = float(bar["high"])
-                    low = float(bar["low"])
-                tol = abs(price) * (float(tolerance_bps) / 10_000.0)
-                checked_fills += 1
-                if price < (low - tol) or price > (high + tol):
-                    violations += 1
+        has_fill_columns, checked_fills, violations, unmatched_timestamps = (
+            cls._compute_execution_fill_counters(
+                trades_frame=trades_frame,
+                bars=bars,
+                fill_specs=fill_specs,
+                tolerance_bps=float(tolerance_bps),
+            )
+        )
 
         if not has_fill_columns:
             return cls._build_execution_variance_incomplete_meta(
@@ -339,6 +309,109 @@ class BacktestEvaluator:
             "reason": None,
             "price_tolerance_bps_used": tolerance_bps,
         }
+
+    @staticmethod
+    def _resolve_execution_range_columns(data_frame: pd.DataFrame) -> tuple[str, str] | None:
+        candidates = (
+            ("high", "low"),
+            ("High", "Low"),
+        )
+        for high_col, low_col in candidates:
+            if high_col in data_frame.columns and low_col in data_frame.columns:
+                return high_col, low_col
+        return None
+
+    @staticmethod
+    def _build_execution_bars_lookup(
+        data_frame: pd.DataFrame,
+        dates: pd.DatetimeIndex,
+        high_col: str,
+        low_col: str,
+    ) -> pd.DataFrame:
+        bars = pd.DataFrame(
+            {
+                "high": pd.to_numeric(data_frame[high_col], errors="coerce").to_numpy(dtype=float),
+                "low": pd.to_numeric(data_frame[low_col], errors="coerce").to_numpy(dtype=float),
+            },
+            index=pd.to_datetime(dates, errors="coerce", utc=True),
+        )
+        if bars.index.has_duplicates:
+            # Keep last bar for duplicate timestamps to match previous behavior.
+            bars = bars[~bars.index.duplicated(keep="last")]
+        return bars
+
+    @staticmethod
+    def _iter_execution_fill_series(
+        trades_frame: pd.DataFrame,
+        fill_specs: tuple[tuple[str, tuple[str, ...]], ...],
+    ) -> Iterator[tuple[pd.Series, pd.Series]]:
+        for price_col, time_candidates in fill_specs:
+            if price_col not in trades_frame.columns:
+                continue
+            time_col = next((c for c in time_candidates if c in trades_frame.columns), None)
+            if time_col is None:
+                continue
+            price_series = pd.to_numeric(trades_frame[price_col], errors="coerce")
+            ts_series = pd.to_datetime(trades_frame[time_col], errors="coerce", utc=True)
+            yield price_series, ts_series
+
+    @classmethod
+    def _compute_execution_fill_counters(
+        cls,
+        *,
+        trades_frame: pd.DataFrame,
+        bars: pd.DataFrame,
+        fill_specs: tuple[tuple[str, tuple[str, ...]], ...],
+        tolerance_bps: float,
+    ) -> tuple[bool, int, int, int]:
+        has_fill_columns = False
+        checked_fills = 0
+        violations = 0
+        unmatched_timestamps = 0
+        for price_series, ts_series in cls._iter_execution_fill_series(trades_frame, fill_specs):
+            has_fill_columns = True
+            spec_checked, spec_violations, spec_unmatched = cls._count_execution_fill_violations(
+                bars=bars,
+                price_series=price_series,
+                ts_series=ts_series,
+                tolerance_bps=tolerance_bps,
+            )
+            checked_fills += spec_checked
+            violations += spec_violations
+            unmatched_timestamps += spec_unmatched
+        return has_fill_columns, checked_fills, violations, unmatched_timestamps
+
+    @staticmethod
+    def _count_execution_fill_violations(
+        *,
+        bars: pd.DataFrame,
+        price_series: pd.Series,
+        ts_series: pd.Series,
+        tolerance_bps: float,
+    ) -> tuple[int, int, int]:
+        valid = price_series.notna() & ts_series.notna()
+        if not valid.any():
+            return 0, 0, 0
+        fills = pd.DataFrame(
+            {"price": price_series[valid].to_numpy(dtype=float)},
+            index=pd.DatetimeIndex(ts_series[valid]),
+        )
+        bar_match = bars.reindex(fills.index)
+        matched = bar_match["high"].notna() & bar_match["low"].notna()
+        unmatched_timestamps = int((~matched).sum())
+        if not matched.any():
+            return 0, 0, unmatched_timestamps
+
+        matched_prices = fills.loc[matched, "price"].to_numpy(dtype=float)
+        matched_high = bar_match.loc[matched, "high"].to_numpy(dtype=float)
+        matched_low = bar_match.loc[matched, "low"].to_numpy(dtype=float)
+        tolerance = np.abs(matched_prices) * (tolerance_bps / 10_000.0)
+        out_of_range = (matched_prices < (matched_low - tolerance)) | (
+            matched_prices > (matched_high + tolerance)
+        )
+        checked_fills = int(matched.sum())
+        violations = int(np.sum(out_of_range))
+        return checked_fills, violations, unmatched_timestamps
 
     def evaluate(
         self,
