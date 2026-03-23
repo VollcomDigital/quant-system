@@ -255,6 +255,7 @@ class ResultsCache:
             record = ResultsCacheRecord.from_mapping(payload)
         elif payload:
             raise ValueError("Pass either record or keyword payload to ResultsCache.set, not both")
+        normalized_mode = _normalize_evaluation_mode(record.evaluation_mode)
         params_json = json.dumps(record.params, sort_keys=True)
         con = sqlite3.connect(self.db_path)
         try:
@@ -293,7 +294,7 @@ class ResultsCache:
                     record.fees,
                     record.slippage,
                     record.run_id,
-                    record.evaluation_mode,
+                    normalized_mode,
                     record.mode_config_hash,
                     ENGINE_VERSION,
                 ),

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src.backtest.results_cache import ResultsCache
+from src.backtest.results_cache import ResultsCache, ResultsCacheRecord
 
 
 def test_results_cache_set_get_and_list(tmp_path: Path):
@@ -135,5 +135,43 @@ def test_results_cache_normalizes_evaluation_mode_for_set_and_get(tmp_path: Path
         evaluation_mode="BACKTEST",
     )
 
+    assert hit is not None
+    assert hit["metric_value"] == pytest.approx(1.25)
+
+
+def test_results_cache_normalizes_evaluation_mode_when_setting_via_record(tmp_path: Path):
+    cache = ResultsCache(tmp_path)
+    record = ResultsCacheRecord(
+        collection="demo",
+        symbol="AAPL",
+        timeframe="1d",
+        strategy="strat",
+        params={"x": 1},
+        metric_name="sharpe",
+        metric_value=1.25,
+        stats={"sharpe": 1.25},
+        data_fingerprint="fp-1",
+        fees=0.001,
+        slippage=0.002,
+        run_id="run-1",
+        evaluation_mode=" BackTest ",
+        mode_config_hash="",
+    )
+    cache.set(record=record)
+
+    hit = cache.get(
+        collection="demo",
+        symbol="AAPL",
+        timeframe="1d",
+        strategy="strat",
+        params={"x": 1},
+        metric_name="sharpe",
+        data_fingerprint="fp-1",
+        fees=0.001,
+        slippage=0.002,
+        run_id="run-1",
+        evaluation_mode="backtest",
+        mode_config_hash="",
+    )
     assert hit is not None
     assert hit["metric_value"] == pytest.approx(1.25)
