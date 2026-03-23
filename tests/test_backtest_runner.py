@@ -262,6 +262,15 @@ def test_timeframe_to_timedelta_supports_common_aliases():
     assert BacktestRunner._timeframe_to_timedelta("1mo") == pd.Timedelta(days=30)
 
 
+def test_compute_outlier_mask_rejects_unsupported_method():
+    returns = pd.Series([0.01, -0.01, 0.02, -0.02], dtype=float)
+    mask, issue = BacktestRunner._compute_outlier_mask(
+        returns=returns, method="bad_method", threshold=3.0
+    )
+    assert mask is None
+    assert issue == "unsupported_method:bad_method"
+
+
 @pytest.mark.parametrize(
     ("idx", "values", "expected"),
     [

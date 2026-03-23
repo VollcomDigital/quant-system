@@ -1610,6 +1610,8 @@ class BacktestRunner:
             if not np.isfinite(std_val) or std_val <= 0:
                 return None, "std_zero"
             return np.abs((values - mean_val) / std_val) > threshold, None
+        if method != "modified_zscore":
+            return None, f"unsupported_method:{method}"
         median_val = float(np.median(values))
         mad = float(np.median(np.abs(values - median_val)))
         if mad <= 0:
