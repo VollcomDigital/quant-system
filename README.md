@@ -218,7 +218,11 @@ See new collection examples under `config/collections/` for FX intraday via Finn
     - `max_outlier_pct` (required): maximum percentage of return bars classified as outliers
     - `method` (required): `zscore | modified_zscore`
     - `zscore_threshold` (required): threshold used by the selected method
-  - continuity diagnostics are always computed; jobs with fewer than 2 bars are rejected during data validation.
+  - continuity diagnostics are always computed.
+  - when `validation.data_quality` is configured, continuity precondition failures
+    (for example fewer than 2 bars) fail data validation (`skip_job`).
+  - when `validation.data_quality` is unset, continuity diagnostics are best-effort and
+    continuity precondition errors are non-blocking.
   - `skip_optimization` means optimization is disabled for all strategies on that job.
 - `validation.optimization` controls strategy-level search feasibility:
   - `on_fail: baseline_only | skip_job`
