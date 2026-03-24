@@ -120,7 +120,7 @@ class FetchedData:
 class ValidatedData:
     raw_df: pd.DataFrame
     continuity: dict[str, float | int]
-    reliability_on_fail: str
+    reliability_on_fail: str | None
     reliability_reasons: list[str]
 
 
@@ -1400,7 +1400,7 @@ class BacktestRunner:
             validated_data = ValidatedData(
                 raw_df=fetched_data.raw_df,
                 continuity=continuity,
-                reliability_on_fail="continue",
+                reliability_on_fail=None,
                 reliability_reasons=[],
             )
             return GateDecision(True, "continue", [], "data_validation"), validated_data
