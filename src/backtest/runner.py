@@ -2433,6 +2433,7 @@ class BacktestRunner:
         # Cache collection gate decisions so each collection is validated once per run.
         validated_collections: dict[int, GateDecision] = {}
         validated_collection_sources: dict[int, DataSource] = {}
+        validation_hash_by_collection: dict[int, str] = {}
         blocked_collections: set[int] = set()
 
         for job in jobs:
@@ -2488,12 +2489,15 @@ class BacktestRunner:
             if not prep_decision.passed or prepared is None:
                 continue
 
-            # This hash must be computed at runtime from the effective collection-level
-            # validation profile (global + per-collection overrides) because it keys
-            # evaluation-cache correctness per job, not just raw loaded config.
-            state.validation_config_hash = self._hash_validation_profile(
-                self._build_job_validation_profile(state.job.collection)
-            )
+            # Compute once per collection: hash keys evaluation-cache correctness
+            # from the effective collection-level validation profile.
+            validation_hash = validation_hash_by_collection.get(collection_key)
+            if validation_hash is None:
+                validation_hash = self._hash_validation_profile(
+                    self._build_job_validation_profile(state.job.collection)
+                )
+                validation_hash_by_collection[collection_key] = validation_hash
+            state.validation_config_hash = validation_hash
             for strat_name in self.external_index.keys():
                 self.metrics["symbols_tested"] += 1
                 # Strategy stage: create plan -> validate plan -> run -> validate results.
