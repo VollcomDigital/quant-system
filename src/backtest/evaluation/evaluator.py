@@ -68,13 +68,17 @@ class BacktestEvaluator:
         analyzed_trades_count: int,
         total_trades: int,
         reason: str,
+        expected_trades: int | None = None,
     ) -> dict[str, Any]:
-        return {
+        meta: dict[str, Any] = {
             "is_complete": False,
             "analyzed_trades_count": analyzed_trades_count,
             "total_trades": total_trades,
             "reason": reason,
         }
+        if expected_trades is not None:
+            meta["expected_trades"] = expected_trades
+        return meta
 
     @staticmethod
     def _build_execution_variance_incomplete_meta(
@@ -115,8 +119,9 @@ class BacktestEvaluator:
         if expected_trades != total_trades:
             return False, self._build_incomplete_trade_meta(
                 analyzed_trades_count=total_trades,
-                total_trades=expected_trades,
+                total_trades=total_trades,
                 reason="truncated_trades_frame",
+                expected_trades=expected_trades,
             )
         return True, None
 

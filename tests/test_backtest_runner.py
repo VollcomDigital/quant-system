@@ -2020,6 +2020,57 @@ def test_trade_meta_slice_profit_share_includes_earliest_exit_timestamp(tmp_path
     assert trade_meta["outlier_dependency"]["max_slice_profit_share"] == pytest.approx(0.5)
 
 
+def test_trade_meta_truncated_trades_reports_observed_and_expected_counts(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    evaluator = runner._get_evaluator()
+    request = EvaluationRequest(
+        collection="demo",
+        symbol="AAPL",
+        timeframe="1d",
+        source="custom",
+        strategy="dummy",
+        params={},
+        metric_name="sharpe",
+        data_fingerprint="fingerprint",
+        fees=0.0,
+        slippage=0.0,
+        bars_per_year=252,
+        mode_config=EvaluationModeConfig(mode="backtest", payload={}),
+        result_consistency_outlier_dependency_slices=2,
+        result_consistency_outlier_dependency_profit_share_threshold=0.8,
+    )
+    trades_frame = pd.DataFrame(
+        [
+            {"pnl": 1.0, "exit_date": "2024-01-01"},
+            {"pnl": -1.0, "exit_date": "2024-01-02"},
+        ]
+    )
+    data_frame = pd.DataFrame(
+        {
+            "open": [10.0, 10.0],
+            "high": [11.0, 11.0],
+            "low": [9.0, 9.0],
+            "close": [10.0, 10.0],
+            "volume": [100.0, 100.0],
+        }
+    )
+    dates = pd.to_datetime(["2024-01-01", "2024-01-02"])
+
+    trade_meta = evaluator._build_trade_meta(
+        trades_frame,
+        data_frame,
+        dates,
+        5,
+        request,
+    )
+    outlier_meta = trade_meta["outlier_dependency"]
+    assert outlier_meta["is_complete"] is False
+    assert outlier_meta["reason"] == "truncated_trades_frame"
+    assert outlier_meta["analyzed_trades_count"] == 2
+    assert outlier_meta["total_trades"] == 2
+    assert outlier_meta["expected_trades"] == 5
+
+
 def test_compute_dominant_trade_share_uses_all_trades_denominator(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     evaluator = runner._get_evaluator()
