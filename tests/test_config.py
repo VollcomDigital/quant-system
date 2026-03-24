@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config import load_config
+from src.config import ValidationOutlierDetectionConfig, load_config, resolve_validation_overrides
 
 
 def test_load_config_allows_missing_strategies(tmp_path: Path):
@@ -760,3 +760,73 @@ validation:
 
     with pytest.raises(ValueError):
         load_config(path)
+
+
+def test_resolve_validation_overrides_normalizes_programmatic_outlier_method(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    outlier_detection:
+      max_outlier_pct: 2.0
+      method: zscore
+      zscore_threshold: 3.0
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.data_quality is not None
+    assert cfg.collections[0].validation.data_quality.outlier_detection is not None
+    cfg.collections[0].validation.data_quality.outlier_detection = ValidationOutlierDetectionConfig(
+        max_outlier_pct=2.0,
+        method="Modified_Zscore",
+        zscore_threshold=3.5,
+    )
+
+    resolve_validation_overrides(cfg)
+    normalized = cfg.collections[0].validation.data_quality.outlier_detection
+    assert normalized is not None
+    assert normalized.method == "modified_zscore"
+
+
+def test_resolve_validation_overrides_rejects_programmatic_outlier_percent_out_of_range(
+    tmp_path: Path,
+):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    outlier_detection:
+      max_outlier_pct: 2.0
+      method: zscore
+      zscore_threshold: 3.0
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.data_quality is not None
+    assert cfg.collections[0].validation.data_quality.outlier_detection is not None
+    cfg.collections[0].validation.data_quality.outlier_detection = ValidationOutlierDetectionConfig(
+        max_outlier_pct=200.0,
+        method="zscore",
+        zscore_threshold=3.0,
+    )
+
+    with pytest.raises(ValueError, match="max_outlier_pct"):
+        resolve_validation_overrides(cfg)
