@@ -304,43 +304,14 @@ def _merge_outlier_detection_config(
     if base is None and override is None:
         return None
 
-    max_outlier_pct_raw = _merged_field(base, override, "max_outlier_pct")
-    if max_outlier_pct_raw is None:
-        raise ValueError(
-            "Invalid `validation.data_quality.outlier_detection`: missing required field(s): max_outlier_pct"
-        )
-    method_raw = _merged_field(base, override, "method")
-    if method_raw is None:
-        raise ValueError(
-            "Invalid `validation.data_quality.outlier_detection`: missing required field(s): method"
-        )
-    zscore_threshold_raw = _merged_field(base, override, "zscore_threshold")
-    if zscore_threshold_raw is None:
-        raise ValueError(
-            "Invalid `validation.data_quality.outlier_detection`: missing required field(s): zscore_threshold"
-        )
-
-    method = str(method_raw).strip().lower()
-    if method not in {"zscore", "modified_zscore"}:
-        raise ValueError(
-            "Invalid `validation.data_quality.outlier_detection.method`: "
-            "expected one of ['modified_zscore', 'zscore']"
-        )
-
-    max_outlier_pct = float(max_outlier_pct_raw)
-    if max_outlier_pct < 0 or max_outlier_pct > 100:
-        raise ValueError(
-            "`validation.data_quality.outlier_detection.max_outlier_pct` must be between 0 and 100"
-        )
-
-    zscore_threshold = float(zscore_threshold_raw)
-    if zscore_threshold <= 0:
-        raise ValueError("`validation.data_quality.outlier_detection.zscore_threshold` must be > 0")
-
-    return ValidationOutlierDetectionConfig(
-        max_outlier_pct=max_outlier_pct,
-        method=method,
-        zscore_threshold=zscore_threshold,
+    # Reuse parse-path normalization/validation so merge-path behavior stays strict and identical.
+    return _parse_outlier_detection(
+        {
+            "max_outlier_pct": _merged_field(base, override, "max_outlier_pct"),
+            "method": _merged_field(base, override, "method"),
+            "zscore_threshold": _merged_field(base, override, "zscore_threshold"),
+        },
+        "validation.data_quality.outlier_detection",
     )
 
 
