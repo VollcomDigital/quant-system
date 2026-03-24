@@ -51,7 +51,7 @@ class BacktestEvaluator:
             if key not in trades_frame.columns:
                 continue
             return pd.to_datetime(trades_frame[key], errors="coerce", utc=True)
-        return pd.Series(pd.NaT, index=trades_frame.index)
+        return pd.Series(pd.NaT, index=trades_frame.index, dtype="datetime64[ns, UTC]")
 
     @classmethod
     def _build_report_trades_log(cls, trades_frame: pd.DataFrame) -> list[dict[str, Any]]:
