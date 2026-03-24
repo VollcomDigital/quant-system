@@ -78,7 +78,7 @@ class EvaluationCacheRecord(EvaluationSharedFields):
             mode_config_hash=str(payload["mode_config_hash"]),
             validation_config_hash=str(payload["validation_config_hash"]),
         )
-    
+        
 @dataclass(frozen=True)
 class ResultRecord(EvaluationSharedFields):
     run_id: str | None
