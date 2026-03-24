@@ -56,11 +56,12 @@ class BacktestEvaluator:
     @classmethod
     def _build_report_trades_log(cls, trades_frame: pd.DataFrame) -> list[dict[str, Any]]:
         if not trades_frame.empty:
-            serialized = trades_frame.copy()
+            # Slice first to avoid copying/formatting the full DataFrame for reporting.
+            serialized = trades_frame.head(cls._TRADES_LOG_LIMIT).copy()
             for column in serialized.columns:
                 if pd.api.types.is_datetime64_any_dtype(serialized[column]):
                     serialized[column] = serialized[column].dt.strftime("%Y-%m-%dT%H:%M:%S")
-            return serialized.head(cls._TRADES_LOG_LIMIT).to_dict("records")
+            return serialized.to_dict("records")
         return []
 
     @staticmethod
