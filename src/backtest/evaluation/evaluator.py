@@ -50,7 +50,7 @@ class BacktestEvaluator:
         for key in ("exit_date", "exit_time", "close_date", "date", "entry_date", "entry_time"):
             if key not in trades_frame.columns:
                 continue
-            return pd.to_datetime(trades_frame[key], errors="coerce")
+            return pd.to_datetime(trades_frame[key], errors="coerce", utc=True)
         return pd.Series(pd.NaT, index=trades_frame.index)
 
     @classmethod
