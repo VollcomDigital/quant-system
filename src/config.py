@@ -754,11 +754,11 @@ def _parse_stationarity(
     regime_shift_raw = parsed_raw.get("regime_shift")
     if regime_shift_raw is not None and not isinstance(regime_shift_raw, dict):
         raise ValueError(f"Invalid `{prefix}.regime_shift`: expected a mapping")
-    regime_shift = (
-        _parse_stationarity_regime_shift(regime_shift_raw, f"{prefix}.regime_shift")
-        if regime_shift_raw is not None
-        else None
-    )
+    regime_shift = None
+    if regime_shift_raw is not None:
+        regime_shift = _parse_stationarity_regime_shift(
+            regime_shift_raw, f"{prefix}.regime_shift"
+        )
     return _normalize_stationarity_config(
         ValidationStationarityConfig(
             adf_pvalue_max=float(adf_pvalue_max),
