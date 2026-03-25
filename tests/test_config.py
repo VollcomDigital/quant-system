@@ -753,7 +753,13 @@ validation:
     assert cfg.validation is not None
     assert cfg.validation.data_quality is not None
     assert cfg.validation.data_quality.stationarity is not None
-    assert cfg.validation.data_quality.stationarity.min_points == 30
+    # Global parse preserves explicit user input shape; default is resolved on
+    # effective collection-level policy during override resolution.
+    assert cfg.validation.data_quality.stationarity.min_points is None
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.data_quality is not None
+    assert cfg.collections[0].validation.data_quality.stationarity is not None
+    assert cfg.collections[0].validation.data_quality.stationarity.min_points == 30
 
 
 def test_load_config_collection_data_quality_stationarity_override(tmp_path: Path):
