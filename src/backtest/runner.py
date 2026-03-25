@@ -1755,7 +1755,8 @@ class BacktestRunner:
             return None, "stationarity_kpss_indeterminate(reason=insufficient_points_for_kpss)", None
         try:
             pvalue = float(kpss_fn(values, nlags="auto")[1])
-        except Exception:
+        except Exception as exc:
+            get_logger().warning("stationarity kpss failed", exc_info=exc)
             return None, "stationarity_kpss_indeterminate(reason=kpss_failed)", None
         if not np.isfinite(pvalue):
             return None, "stationarity_kpss_indeterminate(reason=kpss_non_finite)", None
