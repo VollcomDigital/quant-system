@@ -27,6 +27,13 @@ validation:
       max_outlier_pct: 2.0  # max percent of return bars flagged as outliers
       method: modified_zscore  # zscore | modified_zscore
       zscore_threshold: 3.5  # required threshold for selected method
+    stationarity:
+      adf_pvalue_max: 0.05  # reject when the ADF p-value is above this
+      min_points: 30  # optional; safe minimum for the return series
+      regime_shift:
+        window: 20
+        mean_shift_max: 1.5  # normalized adjacent-window mean shift
+        vol_ratio_max: 1.75  # adjacent-window volatility ratio ceiling
     on_fail: skip_job  # skip_optimization | skip_job | skip_collection
   # Optional strategy-level optimization feasibility policy.
   optimization:

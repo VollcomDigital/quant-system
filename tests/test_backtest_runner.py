@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 from math import isfinite
-from types import SimpleNamespace
-from types import MethodType
+from types import MethodType, SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -28,6 +28,8 @@ from src.config import (
     ValidationContinuityConfig,
     ValidationDataQualityConfig,
     ValidationOutlierDetectionConfig,
+    ValidationStationarityConfig,
+    ValidationStationarityRegimeShiftConfig,
     resolve_validation_overrides,
 )
 from src.strategies.base import BaseStrategy
@@ -451,6 +453,88 @@ def test_data_validation_without_data_quality_does_not_skip_on_continuity_errors
     assert decision.action == "continue"
     assert validated_data is not None
     assert validated_data.continuity == {}
+
+
+def test_data_validation_stationarity_rejects_constant_series(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            on_fail="skip_job",
+            stationarity=ValidationStationarityConfig(
+                adf_pvalue_max=0.05,
+                min_points=20,
+            ),
+        )
+    )
+    resolve_validation_overrides(runner.cfg)
+    df = pd.DataFrame({"Close": [100.0] * 8}, index=pd.date_range("2024-01-01", periods=8, freq="D"))
+    context = SimpleNamespace(
+        job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
+        fetched_data=SimpleNamespace(raw_df=df),
+    )
+
+    decision, validated_data = runner._data_validation_common(context)
+
+    assert not decision.passed
+    assert decision.action == "skip_job"
+    assert validated_data is not None
+    assert any(reason.startswith("stationarity_") for reason in validated_data.reliability_reasons)
+
+
+def test_stationarity_adf_reason_returns_indeterminate_when_statsmodels_missing():
+    idx = pd.date_range("2024-01-01", periods=40, freq="D")
+    raw_df = pd.DataFrame({"Close": np.linspace(100.0, 120.0, len(idx))}, index=idx)
+    stationarity_cfg = ValidationStationarityConfig(
+        adf_pvalue_max=0.05,
+        min_points=20,
+    )
+
+    original_adfuller = BacktestRunner._stationarity_adfuller
+    try:
+        BacktestRunner._stationarity_adfuller = staticmethod(lambda: None)
+        reason = BacktestRunner._stationarity_adf_reason(raw_df, stationarity_cfg)
+    finally:
+        BacktestRunner._stationarity_adfuller = original_adfuller
+
+    assert reason == "stationarity_indeterminate(reason=statsmodels_missing)"
+
+
+def test_stationarity_regime_shift_reason_flags_mean_and_vol_shift():
+    idx = pd.date_range("2024-01-01", periods=80, freq="D")
+    first_half = np.array([0.001, 0.002, -0.001, 0.0] * 10, dtype=float)
+    second_half = np.array([0.04, 0.05, 0.03, 0.06] * 10, dtype=float)
+    returns = np.concatenate([first_half, second_half])
+    close = 100.0 * np.exp(np.cumsum(returns))
+    raw_df = pd.DataFrame({"Close": close}, index=idx)
+    stationarity_cfg = ValidationStationarityConfig(
+        adf_pvalue_max=0.05,
+        min_points=20,
+        regime_shift=ValidationStationarityRegimeShiftConfig(
+            window=20,
+            mean_shift_max=1.0,
+            vol_ratio_max=1.25,
+        ),
+    )
+
+    reason = BacktestRunner._stationarity_regime_shift_reason(raw_df, stationarity_cfg)
+
+    assert reason is not None
+    assert "stationarity_regime_shift_" in reason
+
+
+def test_stationarity_adf_reason_flags_constant_returns_series():
+    idx = pd.date_range("2024-01-01", periods=40, freq="D")
+    close = pd.Series([100.0 * (1.01 ** i) for i in range(len(idx))], index=idx)
+    raw_df = pd.DataFrame({"Close": close})
+    stationarity_cfg = ValidationStationarityConfig(
+        adf_pvalue_max=0.01,
+        min_points=20,
+    )
+
+    reason = BacktestRunner._stationarity_adf_reason(raw_df, stationarity_cfg)
+
+    assert reason is not None
+    assert reason.startswith("stationarity_")
 
 
 def test_sample_series_preserves_last_point():
@@ -2100,6 +2184,7 @@ def test_collect_reliability_reasons_dispatches_outlier_reason_to_subclass():
         continuity_cfg=None,
         kurtosis_cfg=None,
         outlier_detection=None,
+        stationarity_cfg=None,
     )
 
     assert reasons == ["subclass_outlier_reason"]

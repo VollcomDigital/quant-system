@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
-import re
 from typing import Any, cast
 
 import yaml
@@ -56,7 +56,9 @@ class ValidationDataQualityConfig:
     continuity: "ValidationContinuityConfig | None" = None
     kurtosis: float | None = None
     outlier_detection: "ValidationOutlierDetectionConfig | None" = None
+    stationarity: "ValidationStationarityConfig | None" = None
     on_fail: str | None = None
+
 
 @dataclass
 class ValidationContinuityConfig:
@@ -70,6 +72,20 @@ class ValidationOutlierDetectionConfig:
     max_outlier_pct: float
     method: str
     zscore_threshold: float
+
+
+@dataclass
+class ValidationStationarityRegimeShiftConfig:
+    window: int
+    mean_shift_max: float
+    vol_ratio_max: float
+
+
+@dataclass
+class ValidationStationarityConfig:
+    adf_pvalue_max: float
+    min_points: int | None = None
+    regime_shift: ValidationStationarityRegimeShiftConfig | None = None
 
 
 @dataclass
@@ -162,6 +178,10 @@ def _merge_data_quality_config(
         getattr(base, "outlier_detection", None),
         getattr(override, "outlier_detection", None),
     )
+    stationarity = _merge_stationarity_config(
+        getattr(base, "stationarity", None),
+        getattr(override, "stationarity", None),
+    )
 
     on_fail = _merged_field(base, override, "on_fail")
     if on_fail is None:
@@ -171,6 +191,7 @@ def _merge_data_quality_config(
         continuity=continuity,
         kurtosis=kurtosis,
         outlier_detection=outlier_detection,
+        stationarity=stationarity,
         on_fail=str(on_fail).strip().lower(),
     )
 
@@ -312,6 +333,128 @@ def _merge_outlier_detection_config(
             "zscore_threshold": _merged_field(base, override, "zscore_threshold"),
         },
         "validation.data_quality.outlier_detection",
+    )
+
+
+def _normalize_stationarity_regime_shift_config(
+    cfg: ValidationStationarityRegimeShiftConfig | None,
+    prefix: str,
+) -> ValidationStationarityRegimeShiftConfig | None:
+    if cfg is None:
+        return None
+    window = getattr(cfg, "window", None)
+    if window is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): window")
+    window = int(window)
+    if window < 10:
+        raise ValueError(f"`{prefix}.window` must be >= 10")
+    mean_shift_max = getattr(cfg, "mean_shift_max", None)
+    if mean_shift_max is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): mean_shift_max")
+    mean_shift_max = float(mean_shift_max)
+    if mean_shift_max < 0.0:
+        raise ValueError(f"`{prefix}.mean_shift_max` must be >= 0.0")
+    vol_ratio_max = getattr(cfg, "vol_ratio_max", None)
+    if vol_ratio_max is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): vol_ratio_max")
+    vol_ratio_max = float(vol_ratio_max)
+    if vol_ratio_max < 1.0:
+        raise ValueError(f"`{prefix}.vol_ratio_max` must be >= 1.0")
+    return ValidationStationarityRegimeShiftConfig(
+        window=window,
+        mean_shift_max=mean_shift_max,
+        vol_ratio_max=vol_ratio_max,
+    )
+
+
+def _normalize_stationarity_config(
+    cfg: ValidationStationarityConfig | None,
+    prefix: str,
+    *,
+    default_min_points: int | None = None,
+) -> ValidationStationarityConfig | None:
+    if cfg is None:
+        return None
+    adf_pvalue_max = getattr(cfg, "adf_pvalue_max", None)
+    if adf_pvalue_max is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): adf_pvalue_max")
+    adf_pvalue_max = float(adf_pvalue_max)
+    if adf_pvalue_max < 0.0 or adf_pvalue_max > 1.0:
+        raise ValueError(f"`{prefix}.adf_pvalue_max` must be between 0.0 and 1.0")
+    min_points = getattr(cfg, "min_points", None)
+    normalized_min_points = default_min_points if min_points is None else int(min_points)
+    if normalized_min_points is not None and normalized_min_points < 20:
+        raise ValueError(f"`{prefix}.min_points` must be >= 20")
+    regime_shift = _normalize_stationarity_regime_shift_config(
+        getattr(cfg, "regime_shift", None),
+        f"{prefix}.regime_shift",
+    )
+    return ValidationStationarityConfig(
+        adf_pvalue_max=adf_pvalue_max,
+        min_points=normalized_min_points,
+        regime_shift=regime_shift,
+    )
+
+
+def _merge_stationarity_regime_shift_config(
+    base: ValidationStationarityRegimeShiftConfig | None,
+    override: ValidationStationarityRegimeShiftConfig | None,
+) -> ValidationStationarityRegimeShiftConfig | None:
+    if base is None and override is None:
+        return None
+    window = _merged_field(base, override, "window")
+    mean_shift_max = _merged_field(base, override, "mean_shift_max")
+    vol_ratio_max = _merged_field(base, override, "vol_ratio_max")
+    if window is None:
+        raise ValueError(
+            "Invalid `validation.data_quality.stationarity.regime_shift`: "
+            "missing required field(s): window"
+        )
+    if mean_shift_max is None:
+        raise ValueError(
+            "Invalid `validation.data_quality.stationarity.regime_shift`: "
+            "missing required field(s): mean_shift_max"
+        )
+    if vol_ratio_max is None:
+        raise ValueError(
+            "Invalid `validation.data_quality.stationarity.regime_shift`: "
+            "missing required field(s): vol_ratio_max"
+        )
+    return _normalize_stationarity_regime_shift_config(
+        ValidationStationarityRegimeShiftConfig(
+            window=int(window),
+            mean_shift_max=float(mean_shift_max),
+            vol_ratio_max=float(vol_ratio_max),
+        ),
+        "validation.data_quality.stationarity.regime_shift",
+    )
+
+
+def _merge_stationarity_config(
+    base: ValidationStationarityConfig | None,
+    override: ValidationStationarityConfig | None,
+) -> ValidationStationarityConfig | None:
+    if base is None and override is None:
+        return None
+    adf_pvalue_max = _merged_field(base, override, "adf_pvalue_max")
+    if adf_pvalue_max is None:
+        raise ValueError(
+            "Invalid `validation.data_quality.stationarity`: "
+            "missing required field(s): adf_pvalue_max"
+        )
+    min_points = _merged_field(base, override, "min_points")
+    regime_shift = _merge_stationarity_regime_shift_config(
+        getattr(base, "regime_shift", None),
+        getattr(override, "regime_shift", None),
+    )
+    return _normalize_stationarity_config(
+        ValidationStationarityConfig(
+            adf_pvalue_max=float(adf_pvalue_max),
+            min_points=int(min_points) if min_points is not None else None,
+            regime_shift=regime_shift,
+        ),
+        "validation.data_quality.stationarity",
+        default_min_points=30,
     )
 
 
@@ -521,12 +664,16 @@ def _parse_validation_data_quality(
     outlier_detection_cfg = _parse_outlier_detection(
         parsed_raw.get("outlier_detection"), f"{prefix}.outlier_detection"
     )
+    stationarity_cfg = _parse_stationarity(
+        parsed_raw.get("stationarity"), f"{prefix}.stationarity"
+    )
 
     cfg = ValidationDataQualityConfig(
         min_data_points=min_data_points_cfg,
         continuity=continuity_cfg,
         kurtosis=kurtosis_cfg,
         outlier_detection=outlier_detection_cfg,
+        stationarity=stationarity_cfg,
         on_fail=on_fail,
     )
     return cfg
@@ -572,6 +719,53 @@ def _parse_outlier_detection(
         max_outlier_pct=max_outlier_pct,
         method=method,
         zscore_threshold=zscore_threshold,
+    )
+
+
+def _parse_stationarity_regime_shift(
+    raw: Any, prefix: str
+) -> ValidationStationarityRegimeShiftConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    window = parse_required_int(parsed_raw, prefix, "window", min_value=10)
+    mean_shift_max = parse_required_float(parsed_raw, prefix, "mean_shift_max", min_value=0.0)
+    vol_ratio_max = parse_required_float(parsed_raw, prefix, "vol_ratio_max", min_value=1.0)
+    return _normalize_stationarity_regime_shift_config(
+        ValidationStationarityRegimeShiftConfig(
+            window=window,
+            mean_shift_max=float(mean_shift_max),
+            vol_ratio_max=float(vol_ratio_max),
+        ),
+        prefix,
+    )
+
+
+def _parse_stationarity(
+    raw: Any, prefix: str
+) -> ValidationStationarityConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    adf_pvalue_max = parse_required_float(
+        parsed_raw, prefix, "adf_pvalue_max", min_value=0.0, max_value=1.0
+    )
+    min_points = parse_optional_int(parsed_raw, prefix, "min_points", min_value=20)
+    regime_shift_raw = parsed_raw.get("regime_shift")
+    if regime_shift_raw is not None and not isinstance(regime_shift_raw, dict):
+        raise ValueError(f"Invalid `{prefix}.regime_shift`: expected a mapping")
+    regime_shift = (
+        _parse_stationarity_regime_shift(regime_shift_raw, f"{prefix}.regime_shift")
+        if isinstance(regime_shift_raw, dict)
+        else None
+    )
+    return _normalize_stationarity_config(
+        ValidationStationarityConfig(
+            adf_pvalue_max=float(adf_pvalue_max),
+            min_points=int(min_points) if min_points is not None else None,
+            regime_shift=regime_shift,
+        ),
+        prefix,
     )
 
 
