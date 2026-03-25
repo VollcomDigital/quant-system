@@ -349,9 +349,21 @@ class BacktestRunner:
         }
         outlier = getattr(data_quality, "outlier_detection", None)
         stationarity = getattr(data_quality, "stationarity", None)
-        regime_shift = (
-            getattr(stationarity, "regime_shift", None) if stationarity is not None else None
-        )
+        regime_shift = getattr(stationarity, "regime_shift", None) if stationarity is not None else None
+        regime_shift_payload = None
+        if regime_shift is not None:
+            regime_shift_payload = {
+                "window": getattr(regime_shift, "window", None),
+                "mean_shift_max": getattr(regime_shift, "mean_shift_max", None),
+                "vol_ratio_max": getattr(regime_shift, "vol_ratio_max", None),
+            }
+        stationarity_payload = None
+        if stationarity is not None:
+            stationarity_payload = {
+                "adf_pvalue_max": getattr(stationarity, "adf_pvalue_max", None),
+                "min_points": getattr(stationarity, "min_points", None),
+                "regime_shift": regime_shift_payload,
+            }
         return {
             "on_fail": getattr(data_quality, "on_fail", None),
             "min_data_points": getattr(data_quality, "min_data_points", None),
@@ -374,23 +386,7 @@ class BacktestRunner:
                 if outlier is not None
                 else None
             ),
-            "stationarity": (
-                {
-                    "adf_pvalue_max": getattr(stationarity, "adf_pvalue_max", None),
-                    "min_points": getattr(stationarity, "min_points", None),
-                    "regime_shift": (
-                        {
-                            "window": getattr(regime_shift, "window", None),
-                            "mean_shift_max": getattr(regime_shift, "mean_shift_max", None),
-                            "vol_ratio_max": getattr(regime_shift, "vol_ratio_max", None),
-                        }
-                        if regime_shift is not None
-                        else None
-                    ),
-                }
-                if stationarity is not None
-                else None
-            ),
+            "stationarity": stationarity_payload,
         }
 
     @staticmethod
