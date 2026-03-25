@@ -766,7 +766,6 @@ def _parse_stationarity(
             regime_shift=regime_shift,
         ),
         prefix,
-        default_min_points=30,
     )
 
 
