@@ -84,6 +84,7 @@ class ValidationStationarityRegimeShiftConfig:
 @dataclass
 class ValidationStationarityConfig:
     adf_pvalue_max: float
+    kpss_pvalue_min: float | None = None
     min_points: int | None = None
     regime_shift: ValidationStationarityRegimeShiftConfig | None = None
 
@@ -381,6 +382,11 @@ def _normalize_stationarity_config(
     adf_pvalue_max = float(adf_pvalue_max)
     if adf_pvalue_max < 0.0 or adf_pvalue_max > 1.0:
         raise ValueError(f"`{prefix}.adf_pvalue_max` must be between 0.0 and 1.0")
+    kpss_pvalue_min = getattr(cfg, "kpss_pvalue_min", None)
+    if kpss_pvalue_min is not None:
+        kpss_pvalue_min = float(kpss_pvalue_min)
+        if kpss_pvalue_min < 0.0 or kpss_pvalue_min > 1.0:
+            raise ValueError(f"`{prefix}.kpss_pvalue_min` must be between 0.0 and 1.0")
     min_points = getattr(cfg, "min_points", None)
     normalized_min_points = default_min_points if min_points is None else int(min_points)
     if normalized_min_points is not None and normalized_min_points < 20:
@@ -391,6 +397,7 @@ def _normalize_stationarity_config(
     )
     return ValidationStationarityConfig(
         adf_pvalue_max=adf_pvalue_max,
+        kpss_pvalue_min=kpss_pvalue_min,
         min_points=normalized_min_points,
         regime_shift=regime_shift,
     )
@@ -442,6 +449,7 @@ def _merge_stationarity_config(
             "Invalid `validation.data_quality.stationarity`: "
             "missing required field(s): adf_pvalue_max"
         )
+    kpss_pvalue_min = _merged_field(base, override, "kpss_pvalue_min")
     min_points = _merged_field(base, override, "min_points")
     regime_shift = _merge_stationarity_regime_shift_config(
         getattr(base, "regime_shift", None),
@@ -450,6 +458,7 @@ def _merge_stationarity_config(
     return _normalize_stationarity_config(
         ValidationStationarityConfig(
             adf_pvalue_max=float(adf_pvalue_max),
+            kpss_pvalue_min=float(kpss_pvalue_min) if kpss_pvalue_min is not None else None,
             min_points=int(min_points) if min_points is not None else None,
             regime_shift=regime_shift,
         ),
@@ -750,6 +759,9 @@ def _parse_stationarity(
     adf_pvalue_max = parse_required_float(
         parsed_raw, prefix, "adf_pvalue_max", min_value=0.0, max_value=1.0
     )
+    kpss_pvalue_min = parse_optional_float(
+        parsed_raw, prefix, "kpss_pvalue_min", min_value=0.0, max_value=1.0
+    )
     min_points = parse_optional_int(parsed_raw, prefix, "min_points", min_value=20)
     regime_shift_raw = parsed_raw.get("regime_shift")
     if regime_shift_raw is not None and not isinstance(regime_shift_raw, dict):
@@ -762,6 +774,7 @@ def _parse_stationarity(
     return _normalize_stationarity_config(
         ValidationStationarityConfig(
             adf_pvalue_max=float(adf_pvalue_max),
+            kpss_pvalue_min=float(kpss_pvalue_min) if kpss_pvalue_min is not None else None,
             min_points=int(min_points) if min_points is not None else None,
             regime_shift=regime_shift,
         ),

@@ -194,6 +194,9 @@ class BacktestRunner:
         "result_consistency.execution_price_variance",
     )
 
+    _STATIONARITY_TRUE = "true"
+    _STATIONARITY_FALSE = "false"
+
     def __init__(
         self,
         cfg: Config,
@@ -361,6 +364,7 @@ class BacktestRunner:
         if stationarity is not None:
             stationarity_payload = {
                 "adf_pvalue_max": getattr(stationarity, "adf_pvalue_max", None),
+                "kpss_pvalue_min": getattr(stationarity, "kpss_pvalue_min", None),
                 "min_points": getattr(stationarity, "min_points", None),
                 "regime_shift": regime_shift_payload,
             }
@@ -1658,6 +1662,112 @@ class BacktestRunner:
             return None
         return adfuller
 
+    @staticmethod
+    def _stationarity_kpss() -> Any | None:
+        try:
+            from statsmodels.tsa.stattools import kpss  # type: ignore
+        except ImportError:  # pragma: no cover - optional dependency unavailable
+            return None
+        return kpss
+
+    @classmethod
+    def _stationarity_adf_assessment(
+        cls,
+        raw_df: pd.DataFrame,
+        stationarity_cfg: ValidationStationarityConfig | None,
+        *,
+        returns: pd.Series | None = None,
+        returns_issue: str | None = None,
+    ) -> tuple[bool | None, str | None, float | None]:
+        if stationarity_cfg is None:
+            return None, None, None
+        if returns is None and returns_issue is None:
+            returns, returns_issue = cls._stationarity_close_returns(raw_df)
+        if returns_issue is not None:
+            return None, f"stationarity_adf_indeterminate(reason={returns_issue})", None
+        assert returns is not None
+        available = len(returns)
+        required = cls._stationarity_min_points(stationarity_cfg)
+        if available < required:
+            return (
+                None,
+                "stationarity_min_points_not_met("
+                f"required={required}, available={available})",
+                None,
+            )
+        adfuller = cls._stationarity_adfuller()
+        if adfuller is None:
+            return None, "stationarity_indeterminate(reason=statsmodels_missing)", None
+        values = returns.to_numpy(dtype=float)
+        if values.size < 4:
+            return None, "stationarity_adf_indeterminate(reason=insufficient_points_for_adf)", None
+        try:
+            pvalue = float(adfuller(values, autolag="AIC")[1])
+        except Exception as exc:
+            get_logger().warning("stationarity adfuller failed", exc_info=exc)
+            return None, "stationarity_adf_indeterminate(reason=adfuller_failed)", None
+        if not np.isfinite(pvalue):
+            return None, "stationarity_adf_indeterminate(reason=adfuller_non_finite)", None
+        threshold = float(stationarity_cfg.adf_pvalue_max)
+        if pvalue > threshold:
+            return (
+                False,
+                "stationarity_adf_pvalue_exceeded("
+                f"max_allowed={threshold}, available={pvalue})",
+                pvalue,
+            )
+        return True, None, pvalue
+
+    @classmethod
+    def _stationarity_kpss_assessment(
+        cls,
+        raw_df: pd.DataFrame,
+        stationarity_cfg: ValidationStationarityConfig | None,
+        *,
+        returns: pd.Series | None = None,
+        returns_issue: str | None = None,
+    ) -> tuple[bool | None, str | None, float | None]:
+        if stationarity_cfg is None:
+            return None, None, None
+        threshold = getattr(stationarity_cfg, "kpss_pvalue_min", None)
+        if threshold is None:
+            return None, None, None
+        if returns is None and returns_issue is None:
+            returns, returns_issue = cls._stationarity_close_returns(raw_df)
+        if returns_issue is not None:
+            return None, f"stationarity_kpss_indeterminate(reason={returns_issue})", None
+        assert returns is not None
+        available = len(returns)
+        required = cls._stationarity_min_points(stationarity_cfg)
+        if available < required:
+            return (
+                None,
+                "stationarity_min_points_not_met("
+                f"required={required}, available={available})",
+                None,
+            )
+        kpss_fn = cls._stationarity_kpss()
+        if kpss_fn is None:
+            return None, "stationarity_indeterminate(reason=statsmodels_missing)", None
+        values = returns.to_numpy(dtype=float)
+        if values.size < 4:
+            return None, "stationarity_kpss_indeterminate(reason=insufficient_points_for_kpss)", None
+        try:
+            pvalue = float(kpss_fn(values, nlags="auto")[1])
+        except Exception:
+            return None, "stationarity_kpss_indeterminate(reason=kpss_failed)", None
+        if not np.isfinite(pvalue):
+            return None, "stationarity_kpss_indeterminate(reason=kpss_non_finite)", None
+        threshold_val = float(threshold)
+        if pvalue < threshold_val:
+            return (
+                False,
+                "stationarity_kpss_pvalue_below("
+                f"min_allowed={threshold_val}, available={pvalue})",
+                pvalue,
+            )
+        return True, None, pvalue
+
     @classmethod
     def _stationarity_adf_reason(
         cls,
@@ -1667,40 +1777,13 @@ class BacktestRunner:
         returns: pd.Series | None = None,
         returns_issue: str | None = None,
     ) -> str | None:
-        if stationarity_cfg is None:
-            return None
-        if returns is None and returns_issue is None:
-            returns, returns_issue = cls._stationarity_close_returns(raw_df)
-        if returns_issue is not None:
-            return f"stationarity_adf_indeterminate(reason={returns_issue})"
-        assert returns is not None
-        available = len(returns)
-        required = cls._stationarity_min_points(stationarity_cfg)
-        if available < required:
-            return (
-                "stationarity_min_points_not_met("
-                f"required={required}, available={available})"
-            )
-        adfuller = cls._stationarity_adfuller()
-        if adfuller is None:
-            return "stationarity_indeterminate(reason=statsmodels_missing)"
-        values = returns.to_numpy(dtype=float)
-        if values.size < 4:
-            return "stationarity_adf_indeterminate(reason=insufficient_points_for_adf)"
-        try:
-            pvalue = float(adfuller(values, autolag="AIC")[1])
-        except Exception as exc:
-            get_logger().warning("stationarity adfuller failed", exc_info=exc)
-            return "stationarity_adf_indeterminate(reason=adfuller_failed)"
-        if not np.isfinite(pvalue):
-            return "stationarity_adf_indeterminate(reason=adfuller_non_finite)"
-        threshold = float(stationarity_cfg.adf_pvalue_max)
-        if pvalue > threshold:
-            return (
-                "stationarity_adf_pvalue_exceeded("
-                f"max_allowed={threshold}, available={pvalue})"
-            )
-        return None
+        _, reason, _ = cls._stationarity_adf_assessment(
+            raw_df,
+            stationarity_cfg,
+            returns=returns,
+            returns_issue=returns_issue,
+        )
+        return reason
 
     @staticmethod
     def _stationarity_min_points(stationarity_cfg: ValidationStationarityConfig) -> int:
@@ -1805,7 +1888,7 @@ class BacktestRunner:
             return []
         returns, returns_issue = cls._stationarity_close_returns(raw_df)
         reasons: list[str] = []
-        adf_reason = cls._stationarity_adf_reason(
+        adf_stationary, adf_reason, adf_pvalue = cls._stationarity_adf_assessment(
             raw_df,
             stationarity_cfg,
             returns=returns,
@@ -1813,6 +1896,28 @@ class BacktestRunner:
         )
         if adf_reason is not None:
             reasons.append(adf_reason)
+        kpss_stationary, kpss_reason, kpss_pvalue = cls._stationarity_kpss_assessment(
+            raw_df,
+            stationarity_cfg,
+            returns=returns,
+            returns_issue=returns_issue,
+        )
+        if kpss_reason is not None:
+            reasons.append(kpss_reason)
+        if (
+            adf_stationary is not None
+            and kpss_stationary is not None
+            and adf_stationary != kpss_stationary
+        ):
+            adf_status = cls._STATIONARITY_TRUE if adf_stationary else cls._STATIONARITY_FALSE
+            kpss_status = cls._STATIONARITY_TRUE if kpss_stationary else cls._STATIONARITY_FALSE
+            reasons.append(
+                "stationarity_test_conflict("
+                f"adf_stationary={adf_status}, "
+                f"kpss_stationary={kpss_status}, "
+                f"adf_pvalue={adf_pvalue}, "
+                f"kpss_pvalue={kpss_pvalue})"
+            )
         reasons.extend(
             cls._stationarity_regime_shift_reason(
                 raw_df,

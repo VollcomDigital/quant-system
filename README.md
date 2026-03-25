@@ -220,13 +220,15 @@ See new collection examples under `config/collections/` for FX intraday via Finn
     - `zscore_threshold` (required): threshold used by the selected method
   - `stationarity` (optional module; active when configured):
     - `adf_pvalue_max` (required): maximum ADF p-value allowed for the close-return series
+    - `kpss_pvalue_min` (optional): minimum KPSS p-value allowed for the close-return series
     - `min_points` (optional, default `30`): minimum return points required before the test runs
     - `regime_shift` (optional):
       - `window` (required): rolling window size used to compare adjacent return regimes
       - `mean_shift_max` (required): maximum normalized mean shift allowed
       - `vol_ratio_max` (required): maximum adjacent-window volatility ratio allowed
-    - fixed-action: reject when ADF or regime-shift thresholds are exceeded; too few points
-      are treated as an explicit indeterminate reliability reason.
+    - fixed-action: reject when ADF/KPSS/regime-shift thresholds are exceeded; too few points
+      are treated as an explicit indeterminate reliability reason. If ADF and KPSS disagree,
+      a stationarity conflict reason is emitted.
   - continuity diagnostics are always computed.
   - when `validation.data_quality` is configured, continuity precondition failures
     (for example fewer than 2 bars) fail data validation (`skip_job`).

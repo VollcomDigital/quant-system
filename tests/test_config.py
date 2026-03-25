@@ -711,6 +711,7 @@ validation:
     on_fail: skip_job
     stationarity:
       adf_pvalue_max: 0.05
+      kpss_pvalue_min: 0.05
       min_points: 40
       regime_shift:
         window: 20
@@ -725,6 +726,7 @@ validation:
     assert cfg.validation.data_quality is not None
     assert cfg.validation.data_quality.stationarity is not None
     assert cfg.validation.data_quality.stationarity.adf_pvalue_max == pytest.approx(0.05)
+    assert cfg.validation.data_quality.stationarity.kpss_pvalue_min == pytest.approx(0.05)
     assert cfg.validation.data_quality.stationarity.min_points == 40
     assert cfg.validation.data_quality.stationarity.regime_shift is not None
     assert cfg.validation.data_quality.stationarity.regime_shift.window == 20
@@ -822,6 +824,28 @@ validation:
     on_fail: skip_job
     stationarity:
       adf_pvalue_max: 1.2
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_data_quality_stationarity_invalid_kpss_pvalue(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    stationarity:
+      adf_pvalue_max: 0.05
+      kpss_pvalue_min: 1.2
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)

@@ -29,6 +29,9 @@ validation:
       zscore_threshold: 3.5  # required threshold for selected method
     stationarity:
       adf_pvalue_max: 0.05  # reject when the ADF p-value is above this
+      # Optional KPSS companion check (KPSS null hypothesis is stationarity).
+      # Reject when KPSS p-value drops below this threshold.
+      # kpss_pvalue_min: 0.05
       min_points: 30  # optional; safe minimum for the return series
       regime_shift:
         window: 20

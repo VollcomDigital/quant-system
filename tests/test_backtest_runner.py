@@ -499,6 +499,25 @@ def test_stationarity_adf_reason_returns_indeterminate_when_statsmodels_missing(
     assert reason == "stationarity_indeterminate(reason=statsmodels_missing)"
 
 
+def test_stationarity_kpss_reason_returns_indeterminate_when_statsmodels_missing():
+    idx = pd.date_range("2024-01-01", periods=40, freq="D")
+    raw_df = pd.DataFrame({"Close": np.linspace(100.0, 120.0, len(idx))}, index=idx)
+    stationarity_cfg = ValidationStationarityConfig(
+        adf_pvalue_max=0.05,
+        kpss_pvalue_min=0.05,
+        min_points=20,
+    )
+
+    original_kpss = BacktestRunner._stationarity_kpss
+    try:
+        BacktestRunner._stationarity_kpss = staticmethod(lambda: None)
+        _, reason, _ = BacktestRunner._stationarity_kpss_assessment(raw_df, stationarity_cfg)
+    finally:
+        BacktestRunner._stationarity_kpss = original_kpss
+
+    assert reason == "stationarity_indeterminate(reason=statsmodels_missing)"
+
+
 def test_stationarity_regime_shift_reason_flags_mean_and_vol_shift():
     idx = pd.date_range("2024-01-01", periods=80, freq="D")
     first_half = np.array([0.001, 0.002, -0.001, 0.0] * 10, dtype=float)
@@ -544,6 +563,32 @@ def test_stationarity_reasons_handles_none_min_points():
         "stationarity_regime_shift_not_enough_points(required=30, available=28)"
         in reasons
     )
+
+
+def test_stationarity_reasons_flags_adf_kpss_conflict():
+    idx = pd.date_range("2024-01-01", periods=40, freq="D")
+    raw_df = pd.DataFrame({"Close": np.linspace(100.0, 120.0, len(idx))}, index=idx)
+    stationarity_cfg = ValidationStationarityConfig(
+        adf_pvalue_max=0.05,
+        kpss_pvalue_min=0.05,
+        min_points=20,
+    )
+
+    original_adf_assessment = BacktestRunner._stationarity_adf_assessment
+    original_kpss_assessment = BacktestRunner._stationarity_kpss_assessment
+    try:
+        BacktestRunner._stationarity_adf_assessment = classmethod(
+            lambda cls, raw_df, stationarity_cfg, **kwargs: (True, None, 0.01)
+        )
+        BacktestRunner._stationarity_kpss_assessment = classmethod(
+            lambda cls, raw_df, stationarity_cfg, **kwargs: (False, None, 0.01)
+        )
+        reasons = BacktestRunner._stationarity_reasons(raw_df, stationarity_cfg)
+    finally:
+        BacktestRunner._stationarity_adf_assessment = original_adf_assessment
+        BacktestRunner._stationarity_kpss_assessment = original_kpss_assessment
+
+    assert any(reason.startswith("stationarity_test_conflict(") for reason in reasons)
 
 
 def test_stationarity_adf_reason_flags_constant_returns_series():
