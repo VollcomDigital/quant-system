@@ -127,3 +127,98 @@ Source: `resolve_validation_overrides` in `src/config.py`.
 - Runner code stays lean: no global-vs-collection merge branches in gate execution.
 - Hashing/job profiles use effective collection policy consistently.
 - Behavior is deterministic across tests and real runs after `load_config`.
+
+## Config Parse-To-Effective Pattern
+
+Source: `load_config`, parser helpers, and merge helpers in `src/config.py`.
+
+This is the implementation contract for validation/policy config work.
+
+### Naming and phase contract
+
+Use this lifecycle for each policy module:
+
+1. `_parse_*`
+   - Input: raw YAML value (`Any`).
+   - Output: typed dataclass or `None`.
+   - Job:
+     - enforce mapping shape (`require_mapping`)
+     - parse primitive fields (`parse_required_*`, `parse_optional_*`)
+     - validate required keys for that module
+   - Rule: do not apply inheritance-sensitive defaults here.
+
+2. `_normalize_*`
+   - Input: typed dataclass (possibly from parser or merge result).
+   - Output: validated, normalized dataclass.
+   - Job:
+     - value range checks
+     - string normalization
+     - nested block normalization
+   - Optional parameter: default value injection (only for effective-policy stage).
+   - Note: normalization is used both pre-merge (parser output hygiene) and post-merge
+     (final effective-policy normalization/defaulting).
+
+3. `_merge_*_config`
+   - Input: `base` (global), `override` (collection).
+   - Output: effective module config or `None`.
+   - Job:
+     - resolve fields via `_merged_field` (override wins only when non-`None`)
+     - enforce required merged fields
+     - call `_normalize_*` for final validation/defaults
+   - Rule: merge is the canonical place for effective defaults.
+
+4. `resolve_validation_overrides`
+   - Build normalized global runtime policy snapshots.
+   - Merge each collection override onto global.
+   - Write final effective policy to `collection.validation`.
+
+5. Runner consumption
+   - Runner reads effective collection policy only.
+   - Runner does not perform global/collection merge logic.
+
+### Defaulting rules (strict)
+
+- Parse-stage defaults:
+  - allowed for top-level runtime config (non-override policy), e.g. `metric`, `engine`, `fees`.
+  - avoid for override-sensitive policy fields.
+
+- Merge-stage defaults:
+  - preferred for policy fields that participate in global+collection inheritance.
+  - example: `stationarity.min_points`
+    - parse: may remain `None`
+    - merge effective config: default to `30` when still `None`
+    - collection `null`/omission inherits global value if global is set.
+
+### Practical implementation template for new policy module
+
+When adding a new module under `validation.*`:
+
+1. Add dataclass fields (global + collection paths).
+2. Add `_parse_new_module(...)` with strict shape/key/range validation.
+3. Add `_normalize_new_module(...)` for final normalization rules.
+4. Add `_merge_new_module_config(base, override)` and call normalize there.
+5. Wire module into:
+   - `_parse_validation_*` tree
+   - `_merge_data_quality_config` / relevant parent merge
+   - `resolve_validation_overrides`
+6. Update runner to read only `collection.validation...` effective values.
+7. Add tests for:
+   - parse happy path
+   - missing required keys
+   - range/type errors
+   - global-only, collection-only, global+override merge behavior
+   - explicit `None` inheritance behavior
+
+### Existing examples in codebase
+
+- Outlier detection:
+  - merge path reuses parse validation to keep strict behavior aligned.
+- Stationarity:
+  - final `min_points` default injected at merge normalization.
+- Result consistency:
+  - nested modules merged and enabled independently; module disabled when `None`.
+
+### Responsibility split
+
+- `config.py`: parse, normalize, merge, and materialize effective policies.
+- `runner.py`: gate enforcement and diagnostics only.
