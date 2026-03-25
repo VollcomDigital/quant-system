@@ -756,7 +756,7 @@ def _parse_stationarity(
         raise ValueError(f"Invalid `{prefix}.regime_shift`: expected a mapping")
     regime_shift = (
         _parse_stationarity_regime_shift(regime_shift_raw, f"{prefix}.regime_shift")
-        if isinstance(regime_shift_raw, dict)
+        if regime_shift_raw is not None
         else None
     )
     return _normalize_stationarity_config(
