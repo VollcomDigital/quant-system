@@ -1902,7 +1902,7 @@ class BacktestRunner:
             returns=returns,
             returns_issue=returns_issue,
         )
-        if kpss_reason is not None:
+        if kpss_reason is not None and kpss_reason not in reasons:
             reasons.append(kpss_reason)
         if (
             adf_stationary is not None

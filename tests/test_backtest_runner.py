@@ -565,6 +565,22 @@ def test_stationarity_reasons_handles_none_min_points():
     )
 
 
+def test_stationarity_reasons_deduplicates_min_points_reason_for_adf_and_kpss():
+    idx = pd.date_range("2024-01-01", periods=29, freq="D")
+    close = pd.Series(np.linspace(100.0, 140.0, len(idx)), index=idx)
+    raw_df = pd.DataFrame({"Close": close})
+    stationarity_cfg = ValidationStationarityConfig(
+        adf_pvalue_max=0.05,
+        kpss_pvalue_min=0.05,
+        min_points=None,
+    )
+
+    reasons = BacktestRunner._stationarity_reasons(raw_df, stationarity_cfg)
+
+    expected_reason = "stationarity_min_points_not_met(required=30, available=28)"
+    assert reasons.count(expected_reason) == 1
+
+
 def test_stationarity_reasons_flags_adf_kpss_conflict():
     idx = pd.date_range("2024-01-01", periods=40, freq="D")
     raw_df = pd.DataFrame({"Close": np.linspace(100.0, 120.0, len(idx))}, index=idx)
