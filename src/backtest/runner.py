@@ -1689,7 +1689,8 @@ class BacktestRunner:
             return "stationarity_adf_indeterminate(reason=insufficient_points_for_adf)"
         try:
             pvalue = float(adfuller(values, autolag="AIC")[1])
-        except Exception:
+        except Exception as exc:
+            get_logger().warning("stationarity adfuller failed", exc_info=exc)
             return "stationarity_adf_indeterminate(reason=adfuller_failed)"
         if not np.isfinite(pvalue):
             return "stationarity_adf_indeterminate(reason=adfuller_non_finite)"
