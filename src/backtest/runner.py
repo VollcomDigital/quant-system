@@ -1654,7 +1654,7 @@ class BacktestRunner:
     def _stationarity_adfuller() -> Any | None:
         try:
             from statsmodels.tsa.stattools import adfuller  # type: ignore
-        except Exception:  # pragma: no cover - optional dependency unavailable
+        except (ImportError, ModuleNotFoundError):  # pragma: no cover - optional dependency unavailable
             return None
         return adfuller
 
