@@ -1663,12 +1663,17 @@ class BacktestRunner:
         cls,
         raw_df: pd.DataFrame,
         stationarity_cfg: ValidationStationarityConfig | None,
+        *,
+        returns: pd.Series | None = None,
+        returns_issue: str | None = None,
     ) -> str | None:
         if stationarity_cfg is None:
             return None
-        returns, issue = cls._stationarity_close_returns(raw_df)
-        if issue is not None:
-            return f"stationarity_adf_indeterminate(reason={issue})"
+        if returns is None and returns_issue is None:
+            returns, returns_issue = cls._stationarity_close_returns(raw_df)
+        if returns_issue is not None:
+            return f"stationarity_adf_indeterminate(reason={returns_issue})"
+        assert returns is not None
         available = len(returns)
         required = cls._stationarity_min_points(stationarity_cfg)
         if available < required:
@@ -1706,12 +1711,17 @@ class BacktestRunner:
         cls,
         raw_df: pd.DataFrame,
         stationarity_cfg: ValidationStationarityConfig | None,
+        *,
+        returns: pd.Series | None = None,
+        returns_issue: str | None = None,
     ) -> list[str]:
         if stationarity_cfg is None or stationarity_cfg.regime_shift is None:
             return []
-        returns, issue = cls._stationarity_close_returns(raw_df)
-        if issue is not None:
-            return [f"stationarity_regime_shift_indeterminate(reason={issue})"]
+        if returns is None and returns_issue is None:
+            returns, returns_issue = cls._stationarity_close_returns(raw_df)
+        if returns_issue is not None:
+            return [f"stationarity_regime_shift_indeterminate(reason={returns_issue})"]
+        assert returns is not None
         regime = stationarity_cfg.regime_shift
         assert regime is not None
         window = int(regime.window)
@@ -1792,11 +1802,24 @@ class BacktestRunner:
     ) -> list[str]:
         if stationarity_cfg is None:
             return []
+        returns, returns_issue = cls._stationarity_close_returns(raw_df)
         reasons: list[str] = []
-        adf_reason = cls._stationarity_adf_reason(raw_df, stationarity_cfg)
+        adf_reason = cls._stationarity_adf_reason(
+            raw_df,
+            stationarity_cfg,
+            returns=returns,
+            returns_issue=returns_issue,
+        )
         if adf_reason is not None:
             reasons.append(adf_reason)
-        reasons.extend(cls._stationarity_regime_shift_reason(raw_df, stationarity_cfg))
+        reasons.extend(
+            cls._stationarity_regime_shift_reason(
+                raw_df,
+                stationarity_cfg,
+                returns=returns,
+                returns_issue=returns_issue,
+            )
+        )
         return reasons
 
     @classmethod
