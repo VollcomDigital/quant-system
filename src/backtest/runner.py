@@ -1693,7 +1693,7 @@ class BacktestRunner:
         if not np.isfinite(pvalue):
             return "stationarity_adf_indeterminate(reason=adfuller_non_finite)"
         threshold = float(stationarity_cfg.adf_pvalue_max)
-        if pvalue is not None and pvalue > threshold:
+        if pvalue > threshold:
             return (
                 "stationarity_adf_pvalue_exceeded("
                 f"max_allowed={threshold}, available={pvalue})"
