@@ -144,6 +144,7 @@ class Config:
 
 
 DEFAULT_CALENDAR_KIND = "auto"
+STATIONARITY_DEFAULT_MIN_POINTS = 30
 
 
 def _merge_replace(base: Any, override: Any) -> Any:
@@ -463,7 +464,7 @@ def _merge_stationarity_config(
             regime_shift=regime_shift,
         ),
         "validation.data_quality.stationarity",
-        default_min_points=30,
+        default_min_points=STATIONARITY_DEFAULT_MIN_POINTS,
     )
 
 

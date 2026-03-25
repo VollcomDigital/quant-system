@@ -21,6 +21,7 @@ from ..config import (
     ResultConsistencyConfig,
     ResultConsistencyExecutionPriceVarianceConfig,
     ResultConsistencyOutlierDependencyConfig,
+    STATIONARITY_DEFAULT_MIN_POINTS,
     ValidationContinuityConfig,
     ValidationOutlierDetectionConfig,
     ValidationStationarityConfig,
@@ -1788,7 +1789,7 @@ class BacktestRunner:
     @staticmethod
     def _stationarity_min_points(stationarity_cfg: ValidationStationarityConfig) -> int:
         min_points = stationarity_cfg.min_points
-        return 30 if min_points is None else int(min_points)
+        return STATIONARITY_DEFAULT_MIN_POINTS if min_points is None else int(min_points)
 
     @classmethod
     def _stationarity_regime_shift_reason(
