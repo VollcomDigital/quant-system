@@ -516,10 +516,34 @@ def test_stationarity_regime_shift_reason_flags_mean_and_vol_shift():
         ),
     )
 
-    reason = BacktestRunner._stationarity_regime_shift_reason(raw_df, stationarity_cfg)
+    reasons = BacktestRunner._stationarity_regime_shift_reason(raw_df, stationarity_cfg)
 
-    assert reason is not None
-    assert "stationarity_regime_shift_" in reason
+    assert len(reasons) == 2
+    assert any(reason.startswith("stationarity_regime_shift_mean_shift_exceeded(") for reason in reasons)
+    assert any(reason.startswith("stationarity_regime_shift_vol_ratio_exceeded(") for reason in reasons)
+
+
+def test_stationarity_reasons_handles_none_min_points():
+    idx = pd.date_range("2024-01-01", periods=29, freq="D")
+    close = pd.Series(np.linspace(100.0, 140.0, len(idx)), index=idx)
+    raw_df = pd.DataFrame({"Close": close})
+    stationarity_cfg = ValidationStationarityConfig(
+        adf_pvalue_max=0.05,
+        min_points=None,
+        regime_shift=ValidationStationarityRegimeShiftConfig(
+            window=10,
+            mean_shift_max=0.1,
+            vol_ratio_max=1.25,
+        ),
+    )
+
+    reasons = BacktestRunner._stationarity_reasons(raw_df, stationarity_cfg)
+
+    assert "stationarity_min_points_not_met(required=30, available=28)" in reasons
+    assert (
+        "stationarity_regime_shift_not_enough_points(required=30, available=28)"
+        in reasons
+    )
 
 
 def test_stationarity_adf_reason_flags_constant_returns_series():

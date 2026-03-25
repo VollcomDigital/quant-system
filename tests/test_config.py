@@ -732,6 +732,30 @@ validation:
     assert cfg.validation.data_quality.stationarity.regime_shift.vol_ratio_max == pytest.approx(1.75)
 
 
+def test_load_config_data_quality_stationarity_defaults_min_points(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    stationarity:
+      adf_pvalue_max: 0.05
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.stationarity is not None
+    assert cfg.validation.data_quality.stationarity.min_points == 30
+
+
 def test_load_config_collection_data_quality_stationarity_override(tmp_path: Path):
     config_text = """
 collections:

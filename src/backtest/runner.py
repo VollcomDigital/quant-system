@@ -1674,7 +1674,7 @@ class BacktestRunner:
         if issue is not None:
             return f"stationarity_adf_indeterminate(reason={issue})"
         available = len(returns)
-        required = int(stationarity_cfg.min_points)
+        required = cls._stationarity_min_points(stationarity_cfg)
         if available < required:
             return (
                 "stationarity_min_points_not_met("
@@ -1700,27 +1700,32 @@ class BacktestRunner:
             )
         return None
 
+    @staticmethod
+    def _stationarity_min_points(stationarity_cfg: ValidationStationarityConfig) -> int:
+        min_points = stationarity_cfg.min_points
+        return 30 if min_points is None else int(min_points)
+
     @classmethod
     def _stationarity_regime_shift_reason(
         cls,
         raw_df: pd.DataFrame,
         stationarity_cfg: ValidationStationarityConfig | None,
-    ) -> str | None:
+    ) -> list[str]:
         if stationarity_cfg is None or stationarity_cfg.regime_shift is None:
-            return None
+            return []
         returns, issue = cls._stationarity_close_returns(raw_df)
         if issue is not None:
-            return f"stationarity_regime_shift_indeterminate(reason={issue})"
+            return [f"stationarity_regime_shift_indeterminate(reason={issue})"]
         regime = stationarity_cfg.regime_shift
         assert regime is not None
         window = int(regime.window)
-        required = max(int(stationarity_cfg.min_points), window * 2)
+        required = max(cls._stationarity_min_points(stationarity_cfg), window * 2)
         available = len(returns)
         if available < required:
-            return (
+            return [
                 "stationarity_regime_shift_not_enough_points("
                 f"required={required}, available={available})"
-            )
+            ]
         rolling_mean = returns.rolling(window).mean()
         rolling_std = returns.rolling(window).std(ddof=1)
         prior_mean = rolling_mean.shift(window)
@@ -1738,7 +1743,7 @@ class BacktestRunner:
         )
         valid_mask = np.isfinite(mean_shift) & np.isfinite(vol_ratio)
         if not valid_mask.any():
-            return "stationarity_regime_shift_indeterminate(reason=insufficient_window_history)"
+            return ["stationarity_regime_shift_indeterminate(reason=insufficient_window_history)"]
         max_mean_shift = float(np.nanmax(mean_shift[valid_mask]))
         max_vol_ratio = float(np.nanmax(vol_ratio[valid_mask]))
         reasons: list[str] = []
@@ -1752,9 +1757,7 @@ class BacktestRunner:
                 "stationarity_regime_shift_vol_ratio_exceeded("
                 f"max_allowed={regime.vol_ratio_max}, available={max_vol_ratio})"
             )
-        if reasons:
-            return "; ".join(reasons)
-        return None
+        return reasons
 
     @classmethod
     def _collect_reliability_reasons(
@@ -1794,12 +1797,10 @@ class BacktestRunner:
         if stationarity_cfg is None:
             return []
         reasons: list[str] = []
-        for reason in (
-            cls._stationarity_adf_reason(raw_df, stationarity_cfg),
-            cls._stationarity_regime_shift_reason(raw_df, stationarity_cfg),
-        ):
-            if reason is not None:
-                reasons.append(reason)
+        adf_reason = cls._stationarity_adf_reason(raw_df, stationarity_cfg)
+        if adf_reason is not None:
+            reasons.append(adf_reason)
+        reasons.extend(cls._stationarity_regime_shift_reason(raw_df, stationarity_cfg))
         return reasons
 
     @classmethod
