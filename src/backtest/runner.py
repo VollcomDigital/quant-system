@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import importlib
 import inspect
 import itertools
-import hashlib
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
@@ -18,11 +18,13 @@ import pandas as pd
 from ..config import (
     CollectionConfig,
     Config,
+    ResultConsistencyConfig,
     ResultConsistencyExecutionPriceVarianceConfig,
     ResultConsistencyOutlierDependencyConfig,
+    STATIONARITY_DEFAULT_MIN_POINTS,
     ValidationContinuityConfig,
     ValidationOutlierDetectionConfig,
-    ResultConsistencyConfig,
+    ValidationStationarityConfig,
 )
 from ..data.alpaca_source import AlpacaSource
 from ..data.alphavantage_source import AlphaVantageSource
@@ -40,6 +42,7 @@ from .evaluation.adapters import normalized_rows_to_legacy_rows
 from .evaluation.contracts import (
     EvaluationCacheRecord,
     EvaluationModeConfig,
+    EvaluationOutcome,
     EvaluationRequest,
     ResultRecord,
 )
@@ -186,10 +189,14 @@ class BacktestRunner:
         "data_quality.continuity.max_missing_bar_pct",
         "data_quality.kurtosis",
         "data_quality.outlier_detection",
+        "data_quality.stationarity",
         "optimization.feasibility",
         "result_consistency.outlier_dependency",
         "result_consistency.execution_price_variance",
     )
+
+    _STATIONARITY_TRUE = "true"
+    _STATIONARITY_FALSE = "false"
 
     def __init__(
         self,
@@ -343,11 +350,29 @@ class BacktestRunner:
                 "kind": getattr(calendar, "kind", None),
                 "exchange": getattr(calendar, "exchange", None),
                 "timezone": getattr(calendar, "timezone", None),
-            }
+        }
         outlier = getattr(data_quality, "outlier_detection", None)
+        stationarity = getattr(data_quality, "stationarity", None)
+        stationarity_payload = None
+        if stationarity is not None:
+            regime_shift = getattr(stationarity, "regime_shift", None)
+            regime_shift_payload = None
+            if regime_shift is not None:
+                regime_shift_payload = {
+                    "window": getattr(regime_shift, "window", None),
+                    "mean_shift_max": getattr(regime_shift, "mean_shift_max", None),
+                    "vol_ratio_max": getattr(regime_shift, "vol_ratio_max", None),
+                }
+            stationarity_payload = {
+                "adf_pvalue_max": getattr(stationarity, "adf_pvalue_max", None),
+                "kpss_pvalue_min": getattr(stationarity, "kpss_pvalue_min", None),
+                "min_points": getattr(stationarity, "min_points", None),
+                "regime_shift": regime_shift_payload,
+            }
         return {
             "on_fail": getattr(data_quality, "on_fail", None),
             "min_data_points": getattr(data_quality, "min_data_points", None),
+            "is_verified": getattr(data_quality, "is_verified", None),
             "continuity": (
                 {
                     "min_score": getattr(continuity, "min_score", None),
@@ -367,6 +392,7 @@ class BacktestRunner:
                 if outlier is not None
                 else None
             ),
+            "stationarity": stationarity_payload,
         }
 
     @staticmethod
@@ -424,6 +450,8 @@ class BacktestRunner:
             active.add("data_quality.kurtosis")
         if getattr(data_quality, "outlier_detection", None) is not None:
             active.add("data_quality.outlier_detection")
+        if getattr(data_quality, "stationarity", None) is not None:
+            active.add("data_quality.stationarity")
         return active
 
     @staticmethod
@@ -1373,6 +1401,8 @@ class BacktestRunner:
             continuity_cfg,
             kurtosis_cfg,
             outlier_detection,
+            stationarity_cfg,
+            is_verified,
             calendar_kind,
             calendar_exchange,
             calendar_timezone,
@@ -1429,6 +1459,8 @@ class BacktestRunner:
             continuity_cfg=continuity_cfg,
             kurtosis_cfg=kurtosis_cfg,
             outlier_detection=outlier_detection,
+            stationarity_cfg=stationarity_cfg,
+            is_verified=is_verified,
         )
         if not reliability_reasons:
             decision = GateDecision(True, "continue", [], "data_validation")
@@ -1455,6 +1487,8 @@ class BacktestRunner:
         ValidationContinuityConfig | None,
         float | None,
         ValidationOutlierDetectionConfig | None,
+        ValidationStationarityConfig | None,
+        bool | None,
         str | None,
         str | None,
         str | None,
@@ -1463,12 +1497,14 @@ class BacktestRunner:
         resolved_dq = getattr(collection_validation, "data_quality", None) if collection_validation else None
         if resolved_dq is None:
             # Sentinel for "no data-quality policy configured for this collection".
-            return None, None, None, None, None, None, None, None
+            return None, None, None, None, None, None, None, None, None, None
         on_fail = resolved_dq.on_fail
         min_data_points_cfg = resolved_dq.min_data_points
         continuity_cfg = resolved_dq.continuity
         kurtosis_cfg = resolved_dq.kurtosis
         outlier_detection = resolved_dq.outlier_detection
+        stationarity_cfg = getattr(resolved_dq, "stationarity", None)
+        is_verified = getattr(resolved_dq, "is_verified", None)
         calendar_kind: str | None = None
         calendar_exchange: str | None = None
         calendar_timezone: str | None = None
@@ -1482,6 +1518,8 @@ class BacktestRunner:
             continuity_cfg,
             kurtosis_cfg,
             outlier_detection,
+            stationarity_cfg,
+            is_verified,
             calendar_kind,
             calendar_exchange,
             calendar_timezone,
@@ -1573,6 +1611,12 @@ class BacktestRunner:
         return None
 
     @staticmethod
+    def _collection_verification_reason(is_verified: bool | None) -> str | None:
+        if is_verified is False:
+            return "collection_not_verified"
+        return None
+
+    @staticmethod
     def _resolve_close_column(raw_df: pd.DataFrame) -> str | None:
         if "Close" in raw_df.columns:
             return "Close"
@@ -1604,6 +1648,222 @@ class BacktestRunner:
         return None
 
     @classmethod
+    def _stationarity_close_returns(
+        cls,
+        raw_df: pd.DataFrame,
+    ) -> tuple[pd.Series | None, str | None]:
+        close_col = cls._resolve_close_column(raw_df)
+        if close_col is None:
+            return None, "missing_close_column"
+        close = raw_df[close_col].astype(float).replace([np.inf, -np.inf], np.nan).dropna()
+        if len(close) < 2:
+            return None, "insufficient_close_points"
+        if (close <= 0).any():
+            returns = close.pct_change()
+        else:
+            returns = np.log(close).diff()
+        returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
+        if returns.empty:
+            return None, "insufficient_return_points"
+        return returns.astype(float), None
+
+    @staticmethod
+    def _stationarity_adfuller() -> Any | None:
+        try:
+            from statsmodels.tsa.stattools import adfuller  # type: ignore
+        except ImportError:  # pragma: no cover - optional dependency unavailable
+            return None
+        return adfuller
+
+    @staticmethod
+    def _stationarity_kpss() -> Any | None:
+        try:
+            from statsmodels.tsa.stattools import kpss  # type: ignore
+        except ImportError:  # pragma: no cover - optional dependency unavailable
+            return None
+        return kpss
+
+    @classmethod
+    def _stationarity_adf_assessment(
+        cls,
+        raw_df: pd.DataFrame,
+        stationarity_cfg: ValidationStationarityConfig | None,
+        *,
+        returns: pd.Series | None = None,
+        returns_issue: str | None = None,
+    ) -> tuple[bool | None, str | None, float | None]:
+        if stationarity_cfg is None:
+            return None, None, None
+        if returns is None and returns_issue is None:
+            returns, returns_issue = cls._stationarity_close_returns(raw_df)
+        if returns_issue is not None:
+            return None, f"stationarity_adf_indeterminate(reason={returns_issue})", None
+        assert returns is not None
+        available = len(returns)
+        required = cls._stationarity_min_points(stationarity_cfg)
+        if available < required:
+            return (
+                None,
+                "stationarity_min_points_not_met("
+                f"required={required}, available={available})",
+                None,
+            )
+        adfuller = cls._stationarity_adfuller()
+        if adfuller is None:
+            return None, "stationarity_indeterminate(reason=statsmodels_missing)", None
+        values = returns.to_numpy(dtype=float)
+        if values.size < 4:
+            return None, "stationarity_adf_indeterminate(reason=insufficient_points_for_adf)", None
+        try:
+            pvalue = float(adfuller(values, autolag="AIC")[1])
+        except Exception as exc:
+            get_logger().debug("stationarity adfuller failed", exc_info=exc)
+            return None, "stationarity_adf_indeterminate(reason=adfuller_failed)", None
+        if not np.isfinite(pvalue):
+            return None, "stationarity_adf_indeterminate(reason=adfuller_non_finite)", None
+        threshold = float(stationarity_cfg.adf_pvalue_max)
+        if pvalue > threshold:
+            return (
+                False,
+                "stationarity_adf_pvalue_exceeded("
+                f"max_allowed={threshold}, available={pvalue})",
+                pvalue,
+            )
+        return True, None, pvalue
+
+    @classmethod
+    def _stationarity_kpss_assessment(
+        cls,
+        raw_df: pd.DataFrame,
+        stationarity_cfg: ValidationStationarityConfig | None,
+        *,
+        returns: pd.Series | None = None,
+        returns_issue: str | None = None,
+    ) -> tuple[bool | None, str | None, float | None]:
+        if stationarity_cfg is None:
+            return None, None, None
+        threshold = getattr(stationarity_cfg, "kpss_pvalue_min", None)
+        if threshold is None:
+            return None, None, None
+        if returns is None and returns_issue is None:
+            returns, returns_issue = cls._stationarity_close_returns(raw_df)
+        if returns_issue is not None:
+            return None, f"stationarity_kpss_indeterminate(reason={returns_issue})", None
+        assert returns is not None
+        available = len(returns)
+        required = cls._stationarity_min_points(stationarity_cfg)
+        if available < required:
+            return (
+                None,
+                "stationarity_min_points_not_met("
+                f"required={required}, available={available})",
+                None,
+            )
+        kpss_fn = cls._stationarity_kpss()
+        if kpss_fn is None:
+            return None, "stationarity_indeterminate(reason=statsmodels_missing)", None
+        values = returns.to_numpy(dtype=float)
+        if values.size < 4:
+            return None, "stationarity_kpss_indeterminate(reason=insufficient_points_for_kpss)", None
+        try:
+            pvalue = float(kpss_fn(values, nlags="auto")[1])
+        except Exception as exc:
+            get_logger().debug("stationarity kpss failed", exc_info=exc)
+            return None, "stationarity_kpss_indeterminate(reason=kpss_failed)", None
+        if not np.isfinite(pvalue):
+            return None, "stationarity_kpss_indeterminate(reason=kpss_non_finite)", None
+        threshold_val = float(threshold)
+        if pvalue < threshold_val:
+            return (
+                False,
+                "stationarity_kpss_pvalue_below("
+                f"min_allowed={threshold_val}, available={pvalue})",
+                pvalue,
+            )
+        return True, None, pvalue
+
+    @classmethod
+    def _stationarity_adf_reason(
+        cls,
+        raw_df: pd.DataFrame,
+        stationarity_cfg: ValidationStationarityConfig | None,
+        *,
+        returns: pd.Series | None = None,
+        returns_issue: str | None = None,
+    ) -> str | None:
+        _, reason, _ = cls._stationarity_adf_assessment(
+            raw_df,
+            stationarity_cfg,
+            returns=returns,
+            returns_issue=returns_issue,
+        )
+        return reason
+
+    @staticmethod
+    def _stationarity_min_points(stationarity_cfg: ValidationStationarityConfig) -> int:
+        min_points = stationarity_cfg.min_points
+        return STATIONARITY_DEFAULT_MIN_POINTS if min_points is None else int(min_points)
+
+    @classmethod
+    def _stationarity_regime_shift_reason(
+        cls,
+        raw_df: pd.DataFrame,
+        stationarity_cfg: ValidationStationarityConfig | None,
+        *,
+        returns: pd.Series | None = None,
+        returns_issue: str | None = None,
+    ) -> list[str]:
+        if stationarity_cfg is None or stationarity_cfg.regime_shift is None:
+            return []
+        if returns is None and returns_issue is None:
+            returns, returns_issue = cls._stationarity_close_returns(raw_df)
+        if returns_issue is not None:
+            return [f"stationarity_regime_shift_indeterminate(reason={returns_issue})"]
+        assert returns is not None
+        regime = stationarity_cfg.regime_shift
+        assert regime is not None
+        window = int(regime.window)
+        required = max(cls._stationarity_min_points(stationarity_cfg), window * 2)
+        available = len(returns)
+        if available < required:
+            return [
+                "stationarity_regime_shift_not_enough_points("
+                f"required={required}, available={available})"
+            ]
+        rolling_mean = returns.rolling(window).mean()
+        rolling_std = returns.rolling(window).std(ddof=1)
+        prior_mean = rolling_mean.shift(window)
+        prior_std = rolling_std.shift(window)
+        eps = 1e-12
+        rolling_mean_values = rolling_mean.to_numpy(dtype=float)
+        rolling_std_values = rolling_std.to_numpy(dtype=float)
+        prior_mean_values = prior_mean.to_numpy(dtype=float)
+        prior_std_values = prior_std.to_numpy(dtype=float)
+        scale = np.maximum(np.maximum(rolling_std_values, prior_std_values), eps)
+        mean_shift = np.abs(rolling_mean_values - prior_mean_values) / scale
+        vol_ratio = np.maximum(
+            rolling_std_values / np.maximum(prior_std_values, eps),
+            prior_std_values / np.maximum(rolling_std_values, eps),
+        )
+        valid_mask = np.isfinite(mean_shift) & np.isfinite(vol_ratio)
+        if not valid_mask.any():
+            return ["stationarity_regime_shift_indeterminate(reason=insufficient_window_history)"]
+        max_mean_shift = float(np.nanmax(mean_shift[valid_mask]))
+        max_vol_ratio = float(np.nanmax(vol_ratio[valid_mask]))
+        reasons: list[str] = []
+        if max_mean_shift > regime.mean_shift_max:
+            reasons.append(
+                "stationarity_regime_shift_mean_shift_exceeded("
+                f"max_allowed={regime.mean_shift_max}, available={max_mean_shift})"
+            )
+        if max_vol_ratio > regime.vol_ratio_max:
+            reasons.append(
+                "stationarity_regime_shift_vol_ratio_exceeded("
+                f"max_allowed={regime.vol_ratio_max}, available={max_vol_ratio})"
+            )
+        return reasons
+
+    @classmethod
     def _collect_reliability_reasons(
         cls,
         *,
@@ -1613,6 +1873,8 @@ class BacktestRunner:
         continuity_cfg: ValidationContinuityConfig | None,
         kurtosis_cfg: float | None,
         outlier_detection: ValidationOutlierDetectionConfig | None,
+        stationarity_cfg: ValidationStationarityConfig | None,
+        is_verified: bool | None,
     ) -> list[str]:
         reasons: list[str] = []
         reason_checks = (
@@ -1620,6 +1882,7 @@ class BacktestRunner:
             cls._min_data_points_reason(raw_df, min_data_points_cfg),
             cls._missing_bar_pct_reason(continuity, continuity_cfg),
             cls._max_kurtosis_reason(raw_df, kurtosis_cfg),
+            cls._collection_verification_reason(is_verified),
             cls._outlier_pct_reason(
                 raw_df=raw_df,
                 outlier_detection=outlier_detection,
@@ -1628,6 +1891,57 @@ class BacktestRunner:
         for reason in reason_checks:
             if reason is not None:
                 reasons.append(reason)
+        reasons.extend(cls._stationarity_reasons(raw_df, stationarity_cfg))
+        return reasons
+
+    @classmethod
+    def _stationarity_reasons(
+        cls,
+        raw_df: pd.DataFrame,
+        stationarity_cfg: ValidationStationarityConfig | None,
+    ) -> list[str]:
+        if stationarity_cfg is None:
+            return []
+        returns, returns_issue = cls._stationarity_close_returns(raw_df)
+        reasons: list[str] = []
+        adf_stationary, adf_reason, adf_pvalue = cls._stationarity_adf_assessment(
+            raw_df,
+            stationarity_cfg,
+            returns=returns,
+            returns_issue=returns_issue,
+        )
+        if adf_reason is not None:
+            reasons.append(adf_reason)
+        kpss_stationary, kpss_reason, kpss_pvalue = cls._stationarity_kpss_assessment(
+            raw_df,
+            stationarity_cfg,
+            returns=returns,
+            returns_issue=returns_issue,
+        )
+        if kpss_reason is not None and kpss_reason not in reasons:
+            reasons.append(kpss_reason)
+        if (
+            adf_stationary is not None
+            and kpss_stationary is not None
+            and adf_stationary != kpss_stationary
+        ):
+            adf_status = cls._STATIONARITY_TRUE if adf_stationary else cls._STATIONARITY_FALSE
+            kpss_status = cls._STATIONARITY_TRUE if kpss_stationary else cls._STATIONARITY_FALSE
+            reasons.append(
+                "stationarity_test_conflict("
+                f"adf_stationary={adf_status}, "
+                f"kpss_stationary={kpss_status}, "
+                f"adf_pvalue={adf_pvalue}, "
+                f"kpss_pvalue={kpss_pvalue})"
+            )
+        reasons.extend(
+            cls._stationarity_regime_shift_reason(
+                raw_df,
+                stationarity_cfg,
+                returns=returns,
+                returns_issue=returns_issue,
+            )
+        )
         return reasons
 
     @classmethod

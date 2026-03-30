@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 from math import isfinite
-from types import SimpleNamespace
-from types import MethodType
+from types import MethodType, SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -28,6 +28,8 @@ from src.config import (
     ValidationContinuityConfig,
     ValidationDataQualityConfig,
     ValidationOutlierDetectionConfig,
+    ValidationStationarityConfig,
+    ValidationStationarityRegimeShiftConfig,
     resolve_validation_overrides,
 )
 from src.strategies.base import BaseStrategy
@@ -451,6 +453,228 @@ def test_data_validation_without_data_quality_does_not_skip_on_continuity_errors
     assert decision.action == "continue"
     assert validated_data is not None
     assert validated_data.continuity == {}
+
+
+def test_data_validation_stationarity_rejects_constant_series(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            on_fail="skip_job",
+            stationarity=ValidationStationarityConfig(
+                adf_pvalue_max=0.05,
+                min_points=20,
+            ),
+        )
+    )
+    resolve_validation_overrides(runner.cfg)
+    df = pd.DataFrame({"Close": [100.0] * 8}, index=pd.date_range("2024-01-01", periods=8, freq="D"))
+    context = SimpleNamespace(
+        job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
+        fetched_data=SimpleNamespace(raw_df=df),
+    )
+
+    decision, validated_data = runner._data_validation_common(context)
+
+    assert not decision.passed
+    assert decision.action == "skip_job"
+    assert validated_data is not None
+    assert any(reason.startswith("stationarity_") for reason in validated_data.reliability_reasons)
+
+
+def test_data_validation_collects_multiple_reliability_reasons(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            continuity=ValidationContinuityConfig(max_missing_bar_pct=10.0),
+            kurtosis=1.0,
+            is_verified=False,
+            on_fail="skip_job",
+        )
+    )
+    resolve_validation_overrides(runner.cfg)
+    closes = [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 400.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
+    df = pd.DataFrame(
+        {
+            "Open": closes,
+            "High": closes,
+            "Low": closes,
+            "Close": closes,
+            "Volume": [100] * len(closes),
+        },
+        index=pd.date_range("2024-01-01", periods=len(closes), freq="D"),
+    )
+    context = SimpleNamespace(
+        job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
+        fetched_data=SimpleNamespace(raw_df=df),
+    )
+
+    def _mock_continuity_score(cls, df, timeframe, **kwargs):
+        return {
+            "score": 0.7,
+            "coverage_ratio": 0.8,
+            "expected_bars": 20,
+            "actual_bars": 13,
+            "unique_bars": 13,
+            "duplicate_bars": 0,
+            "missing_bars": 4,
+            "largest_gap_bars": 2,
+        }
+
+    monkeypatch.setattr(
+        BacktestRunner,
+        "compute_continuity_score",
+        classmethod(_mock_continuity_score),
+    )
+
+    decision, validated_data = runner._data_validation_common(context)
+
+    assert not decision.passed
+    assert decision.action == "skip_job"
+    assert validated_data is not None
+    assert any(reason.startswith("max_missing_bar_pct_exceeded") for reason in validated_data.reliability_reasons)
+    assert any(reason.startswith("max_kurtosis_exceeded") for reason in validated_data.reliability_reasons)
+    assert "collection_not_verified" in validated_data.reliability_reasons
+
+
+def test_stationarity_adf_reason_returns_indeterminate_when_statsmodels_missing():
+    idx = pd.date_range("2024-01-01", periods=40, freq="D")
+    raw_df = pd.DataFrame({"Close": np.linspace(100.0, 120.0, len(idx))}, index=idx)
+    stationarity_cfg = ValidationStationarityConfig(
+        adf_pvalue_max=0.05,
+        min_points=20,
+    )
+
+    original_adfuller = BacktestRunner._stationarity_adfuller
+    try:
+        BacktestRunner._stationarity_adfuller = staticmethod(lambda: None)
+        reason = BacktestRunner._stationarity_adf_reason(raw_df, stationarity_cfg)
+    finally:
+        BacktestRunner._stationarity_adfuller = original_adfuller
+
+    assert reason == "stationarity_indeterminate(reason=statsmodels_missing)"
+
+
+def test_stationarity_kpss_reason_returns_indeterminate_when_statsmodels_missing():
+    idx = pd.date_range("2024-01-01", periods=40, freq="D")
+    raw_df = pd.DataFrame({"Close": np.linspace(100.0, 120.0, len(idx))}, index=idx)
+    stationarity_cfg = ValidationStationarityConfig(
+        adf_pvalue_max=0.05,
+        kpss_pvalue_min=0.05,
+        min_points=20,
+    )
+
+    original_kpss = BacktestRunner._stationarity_kpss
+    try:
+        BacktestRunner._stationarity_kpss = staticmethod(lambda: None)
+        _, reason, _ = BacktestRunner._stationarity_kpss_assessment(raw_df, stationarity_cfg)
+    finally:
+        BacktestRunner._stationarity_kpss = original_kpss
+
+    assert reason == "stationarity_indeterminate(reason=statsmodels_missing)"
+
+
+def test_stationarity_regime_shift_reason_flags_mean_and_vol_shift():
+    idx = pd.date_range("2024-01-01", periods=80, freq="D")
+    first_half = np.array([0.001, 0.002, -0.001, 0.0] * 10, dtype=float)
+    second_half = np.array([0.04, 0.05, 0.03, 0.06] * 10, dtype=float)
+    returns = np.concatenate([first_half, second_half])
+    close = 100.0 * np.exp(np.cumsum(returns))
+    raw_df = pd.DataFrame({"Close": close}, index=idx)
+    stationarity_cfg = ValidationStationarityConfig(
+        adf_pvalue_max=0.05,
+        min_points=20,
+        regime_shift=ValidationStationarityRegimeShiftConfig(
+            window=20,
+            mean_shift_max=1.0,
+            vol_ratio_max=1.25,
+        ),
+    )
+
+    reasons = BacktestRunner._stationarity_regime_shift_reason(raw_df, stationarity_cfg)
+
+    assert len(reasons) == 2
+    assert any(reason.startswith("stationarity_regime_shift_mean_shift_exceeded(") for reason in reasons)
+    assert any(reason.startswith("stationarity_regime_shift_vol_ratio_exceeded(") for reason in reasons)
+
+
+def test_stationarity_reasons_handles_none_min_points():
+    idx = pd.date_range("2024-01-01", periods=29, freq="D")
+    close = pd.Series(np.linspace(100.0, 140.0, len(idx)), index=idx)
+    raw_df = pd.DataFrame({"Close": close})
+    stationarity_cfg = ValidationStationarityConfig(
+        adf_pvalue_max=0.05,
+        min_points=None,
+        regime_shift=ValidationStationarityRegimeShiftConfig(
+            window=10,
+            mean_shift_max=0.1,
+            vol_ratio_max=1.25,
+        ),
+    )
+
+    reasons = BacktestRunner._stationarity_reasons(raw_df, stationarity_cfg)
+
+    assert "stationarity_min_points_not_met(required=30, available=28)" in reasons
+    assert (
+        "stationarity_regime_shift_not_enough_points(required=30, available=28)"
+        in reasons
+    )
+
+
+def test_stationarity_reasons_deduplicates_min_points_reason_for_adf_and_kpss():
+    idx = pd.date_range("2024-01-01", periods=29, freq="D")
+    close = pd.Series(np.linspace(100.0, 140.0, len(idx)), index=idx)
+    raw_df = pd.DataFrame({"Close": close})
+    stationarity_cfg = ValidationStationarityConfig(
+        adf_pvalue_max=0.05,
+        kpss_pvalue_min=0.05,
+        min_points=None,
+    )
+
+    reasons = BacktestRunner._stationarity_reasons(raw_df, stationarity_cfg)
+
+    expected_reason = "stationarity_min_points_not_met(required=30, available=28)"
+    assert reasons.count(expected_reason) == 1
+
+
+def test_stationarity_reasons_flags_adf_kpss_conflict():
+    idx = pd.date_range("2024-01-01", periods=40, freq="D")
+    raw_df = pd.DataFrame({"Close": np.linspace(100.0, 120.0, len(idx))}, index=idx)
+    stationarity_cfg = ValidationStationarityConfig(
+        adf_pvalue_max=0.05,
+        kpss_pvalue_min=0.05,
+        min_points=20,
+    )
+
+    original_adf_assessment = BacktestRunner._stationarity_adf_assessment
+    original_kpss_assessment = BacktestRunner._stationarity_kpss_assessment
+    try:
+        BacktestRunner._stationarity_adf_assessment = classmethod(
+            lambda cls, raw_df, stationarity_cfg, **kwargs: (True, None, 0.01)
+        )
+        BacktestRunner._stationarity_kpss_assessment = classmethod(
+            lambda cls, raw_df, stationarity_cfg, **kwargs: (False, None, 0.01)
+        )
+        reasons = BacktestRunner._stationarity_reasons(raw_df, stationarity_cfg)
+    finally:
+        BacktestRunner._stationarity_adf_assessment = original_adf_assessment
+        BacktestRunner._stationarity_kpss_assessment = original_kpss_assessment
+
+    assert any(reason.startswith("stationarity_test_conflict(") for reason in reasons)
+
+
+def test_stationarity_adf_reason_flags_constant_returns_series():
+    idx = pd.date_range("2024-01-01", periods=40, freq="D")
+    close = pd.Series([100.0 * (1.01 ** i) for i in range(len(idx))], index=idx)
+    raw_df = pd.DataFrame({"Close": close})
+    stationarity_cfg = ValidationStationarityConfig(
+        adf_pvalue_max=0.01,
+        min_points=20,
+    )
+
+    reason = BacktestRunner._stationarity_adf_reason(raw_df, stationarity_cfg)
+
+    assert reason is not None
+    assert reason.startswith("stationarity_")
 
 
 def test_sample_series_preserves_last_point():
@@ -1247,6 +1471,27 @@ def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkey
     assert any("min_data_points_not_met" in r for r in reasons)
 
 
+def test_run_all_reliability_not_verified_skips_optimization(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            is_verified=False,
+            on_fail="skip_optimization",
+        ),
+    )
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results
+    assert eval_calls["count"] == 1
+    optimization = results[0].stats.get("optimization")
+    assert optimization is not None
+    assert optimization["reason"] == "reliability_threshold_skip_optimization"
+    reasons = optimization.get("reliability_reasons", [])
+    assert "collection_not_verified" in reasons
+
+
 def test_run_all_data_quality_without_continuity_still_computes_diagnostics(
     tmp_path, monkeypatch
 ):
@@ -1435,6 +1680,26 @@ def test_run_all_reliability_skip_evaluation_on_max_outlier_pct(tmp_path, monkey
     failure = runner.failures[0]
     assert failure["stage"] == "data_validation"
     assert "max_outlier_pct_exceeded" in failure["error"]
+
+
+def test_run_all_reliability_not_verified_skips_job(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            is_verified=False,
+            on_fail="skip_job",
+        ),
+    )
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert runner.failures
+    failure = runner.failures[0]
+    assert failure["stage"] == "data_validation"
+    assert "collection_not_verified" in failure["error"]
 
 
 def test_run_all_outlier_indeterminate_on_mad_zero(tmp_path, monkeypatch):
@@ -1878,6 +2143,64 @@ def test_run_all_outlier_skip_collection_blocks_remaining_jobs_in_collection(
     assert "max_outlier_pct_exceeded" in failure["error"]
 
 
+def test_run_all_not_verified_skip_collection_blocks_remaining_jobs_in_collection(
+    tmp_path, monkeypatch
+):
+    collections = [
+        CollectionConfig(
+            name="bad_col",
+            source="custom",
+            symbols=["AAPL", "MSFT"],
+            fees=0.0004,
+            slippage=0.0003,
+        ),
+        CollectionConfig(
+            name="good_col",
+            source="custom",
+            symbols=["NVDA"],
+            fees=0.0004,
+            slippage=0.0003,
+            validation=ValidationConfig(
+                data_quality=ValidationDataQualityConfig(
+                    is_verified=True,
+                    on_fail="skip_collection",
+                ),
+            ),
+        ),
+    ]
+    runner = _make_runner(tmp_path, monkeypatch, collections=collections)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            is_verified=False,
+            on_fail="skip_collection",
+        ),
+    )
+
+    fetch_calls = {"bad_col": 0, "good_col": 0}
+
+    class _Source:
+        def __init__(self, collection_name: str):
+            self.collection_name = collection_name
+
+        def fetch(self, symbol, timeframe, only_cached=False):
+            fetch_calls[self.collection_name] += 1
+            return _make_ohlcv(20)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source(col.name))
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    assert fetch_calls["bad_col"] == 1
+    assert fetch_calls["good_col"] == 1
+    assert eval_calls["count"] == 2
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["collection"] == "bad_col"
+    assert failure["stage"] == "data_validation"
+    assert "collection_not_verified" in failure["error"]
+
+
 def test_run_all_collection_cache_isolation_for_same_name_collections(tmp_path, monkeypatch):
     collections = [
         CollectionConfig(
@@ -2100,6 +2423,8 @@ def test_collect_reliability_reasons_dispatches_outlier_reason_to_subclass():
         continuity_cfg=None,
         kurtosis_cfg=None,
         outlier_detection=None,
+        stationarity_cfg=None,
+        is_verified=None,
     )
 
     assert reasons == ["subclass_outlier_reason"]
