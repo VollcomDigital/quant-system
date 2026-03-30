@@ -1789,23 +1789,6 @@ class BacktestRunner:
             )
         return True, None, pvalue
 
-    @classmethod
-    def _stationarity_adf_reason(
-        cls,
-        raw_df: pd.DataFrame,
-        stationarity_cfg: ValidationStationarityConfig | None,
-        *,
-        returns: pd.Series | None = None,
-        returns_issue: str | None = None,
-    ) -> str | None:
-        _, reason, _ = cls._stationarity_adf_assessment(
-            raw_df,
-            stationarity_cfg,
-            returns=returns,
-            returns_issue=returns_issue,
-        )
-        return reason
-
     @staticmethod
     def _stationarity_min_points(stationarity_cfg: ValidationStationarityConfig) -> int:
         min_points = stationarity_cfg.min_points
