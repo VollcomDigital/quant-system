@@ -353,16 +353,16 @@ class BacktestRunner:
         }
         outlier = getattr(data_quality, "outlier_detection", None)
         stationarity = getattr(data_quality, "stationarity", None)
-        regime_shift = getattr(stationarity, "regime_shift", None) if stationarity is not None else None
-        regime_shift_payload = None
-        if regime_shift is not None:
-            regime_shift_payload = {
-                "window": getattr(regime_shift, "window", None),
-                "mean_shift_max": getattr(regime_shift, "mean_shift_max", None),
-                "vol_ratio_max": getattr(regime_shift, "vol_ratio_max", None),
-            }
         stationarity_payload = None
         if stationarity is not None:
+            regime_shift = getattr(stationarity, "regime_shift", None)
+            regime_shift_payload = None
+            if regime_shift is not None:
+                regime_shift_payload = {
+                    "window": getattr(regime_shift, "window", None),
+                    "mean_shift_max": getattr(regime_shift, "mean_shift_max", None),
+                    "vol_ratio_max": getattr(regime_shift, "vol_ratio_max", None),
+                }
             stationarity_payload = {
                 "adf_pvalue_max": getattr(stationarity, "adf_pvalue_max", None),
                 "kpss_pvalue_min": getattr(stationarity, "kpss_pvalue_min", None),
