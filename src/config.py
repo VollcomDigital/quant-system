@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -91,6 +92,13 @@ class ValidationStationarityConfig:
 
 
 @dataclass
+class ValidationLookaheadShuffleTestConfig:
+    permutations: int = 20
+    threshold: float = 0.0
+    seed: int = 1337
+
+
+@dataclass
 class ValidationConfig:
     data_quality: ValidationDataQualityConfig | None = None
     optimization: "OptimizationPolicyConfig | None" = None
@@ -121,6 +129,7 @@ class ResultConsistencyExecutionPriceVarianceConfig:
 class ResultConsistencyConfig:
     outlier_dependency: ResultConsistencyOutlierDependencyConfig | None = None
     execution_price_variance: ResultConsistencyExecutionPriceVarianceConfig | None = None
+    lookahead_shuffle_test: ValidationLookaheadShuffleTestConfig | None = None
 
 
 @dataclass
@@ -147,6 +156,9 @@ class Config:
 
 DEFAULT_CALENDAR_KIND = "auto"
 STATIONARITY_DEFAULT_MIN_POINTS = 30
+LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS = 20
+LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD = 0.0
+LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED = 1337
 
 
 def _merge_replace(base: Any, override: Any) -> Any:
@@ -245,11 +257,16 @@ def _merge_result_consistency_config(
         getattr(base, "execution_price_variance", None),
         getattr(override, "execution_price_variance", None),
     )
-    if outlier_dependency is None and execution_price_variance is None:
+    lookahead_shuffle_test = _merge_lookahead_shuffle_test_config(
+        getattr(base, "lookahead_shuffle_test", None),
+        getattr(override, "lookahead_shuffle_test", None),
+    )
+    if outlier_dependency is None and execution_price_variance is None and lookahead_shuffle_test is None:
         return None
     return ResultConsistencyConfig(
         outlier_dependency=outlier_dependency,
         execution_price_variance=execution_price_variance,
+        lookahead_shuffle_test=lookahead_shuffle_test,
     )
 
 
@@ -476,6 +493,55 @@ def _merge_stationarity_config(
         ),
         "validation.data_quality.stationarity",
         default_min_points=STATIONARITY_DEFAULT_MIN_POINTS,
+    )
+
+
+def _normalize_lookahead_shuffle_test_config(
+    cfg: ValidationLookaheadShuffleTestConfig | None,
+    prefix: str,
+) -> ValidationLookaheadShuffleTestConfig | None:
+    if cfg is None:
+        return None
+    permutations = int(getattr(cfg, "permutations", LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS))
+    if permutations < 5:
+        raise ValueError(f"`{prefix}.permutations` must be >= 5")
+    threshold = float(getattr(cfg, "threshold", LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD))
+    if not math.isfinite(threshold):
+        raise ValueError(f"`{prefix}.threshold` must be finite")
+    seed = int(getattr(cfg, "seed", LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED))
+    if seed < 0:
+        raise ValueError(f"`{prefix}.seed` must be >= 0")
+    return ValidationLookaheadShuffleTestConfig(
+        permutations=permutations,
+        threshold=threshold,
+        seed=seed,
+    )
+
+
+def _merge_lookahead_shuffle_test_config(
+    base: ValidationLookaheadShuffleTestConfig | None,
+    override: ValidationLookaheadShuffleTestConfig | None,
+) -> ValidationLookaheadShuffleTestConfig | None:
+    if base is None and override is None:
+        return None
+    permutations = _merged_field(base, override, "permutations")
+    threshold = _merged_field(base, override, "threshold")
+    seed = _merged_field(base, override, "seed")
+    return _normalize_lookahead_shuffle_test_config(
+        ValidationLookaheadShuffleTestConfig(
+            permutations=(
+                int(permutations)
+                if permutations is not None
+                else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS
+            ),
+            threshold=(
+                float(threshold)
+                if threshold is not None
+                else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD
+            ),
+            seed=int(seed) if seed is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED,
+        ),
+        "validation.result_consistency.lookahead_shuffle_test",
     )
 
 
@@ -813,6 +879,30 @@ def _parse_stationarity(
     )
 
 
+def _parse_lookahead_shuffle_test(
+    raw: Any,
+    prefix: str,
+) -> ValidationLookaheadShuffleTestConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    permutations = parse_optional_int(parsed_raw, prefix, "permutations", min_value=5)
+    threshold = parse_optional_float(parsed_raw, prefix, "threshold")
+    if threshold is not None and not math.isfinite(threshold):
+        raise ValueError(f"`{prefix}.threshold` must be finite")
+    seed = parse_optional_int(parsed_raw, prefix, "seed", min_value=0)
+    return _normalize_lookahead_shuffle_test_config(
+        ValidationLookaheadShuffleTestConfig(
+            permutations=(
+                permutations if permutations is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS
+            ),
+            threshold=threshold if threshold is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD,
+            seed=seed if seed is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED,
+        ),
+        prefix,
+    )
+
+
 def _parse_validation_calendar(raw: Any, prefix: str) -> ValidationCalendarConfig | None:
     if raw is None:
         return None
@@ -861,7 +951,6 @@ def _parse_validation(raw: Any, prefix: str) -> ValidationConfig | None:
         if isinstance(result_consistency_raw, dict)
         else None
     )
-
     if data_quality_cfg is None and optimization_cfg is None and result_consistency_cfg is None:
         # Keep validation fully optional; no synthetic policy object when both modules are absent.
         return None
@@ -924,16 +1013,28 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
         if isinstance(execution_price_variance_raw, dict)
         else None
     )
+    lookahead_shuffle_test_raw = parsed_raw.get("lookahead_shuffle_test")
+    if lookahead_shuffle_test_raw is not None and not isinstance(lookahead_shuffle_test_raw, dict):
+        raise ValueError(f"Invalid `{prefix}.lookahead_shuffle_test`: expected a mapping")
+    lookahead_shuffle_test = (
+        _parse_lookahead_shuffle_test(
+            lookahead_shuffle_test_raw,
+            f"{prefix}.lookahead_shuffle_test",
+        )
+        if isinstance(lookahead_shuffle_test_raw, dict)
+        else None
+    )
 
-    if outlier_dependency is None and execution_price_variance is None:
+    if outlier_dependency is None and execution_price_variance is None and lookahead_shuffle_test is None:
         raise ValueError(
             f"Invalid `{prefix}`: expected at least one configured module "
-            "(`outlier_dependency` or `execution_price_variance`)"
+            "(`outlier_dependency`, `execution_price_variance`, or `lookahead_shuffle_test`)"
         )
 
     return ResultConsistencyConfig(
         outlier_dependency=outlier_dependency,
         execution_price_variance=execution_price_variance,
+        lookahead_shuffle_test=lookahead_shuffle_test,
     )
 
 
