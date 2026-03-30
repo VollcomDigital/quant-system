@@ -262,6 +262,8 @@ See new collection examples under `config/collections/` for FX intraday via Finn
     - `permutations` (optional, default `20`): number of deterministic OHLCV bar shuffles to evaluate
     - `threshold` (optional, default `0.0`): median shuffled metric above this value is suspicious
     - `seed` (optional, default `1337`): base seed combined with collection/symbol/timeframe/strategy
+    - `max_failed_permutations` (optional, default unset): max allowed failed permutation
+      evaluations before the module returns an indeterminate rejection
     - the runner permutes whole bars and reruns the selected strategy result after backtest
       evaluation to detect look-ahead style behavior when the median shuffled metric remains above
       the threshold

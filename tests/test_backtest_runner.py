@@ -535,7 +535,12 @@ def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
             trade_share_threshold=0.05,
         ),
         execution_price_variance=SimpleNamespace(price_tolerance_bps=1.0),
-        lookahead_shuffle_test=SimpleNamespace(permutations=20, threshold=0.0, seed=1337),
+        lookahead_shuffle_test=SimpleNamespace(
+            permutations=20,
+            threshold=0.0,
+            seed=1337,
+            max_failed_permutations=2,
+        ),
     )
 
     payload = BacktestRunner._serialize_result_consistency_profile(result_consistency)
@@ -555,6 +560,7 @@ def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
         "permutations": 20,
         "threshold": 0.0,
         "seed": 1337,
+        "max_failed_permutations": 2,
     }
 
 
@@ -2256,10 +2262,82 @@ def test_lookahead_shuffle_test_result_does_not_track_runtime_errors(
     assert reason.startswith("lookahead_shuffle_test_indeterminate(")
     assert meta is not None
     assert meta["is_complete"] is False
-    assert meta["reason"] == "signal boom"
+    assert meta["reason"] == "no_finite_metrics"
+    assert meta["failed_permutations"] == 5
+    assert meta["max_failed_permutations"] is None
     assert runner._runtime_signal_error_counts == {}
     assert runner.metrics["result_cache_misses"] == 0
     assert runner.evaluation_cache.saved == []
+
+
+def test_lookahead_shuffle_test_result_limits_failed_permutations(
+    tmp_path, monkeypatch
+):
+    class _BoomShuffleStrategy(BaseStrategy):
+        name = "boom_shuffle"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.strategies = [
+        StrategyConfig(
+            name="boom_shuffle",
+            module=None,
+            cls=None,
+            params={},
+        )
+    ]
+    runner.external_index = {"boom_shuffle": _BoomShuffleStrategy}
+    runner.cfg.validation = ValidationConfig(
+        result_consistency=ResultConsistencyConfig(
+            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
+                permutations=5,
+                threshold=0.0,
+                seed=7,
+                max_failed_permutations=1,
+            )
+        ),
+    )
+    resolve_validation_overrides(runner.cfg)
+    raw_df = _make_trending_ohlcv(25)
+    state = JobState(
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        )
+    )
+    plan = runner._strategy_create_plan(state, "boom_shuffle")
+    validated_data = ValidatedData(
+        raw_df=raw_df,
+        continuity={},
+        reliability_on_fail="skip_optimization",
+        reliability_reasons=[],
+    )
+    context = ValidationContext(
+        stage="strategy_validation",
+        state=state,
+        mode="backtest",
+        job=state.job,
+        validated_data=validated_data,
+    )
+    policy = runner._load_lookahead_shuffle_test_policy(state.job.collection)
+    runner.metrics = {"result_cache_misses": 0}
+
+    reason, meta = runner._lookahead_shuffle_test_result(context, plan, policy)
+
+    assert reason is not None
+    assert "too_many_failed_permutations" in reason
+    assert meta is not None
+    assert meta["is_complete"] is False
+    assert meta["reason"] == "too_many_failed_permutations"
+    assert meta["failed_permutations"] == 2
+    assert meta["max_failed_permutations"] == 1
 
 
 def test_run_all_lookahead_shuffle_test_indeterminate_rejects_result(
@@ -2317,7 +2395,7 @@ def test_run_all_lookahead_shuffle_test_indeterminate_rejects_result(
     assert failure["stage"] == "strategy_validation"
     assert failure["error"].startswith("lookahead_shuffle_test_indeterminate(")
     assert failure["result_validation"]["lookahead_shuffle_test"]["is_complete"] is False
-    assert failure["result_validation"]["lookahead_shuffle_test"]["reason"] == "signal boom"
+    assert failure["result_validation"]["lookahead_shuffle_test"]["reason"] == "no_finite_metrics"
 
 
 def test_run_all_lookahead_shuffle_test_rejects_result_in_strategy_validation(

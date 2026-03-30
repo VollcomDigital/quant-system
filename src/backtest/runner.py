@@ -408,6 +408,9 @@ class BacktestRunner:
             "permutations": getattr(lookahead_shuffle_test, "permutations", None),
             "threshold": getattr(lookahead_shuffle_test, "threshold", None),
             "seed": getattr(lookahead_shuffle_test, "seed", None),
+            "max_failed_permutations": getattr(
+                lookahead_shuffle_test, "max_failed_permutations", None
+            ),
         }
 
     @staticmethod
@@ -2319,6 +2322,11 @@ class BacktestRunner:
             rng = np.random.default_rng(derived_seed)
             effective_params = params or {}
             metric_values: list[float] = []
+            failed_permutations = 0
+            max_failed_permutations = getattr(policy, "max_failed_permutations", None)
+            max_failed_permutations = (
+                int(max_failed_permutations) if max_failed_permutations is not None else None
+            )
 
             for _ in range(policy.permutations):
                 permutation = rng.permutation(len(raw_df))
@@ -2353,7 +2361,24 @@ class BacktestRunner:
                     )
                     request = self._build_evaluation_request(plan, context.state, prepared, full_params)
                     outcome = self._evaluate_strategy_outcome(request, prepared, entries, exits)
-                except Exception:
+                except Exception as exc:
+                    failed_permutations += 1
+                    if (
+                        max_failed_permutations is not None
+                        and failed_permutations > max_failed_permutations
+                    ):
+                        return self._lookahead_shuffle_indeterminate_reason(
+                            "too_many_failed_permutations"
+                        ), {
+                            "is_complete": False,
+                            "reason": "too_many_failed_permutations",
+                            "reason_detail": str(exc),
+                            "permutations": policy.permutations,
+                            "seed": derived_seed,
+                            "metric_name": self.cfg.metric,
+                            "failed_permutations": failed_permutations,
+                            "max_failed_permutations": max_failed_permutations,
+                        }
                     continue
                 if outcome.valid and np.isfinite(outcome.metric_value):
                     metric_values.append(float(outcome.metric_value))
@@ -2365,6 +2390,8 @@ class BacktestRunner:
                     "permutations": policy.permutations,
                     "seed": derived_seed,
                     "metric_name": self.cfg.metric,
+                    "failed_permutations": failed_permutations,
+                    "max_failed_permutations": max_failed_permutations,
                 }
 
             metric_array = np.asarray(metric_values, dtype=float)
@@ -2376,6 +2403,8 @@ class BacktestRunner:
                 "metric_name": self.cfg.metric,
                 "threshold": policy.threshold,
                 "finite_permutations": int(metric_array.size),
+                "failed_permutations": failed_permutations,
+                "max_failed_permutations": max_failed_permutations,
                 "median_shuffled_metric": median_metric,
                 "min_shuffled_metric": float(np.min(metric_array)),
                 "max_shuffled_metric": float(np.max(metric_array)),

@@ -141,6 +141,7 @@ validation:
     assert cfg.validation.result_consistency.lookahead_shuffle_test.permutations == 20
     assert cfg.validation.result_consistency.lookahead_shuffle_test.threshold == pytest.approx(0.0)
     assert cfg.validation.result_consistency.lookahead_shuffle_test.seed == 1337
+    assert cfg.validation.result_consistency.lookahead_shuffle_test.max_failed_permutations is None
 
 
 def test_load_config_collection_reliability_thresholds_override(tmp_path: Path):
@@ -1020,6 +1021,7 @@ collections:
           permutations: 9
           threshold: 0.25
           seed: 7
+          max_failed_permutations: 2
 timeframes: ['1d']
 metric: sharpe
 validation:
@@ -1040,6 +1042,7 @@ validation:
     assert lookahead.permutations == 9
     assert lookahead.threshold == pytest.approx(0.25)
     assert lookahead.seed == 7
+    assert lookahead.max_failed_permutations == 2
 
 
 def test_load_config_data_quality_stationarity_invalid_values(tmp_path: Path):
@@ -1080,6 +1083,30 @@ validation:
     path.write_text(config_text)
 
     with pytest.raises(ValueError, match=r"validation\.result_consistency\.lookahead_shuffle_test\.permutations"):
+        load_config(path)
+
+
+def test_load_config_lookahead_shuffle_test_invalid_max_failed_permutations(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    lookahead_shuffle_test:
+      permutations: 5
+      max_failed_permutations: 6
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(
+        ValueError,
+        match=r"validation\.result_consistency\.lookahead_shuffle_test\.max_failed_permutations",
+    ):
         load_config(path)
 
 

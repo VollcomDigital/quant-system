@@ -57,6 +57,7 @@ validation:
       permutations: 20  # deterministic bar shuffles used for the null test
       threshold: 0.0  # median shuffled metric above this is suspicious
       seed: 1337  # base seed combined with collection/symbol/timeframe/strategy
+      max_failed_permutations: 2  # optional cap; reject as indeterminate if exceeded
 
 collections:
   # Stocks (large-cap growth)
