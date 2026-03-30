@@ -57,6 +57,7 @@ class ValidationDataQualityConfig:
     kurtosis: float | None = None
     outlier_detection: "ValidationOutlierDetectionConfig | None" = None
     stationarity: "ValidationStationarityConfig | None" = None
+    is_verified: bool | None = None
     on_fail: str | None = None
 
 
@@ -184,6 +185,10 @@ def _merge_data_quality_config(
         getattr(base, "stationarity", None),
         getattr(override, "stationarity", None),
     )
+    is_verified = _merge_replace(
+        getattr(base, "is_verified", None),
+        getattr(override, "is_verified", None),
+    )
 
     on_fail = _merged_field(base, override, "on_fail")
     if on_fail is None:
@@ -194,6 +199,7 @@ def _merge_data_quality_config(
         kurtosis=kurtosis,
         outlier_detection=outlier_detection,
         stationarity=stationarity,
+        is_verified=is_verified,
         on_fail=str(on_fail).strip().lower(),
     )
 
@@ -609,6 +615,23 @@ def parse_optional_str(
     return parsed.lower() if normalize else parsed
 
 
+def parse_optional_bool(
+    raw: dict[str, Any],
+    prefix: str,
+    key: str,
+) -> bool | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "false"}:
+            return normalized == "true"
+    raise ValueError(f"Invalid `{prefix}.{key}`: expected a boolean")
+
+
 def _parse_on_fail(
     raw_value: Any,
     field_path: str,
@@ -677,6 +700,7 @@ def _parse_validation_data_quality(
     stationarity_cfg = _parse_stationarity(
         parsed_raw.get("stationarity"), f"{prefix}.stationarity"
     )
+    is_verified = parse_optional_bool(parsed_raw, prefix, "is_verified")
 
     cfg = ValidationDataQualityConfig(
         min_data_points=min_data_points_cfg,
@@ -684,6 +708,7 @@ def _parse_validation_data_quality(
         kurtosis=kurtosis_cfg,
         outlier_detection=outlier_detection_cfg,
         stationarity=stationarity_cfg,
+        is_verified=is_verified,
         on_fail=on_fail,
     )
     return cfg

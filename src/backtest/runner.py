@@ -372,6 +372,7 @@ class BacktestRunner:
         return {
             "on_fail": getattr(data_quality, "on_fail", None),
             "min_data_points": getattr(data_quality, "min_data_points", None),
+            "is_verified": getattr(data_quality, "is_verified", None),
             "continuity": (
                 {
                     "min_score": getattr(continuity, "min_score", None),
@@ -1401,6 +1402,7 @@ class BacktestRunner:
             kurtosis_cfg,
             outlier_detection,
             stationarity_cfg,
+            is_verified,
             calendar_kind,
             calendar_exchange,
             calendar_timezone,
@@ -1458,6 +1460,7 @@ class BacktestRunner:
             kurtosis_cfg=kurtosis_cfg,
             outlier_detection=outlier_detection,
             stationarity_cfg=stationarity_cfg,
+            is_verified=is_verified,
         )
         if not reliability_reasons:
             decision = GateDecision(True, "continue", [], "data_validation")
@@ -1485,6 +1488,7 @@ class BacktestRunner:
         float | None,
         ValidationOutlierDetectionConfig | None,
         ValidationStationarityConfig | None,
+        bool | None,
         str | None,
         str | None,
         str | None,
@@ -1493,13 +1497,14 @@ class BacktestRunner:
         resolved_dq = getattr(collection_validation, "data_quality", None) if collection_validation else None
         if resolved_dq is None:
             # Sentinel for "no data-quality policy configured for this collection".
-            return None, None, None, None, None, None, None, None, None
+            return None, None, None, None, None, None, None, None, None, None
         on_fail = resolved_dq.on_fail
         min_data_points_cfg = resolved_dq.min_data_points
         continuity_cfg = resolved_dq.continuity
         kurtosis_cfg = resolved_dq.kurtosis
         outlier_detection = resolved_dq.outlier_detection
         stationarity_cfg = getattr(resolved_dq, "stationarity", None)
+        is_verified = getattr(resolved_dq, "is_verified", None)
         calendar_kind: str | None = None
         calendar_exchange: str | None = None
         calendar_timezone: str | None = None
@@ -1514,6 +1519,7 @@ class BacktestRunner:
             kurtosis_cfg,
             outlier_detection,
             stationarity_cfg,
+            is_verified,
             calendar_kind,
             calendar_exchange,
             calendar_timezone,
@@ -1602,6 +1608,12 @@ class BacktestRunner:
                 "max_missing_bar_pct_exceeded("
                 f"max_allowed={threshold}, available={missing_bar_pct})"
             )
+        return None
+
+    @staticmethod
+    def _collection_verification_reason(is_verified: bool | None) -> str | None:
+        if is_verified is False:
+            return "collection_not_verified"
         return None
 
     @staticmethod
@@ -1862,6 +1874,7 @@ class BacktestRunner:
         kurtosis_cfg: float | None,
         outlier_detection: ValidationOutlierDetectionConfig | None,
         stationarity_cfg: ValidationStationarityConfig | None,
+        is_verified: bool | None,
     ) -> list[str]:
         reasons: list[str] = []
         reason_checks = (
@@ -1869,6 +1882,7 @@ class BacktestRunner:
             cls._min_data_points_reason(raw_df, min_data_points_cfg),
             cls._missing_bar_pct_reason(continuity, continuity_cfg),
             cls._max_kurtosis_reason(raw_df, kurtosis_cfg),
+            cls._collection_verification_reason(is_verified),
             cls._outlier_pct_reason(
                 raw_df=raw_df,
                 outlier_detection=outlier_detection,

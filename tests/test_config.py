@@ -95,6 +95,28 @@ validation:
     assert cfg.validation.data_quality.on_fail == "skip_job"
 
 
+def test_load_config_reliability_thresholds_accepts_is_verified(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    is_verified: false
+    on_fail: skip_job
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.is_verified is False
+
+
 def test_load_config_collection_reliability_thresholds_override(tmp_path: Path):
     config_text = """
 collections:
@@ -128,6 +150,37 @@ validation:
     assert col.validation.data_quality.min_data_points == 250
     assert col.validation.data_quality.continuity is not None
     assert col.validation.data_quality.continuity.min_score == pytest.approx(0.95)
+    assert col.validation.data_quality.on_fail == "skip_optimization"
+
+
+def test_load_config_collection_reliability_thresholds_override_is_verified(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    validation:
+      data_quality:
+        is_verified: true
+        on_fail: skip_optimization
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    is_verified: false
+    on_fail: skip_job
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.is_verified is False
+    col = cfg.collections[0]
+    assert col.validation is not None
+    assert col.validation.data_quality is not None
+    assert col.validation.data_quality.is_verified is True
     assert col.validation.data_quality.on_fail == "skip_optimization"
 
 

@@ -1416,6 +1416,27 @@ def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkey
     assert any("min_data_points_not_met" in r for r in reasons)
 
 
+def test_run_all_reliability_not_verified_skips_optimization(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            is_verified=False,
+            on_fail="skip_optimization",
+        ),
+    )
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results
+    assert eval_calls["count"] == 1
+    optimization = results[0].stats.get("optimization")
+    assert optimization is not None
+    assert optimization["reason"] == "reliability_threshold_skip_optimization"
+    reasons = optimization.get("reliability_reasons", [])
+    assert "collection_not_verified" in reasons
+
+
 def test_run_all_data_quality_without_continuity_still_computes_diagnostics(
     tmp_path, monkeypatch
 ):
@@ -1604,6 +1625,26 @@ def test_run_all_reliability_skip_evaluation_on_max_outlier_pct(tmp_path, monkey
     failure = runner.failures[0]
     assert failure["stage"] == "data_validation"
     assert "max_outlier_pct_exceeded" in failure["error"]
+
+
+def test_run_all_reliability_not_verified_skips_job(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            is_verified=False,
+            on_fail="skip_job",
+        ),
+    )
+    _patch_source_with_bars(monkeypatch, bars=5)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert runner.failures
+    failure = runner.failures[0]
+    assert failure["stage"] == "data_validation"
+    assert "collection_not_verified" in failure["error"]
 
 
 def test_run_all_outlier_indeterminate_on_mad_zero(tmp_path, monkeypatch):
@@ -2047,6 +2088,64 @@ def test_run_all_outlier_skip_collection_blocks_remaining_jobs_in_collection(
     assert "max_outlier_pct_exceeded" in failure["error"]
 
 
+def test_run_all_not_verified_skip_collection_blocks_remaining_jobs_in_collection(
+    tmp_path, monkeypatch
+):
+    collections = [
+        CollectionConfig(
+            name="bad_col",
+            source="custom",
+            symbols=["AAPL", "MSFT"],
+            fees=0.0004,
+            slippage=0.0003,
+        ),
+        CollectionConfig(
+            name="good_col",
+            source="custom",
+            symbols=["NVDA"],
+            fees=0.0004,
+            slippage=0.0003,
+            validation=ValidationConfig(
+                data_quality=ValidationDataQualityConfig(
+                    is_verified=True,
+                    on_fail="skip_collection",
+                ),
+            ),
+        ),
+    ]
+    runner = _make_runner(tmp_path, monkeypatch, collections=collections)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            is_verified=False,
+            on_fail="skip_collection",
+        ),
+    )
+
+    fetch_calls = {"bad_col": 0, "good_col": 0}
+
+    class _Source:
+        def __init__(self, collection_name: str):
+            self.collection_name = collection_name
+
+        def fetch(self, symbol, timeframe, only_cached=False):
+            fetch_calls[self.collection_name] += 1
+            return _make_ohlcv(20)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source(col.name))
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    assert fetch_calls["bad_col"] == 1
+    assert fetch_calls["good_col"] == 1
+    assert eval_calls["count"] == 2
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["collection"] == "bad_col"
+    assert failure["stage"] == "data_validation"
+    assert "collection_not_verified" in failure["error"]
+
+
 def test_run_all_collection_cache_isolation_for_same_name_collections(tmp_path, monkeypatch):
     collections = [
         CollectionConfig(
@@ -2270,6 +2369,7 @@ def test_collect_reliability_reasons_dispatches_outlier_reason_to_subclass():
         kurtosis_cfg=None,
         outlier_detection=None,
         stationarity_cfg=None,
+        is_verified=None,
     )
 
     assert reasons == ["subclass_outlier_reason"]
