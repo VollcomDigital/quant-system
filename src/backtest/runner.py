@@ -2250,7 +2250,8 @@ class BacktestRunner:
         track_runtime_errors: bool = False,
     ) -> tuple[pd.Series, pd.Series]:
         try:
-            entries, exits = strategy.generate_signals(raw_df, params)
+            call_params = params.copy()
+            entries, exits = strategy.generate_signals(raw_df, call_params)
         except Exception as exc:
             if track_runtime_errors and plan is not None and state is not None:
                 self._record_runtime_signal_failure(
