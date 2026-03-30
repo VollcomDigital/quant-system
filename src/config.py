@@ -102,6 +102,7 @@ class OptimizationPolicyConfig:
     on_fail: str
     min_bars: int
     dof_multiplier: int
+    runtime_error_max_per_tuple: int = 1
 
 
 @dataclass
@@ -219,10 +220,14 @@ def _merge_optimization_config(
     dof_multiplier = _merged_field(base, override, "dof_multiplier")
     if dof_multiplier is None:
         raise ValueError("Invalid `validation.optimization`: missing required field(s): dof_multiplier")
+    runtime_error_max_per_tuple = _merged_field(base, override, "runtime_error_max_per_tuple")
+    if runtime_error_max_per_tuple is None:
+        runtime_error_max_per_tuple = 1
     return OptimizationPolicyConfig(
         on_fail=str(on_fail).strip().lower(),
         min_bars=int(min_bars),
         dof_multiplier=int(dof_multiplier),
+        runtime_error_max_per_tuple=int(runtime_error_max_per_tuple),
     )
 
 
@@ -879,11 +884,15 @@ def _parse_optimization_policy(raw: Any, prefix: str) -> OptimizationPolicyConfi
 
     min_bars = parse_required_int(parsed_raw, prefix, "min_bars", min_value=0)
     dof_multiplier = parse_required_int(parsed_raw, prefix, "dof_multiplier", min_value=0)
+    runtime_error_max_per_tuple = parse_optional_int(
+        parsed_raw, prefix, "runtime_error_max_per_tuple", min_value=1
+    )
 
     return OptimizationPolicyConfig(
         on_fail=on_fail,
         min_bars=min_bars,
         dof_multiplier=dof_multiplier,
+        runtime_error_max_per_tuple=runtime_error_max_per_tuple or 1,
     )
 
 

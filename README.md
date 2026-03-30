@@ -241,6 +241,8 @@ See new collection examples under `config/collections/` for FX intraday via Finn
   - `on_fail: baseline_only | skip_job`
   - `min_bars`: minimum bars required for optimization
   - `dof_multiplier`: multiplies parameter dimensions for the DoF guard
+  - `runtime_error_max_per_tuple` (optional, default `1`): maximum
+    `generate_signals` runtime errors allowed per `(strategy, symbol, timeframe)` in one run
   - `baseline_only` runs a single baseline evaluation without parameter search.
   - collection-level overrides are supported via `collections[].validation.optimization`
     and are resolved against global `validation.optimization` during config loading.
@@ -290,6 +292,11 @@ The sample-size / degrees-of-freedom guard is config-driven and remains under
 
 This keeps thresholds explicit in config and lets `on_fail` decide whether the outcome is
 optimization-only fallback or a full block.
+
+Runtime signal errors are tuple-scoped and run-scoped:
+- each `generate_signals` exception increments a counter for `(strategy, symbol, timeframe)`
+- once `runtime_error_max_per_tuple` is reached, remaining parameter evaluations for that tuple are skipped
+- other tuples (different symbol/timeframe or strategy) continue normally
 
 For implementation details (continuity decision flow, weekday filtering scope, and
 vectorized gap counting), see `DEVELOPMENT.md`.

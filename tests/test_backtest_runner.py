@@ -1450,6 +1450,217 @@ def test_run_all_optimization_policy_skip_job_on_infeasible_search(tmp_path, mon
     assert "insufficient_bars_for_optimization" in runner.failures[0]["error"]
 
 
+def test_run_all_runtime_signal_errors_threshold_one_skips_remaining_params(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3, 4]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+            runtime_error_max_per_tuple=1,
+        )
+    )
+    runner.cfg.param_search = "grid"
+
+    results = runner.run_all()
+    assert results == []
+    assert calls["count"] == 1
+    generate_failures = [f for f in runner.failures if f.get("stage") == "generate_signals"]
+    assert len(generate_failures) == 1
+    assert any(
+        "runtime_error_threshold_exceeded(count=1, max_per_tuple=1)" in f.get("error", "")
+        for f in runner.failures
+    )
+
+
+def test_run_all_runtime_signal_errors_threshold_n_skips_after_n(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3, 4, 5]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+            runtime_error_max_per_tuple=3,
+        )
+    )
+    runner.cfg.param_search = "grid"
+
+    results = runner.run_all()
+    assert results == []
+    assert calls["count"] == 3
+    generate_failures = [f for f in runner.failures if f.get("stage") == "generate_signals"]
+    assert len(generate_failures) == 3
+    assert any(
+        "runtime_error_threshold_exceeded(count=3, max_per_tuple=3)" in f.get("error", "")
+        for f in runner.failures
+    )
+
+
+def test_run_all_runtime_signal_error_threshold_is_tuple_isolated(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.cfg.timeframes = ["1d", "1wk"]
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+            runtime_error_max_per_tuple=1,
+        )
+    )
+    runner.cfg.param_search = "grid"
+
+    results = runner.run_all()
+    assert results == []
+    # Two tuples: (boom, AAPL, 1d) and (boom, AAPL, 1wk), each capped after first failure.
+    assert calls["count"] == 2
+
+
+def test_run_all_runtime_signal_error_threshold_resets_between_runs(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+            runtime_error_max_per_tuple=1,
+        )
+    )
+    runner.cfg.param_search = "grid"
+
+    first = runner.run_all()
+    second = runner.run_all()
+    assert first == []
+    assert second == []
+    assert calls["count"] == 2
+
+
+def test_run_all_runtime_signal_error_threshold_does_not_escalate_job(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.external_index = {"boom": _BoomStrategy, "dummy": _DummyStrategy}
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+            runtime_error_max_per_tuple=1,
+        )
+    )
+    runner.cfg.param_search = "grid"
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert calls["count"] == 1
+    assert eval_calls["count"] >= 1
+    assert len(results) == 1
+    assert results[0].strategy == "dummy"
+    assert not any(
+        failure["stage"] == "strategy_optimization" and failure["error"] == "skip_job"
+        for failure in runner.failures
+    )
+
+
+def test_run_all_runtime_signal_error_threshold_stops_optuna_search(tmp_path, monkeypatch):
+    pytest.importorskip("optuna")
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": list(range(1, 11))}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.param_search = "optuna"
+    runner.cfg.param_trials = 10
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+            runtime_error_max_per_tuple=1,
+        )
+    )
+
+    results = runner.run_all()
+    assert results == []
+    assert calls["count"] == 1
+
+
 def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(

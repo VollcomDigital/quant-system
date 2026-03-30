@@ -302,6 +302,31 @@ validation:
     assert cfg.validation.optimization.on_fail == "skip_job"
     assert cfg.validation.optimization.min_bars == 123
     assert cfg.validation.optimization.dof_multiplier == 7
+    assert cfg.validation.optimization.runtime_error_max_per_tuple == 1
+
+
+def test_load_config_optimization_policy_accepts_runtime_error_threshold(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  optimization:
+    on_fail: skip_job
+    min_bars: 123
+    dof_multiplier: 7
+    runtime_error_max_per_tuple: 4
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.optimization is not None
+    assert cfg.validation.optimization.runtime_error_max_per_tuple == 4
 
 
 def test_load_config_optimization_policy_invalid_on_fail(tmp_path: Path):
@@ -320,6 +345,28 @@ validation:
     path.write_text(config_text)
 
     with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_optimization_policy_invalid_runtime_error_threshold(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  optimization:
+    on_fail: skip_job
+    min_bars: 123
+    dof_multiplier: 7
+    runtime_error_max_per_tuple: 0
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"validation\.optimization\.runtime_error_max_per_tuple"):
         load_config(path)
 
 
@@ -359,6 +406,7 @@ validation:
     on_fail: baseline_only
     min_bars: 321
     dof_multiplier: 11
+    runtime_error_max_per_tuple: 2
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -370,6 +418,7 @@ validation:
         assert col.validation.optimization.on_fail == "baseline_only"
         assert col.validation.optimization.min_bars == 321
         assert col.validation.optimization.dof_multiplier == 11
+        assert col.validation.optimization.runtime_error_max_per_tuple == 2
 
 
 def test_load_config_optimization_policy_collection_override_merges_with_global(tmp_path: Path):
@@ -383,6 +432,7 @@ collections:
         on_fail: baseline_only
         min_bars: 200
         dof_multiplier: 9
+        runtime_error_max_per_tuple: 3
 timeframes: ['1d']
 metric: sharpe
 validation:
@@ -390,6 +440,7 @@ validation:
     on_fail: skip_job
     min_bars: 123
     dof_multiplier: 7
+    runtime_error_max_per_tuple: 2
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -402,6 +453,7 @@ validation:
     assert col.validation.optimization.on_fail == "baseline_only"
     assert col.validation.optimization.min_bars == 200
     assert col.validation.optimization.dof_multiplier == 9
+    assert col.validation.optimization.runtime_error_max_per_tuple == 3
 
 
 def test_load_config_result_consistency_policy(tmp_path: Path):

@@ -44,6 +44,7 @@ validation:
     on_fail: baseline_only  # baseline_only | skip_job
     min_bars: 2000  # absolute floor before optimization can run
     dof_multiplier: 20  # config-driven DoF guard: max(min_bars, tunable_params * 20)
+    runtime_error_max_per_tuple: 1  # stop re-evaluating tuple after N generate_signals runtime errors
   # Optional result-level robustness check.
   result_consistency:
     outlier_dependency:
@@ -101,6 +102,7 @@ collections:
     #     on_fail: baseline_only
     #     min_bars: 1500
     #     dof_multiplier: 50
+    #     runtime_error_max_per_tuple: 2
 
 # Choose timeframes compatible across sources for full history
 timeframes: ["1d"]

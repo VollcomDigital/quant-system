@@ -233,6 +233,8 @@ class BacktestRunner:
         self.mode_config_hash = self.evaluation_cache.hash_mode_config(self.mode_config)
         self._result_store_write_failures = 0
         self._evaluation_cache_write_failures = 0
+        self._runtime_signal_error_counts: dict[tuple[str, str, str], int] = {}
+        self._runtime_signal_error_capped: set[tuple[str, str, str]] = set()
         self.validation_metadata: dict[str, Any] = {}
         self.active_validation_gates: list[str] = []
         self.inactive_validation_gates: list[str] = []
@@ -403,6 +405,7 @@ class BacktestRunner:
             "on_fail": getattr(optimization, "on_fail", None),
             "min_bars": getattr(optimization, "min_bars", None),
             "dof_multiplier": getattr(optimization, "dof_multiplier", None),
+            "runtime_error_max_per_tuple": getattr(optimization, "runtime_error_max_per_tuple", None),
         }
 
     @staticmethod
@@ -1548,13 +1551,14 @@ class BacktestRunner:
             )
         return calendar_kind, calendar_exchange, calendar_timezone
 
-    def _load_optimization_policy(self, collection: CollectionConfig) -> tuple[str, int, int] | None:
+    def _load_optimization_policy(self, collection: CollectionConfig) -> tuple[str, int, int, int] | None:
         # `validation.optimization` is optional per collection; when omitted no feasibility gate is applied.
         collection_validation = getattr(collection, "validation", None)
         policy = getattr(collection_validation, "optimization", None)
         if policy is None:
             return None
-        return policy.on_fail, policy.min_bars, policy.dof_multiplier
+        runtime_error_max_per_tuple = int(getattr(policy, "runtime_error_max_per_tuple", 1))
+        return policy.on_fail, policy.min_bars, policy.dof_multiplier, runtime_error_max_per_tuple
 
     @staticmethod
     def _load_result_consistency_policy(collection: CollectionConfig) -> ResultConsistencyConfig | None:
@@ -2208,7 +2212,7 @@ class BacktestRunner:
                 stage="strategy_optimization",
             )
 
-        optimization_on_fail, min_bars_cfg, dof_multiplier = policy
+        optimization_on_fail, min_bars_cfg, dof_multiplier, _runtime_error_max = policy
         bars_available = len(validated_data.raw_df)
         insufficient_bars, min_bars_required = self._insufficient_bars_for_optimization(
             plan,
@@ -2266,14 +2270,11 @@ class BacktestRunner:
         try:
             entries, exits = plan.strategy.generate_signals(validated_data.raw_df, call_params)
         except Exception as exc:
-            self._failure_record(
-                self._strategy_failure_payload(
-                    state=state,
-                    stage="generate_signals",
-                    error=str(exc),
-                    strategy=plan.strategy.name,
-                    params=full_params,
-                )
+            self._record_runtime_signal_failure(
+                plan=plan,
+                state=state,
+                full_params=full_params,
+                exc=exc,
             )
             return float("nan")
         entries = entries.reindex(validated_data.raw_df.index, fill_value=False)
@@ -2485,6 +2486,8 @@ class BacktestRunner:
                     self._run_optuna_strategy_search(plan, state, validated_data, prepared)
                 else:
                     for params in self._grid(plan.search_space):
+                        if self._is_runtime_error_tuple_capped(plan, state):
+                            break
                         self._strategy_evaluation(plan, state, validated_data, prepared, params)
             return self._build_strategy_eval_outcome(plan, state)
         except Exception as exc:
@@ -2527,15 +2530,80 @@ class BacktestRunner:
         space_items = list(plan.search_space.items())
 
         def objective(trial):
+            if self._is_runtime_error_tuple_capped(plan, state):
+                return float("-inf")
             var_params = {
                 name: trial.suggest_categorical(name, options) for name, options in space_items
             }
             result = self._strategy_evaluation(plan, state, validated_data, prepared, var_params)
             return result if np.isfinite(result) else float("-inf")
 
+        def _stop_on_runtime_error_threshold(study, _trial):
+            if self._is_runtime_error_tuple_capped(plan, state):
+                study.stop()
+
         n_trials = min(plan.trials_target, self._total_search_combinations(plan.search_space))
         study = optuna.create_study(direction="maximize")
-        study.optimize(objective, n_trials=n_trials)
+        study.optimize(objective, n_trials=n_trials, callbacks=[_stop_on_runtime_error_threshold])
+
+    @staticmethod
+    def _runtime_error_tuple_key(plan: StrategyPlan, state: JobState) -> tuple[str, str, str]:
+        return (plan.strategy.name, state.job.symbol, state.job.timeframe)
+
+    def _runtime_signal_error_limit(self, collection: CollectionConfig) -> int:
+        policy = self._load_optimization_policy(collection)
+        if policy is None:
+            return 1
+        return int(policy[3])
+
+    def _is_runtime_error_tuple_capped(self, plan: StrategyPlan, state: JobState) -> bool:
+        return self._runtime_error_tuple_key(plan, state) in self._runtime_signal_error_capped
+
+    def _record_runtime_signal_failure(
+        self,
+        *,
+        plan: StrategyPlan,
+        state: JobState,
+        full_params: dict[str, Any],
+        exc: Exception,
+    ) -> None:
+        self._failure_record(
+            self._strategy_failure_payload(
+                state=state,
+                stage="generate_signals",
+                error=str(exc),
+                strategy=plan.strategy.name,
+                params=full_params,
+            )
+        )
+        key = self._runtime_error_tuple_key(plan, state)
+        count = self._runtime_signal_error_counts.get(key, 0) + 1
+        self._runtime_signal_error_counts[key] = count
+        threshold = self._runtime_signal_error_limit(state.job.collection)
+        if count < threshold or key in self._runtime_signal_error_capped:
+            return
+        self._runtime_signal_error_capped.add(key)
+        reason = "runtime_error_threshold_exceeded"
+        self._plan_add_skip_reason(plan, reason)
+        if not isinstance(plan.optimization_details, dict):
+            plan.optimization_details = {}
+        plan.optimization_details["runtime_error_threshold"] = {
+            "strategy": plan.strategy.name,
+            "symbol": state.job.symbol,
+            "timeframe": state.job.timeframe,
+            "count": count,
+            "max_per_tuple": threshold,
+        }
+        self._failure_record(
+            {
+                **self._job_log_context(state.job),
+                "strategy": plan.strategy.name,
+                "stage": "strategy_optimization",
+                "error": (
+                    f"{reason}(count={count}, max_per_tuple={threshold})"
+                ),
+            }
+        )
 
     @staticmethod
     def _build_strategy_eval_outcome(plan: StrategyPlan, state: JobState) -> StrategyEvalOutcome:
@@ -2729,6 +2797,8 @@ class BacktestRunner:
         self._cache_write_failures = 0
         self._result_store_write_failures = 0
         self._evaluation_cache_write_failures = 0
+        self._runtime_signal_error_counts = {}
+        self._runtime_signal_error_capped = set()
         self._evaluator = None
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
@@ -2816,6 +2886,8 @@ class BacktestRunner:
                 self.metrics["symbols_tested"] += 1
                 # Strategy stage: create plan -> validate plan -> run -> validate results.
                 plan = self._strategy_create_plan(state, strat_name)
+                if self._is_runtime_error_tuple_capped(plan, state):
+                    continue
                 self._apply_policy_constraints_to_plan(state, validated_data, plan)
                 plan_decision = self._strategy_validate_plan(state, validated_data, plan)
                 plan_decision = self._handle_gate_decision(
