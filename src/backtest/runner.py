@@ -2342,16 +2342,19 @@ class BacktestRunner:
                     ),
                 )
                 full_params = {**plan.fixed_params, **effective_params}
-                entries, exits = self._generate_aligned_signals(
-                    plan.strategy,
-                    shuffled_raw,
-                    full_params,
-                    plan=plan,
-                    state=context.state,
-                    track_runtime_errors=False,
-                )
-                request = self._build_evaluation_request(plan, context.state, prepared, full_params)
-                outcome = self._evaluate_strategy_outcome(request, prepared, entries, exits)
+                try:
+                    entries, exits = self._generate_aligned_signals(
+                        plan.strategy,
+                        shuffled_raw,
+                        full_params,
+                        plan=plan,
+                        state=context.state,
+                        track_runtime_errors=False,
+                    )
+                    request = self._build_evaluation_request(plan, context.state, prepared, full_params)
+                    outcome = self._evaluate_strategy_outcome(request, prepared, entries, exits)
+                except Exception:
+                    continue
                 if outcome.valid and np.isfinite(outcome.metric_value):
                     metric_values.append(float(outcome.metric_value))
 
