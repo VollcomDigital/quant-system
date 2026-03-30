@@ -231,12 +231,6 @@ See new collection examples under `config/collections/` for FX intraday via Finn
     - fixed-action: reject when ADF/KPSS/regime-shift thresholds are exceeded; too few points
       are treated as an explicit indeterminate reliability reason. If ADF and KPSS disagree,
       a stationarity conflict reason is emitted.
-  - `lookahead_shuffle_test` (optional module; active when configured):
-    - `permutations` (optional, default `20`): number of deterministic OHLCV bar shuffles to evaluate
-    - `threshold` (optional, default `0.0`): median shuffled metric above this value is suspicious
-    - `seed` (optional, default `1337`): base seed combined with collection/symbol/timeframe/strategy
-    - the runner permutes whole bars, reruns the strategy on each shuffled sample, and flags
-      look-ahead style behavior when the median shuffled metric remains above the threshold
   - continuity diagnostics are always computed.
   - when `validation.data_quality` is configured, continuity precondition failures
     (for example fewer than 2 bars) fail data validation (`skip_job`).
@@ -264,13 +258,20 @@ See new collection examples under `config/collections/` for FX intraday via Finn
     - fixed-action: reject result when analyzed fill prices fall outside bar `[low, high]`
       after applying tolerance.
     - missing/truncated fill metadata is non-blocking (`continue`); diagnostics are marked incomplete.
+  - `lookahead_shuffle_test` (optional module; active when configured):
+    - `permutations` (optional, default `20`): number of deterministic OHLCV bar shuffles to evaluate
+    - `threshold` (optional, default `0.0`): median shuffled metric above this value is suspicious
+    - `seed` (optional, default `1337`): base seed combined with collection/symbol/timeframe/strategy
+    - the runner permutes whole bars and reruns the selected strategy result after backtest
+      evaluation to detect look-ahead style behavior when the median shuffled metric remains above
+      the threshold
   - action is fixed to `reject_result` (no `on_fail` override).
 
 Structured logs reflect this directly via gate actions:
 - `data_validation_gate` can emit `skip_optimization` (job-level optimization disable).
 - `strategy_optimization_gate` can emit `baseline_only` (strategy-level baseline fallback) or `skip_job`.
-- `strategy_validation_gate` can emit `reject_result` for outlier dependency
-  and execution price variance.
+- `strategy_validation_gate` can emit `reject_result` for outlier dependency,
+  execution price variance, and lookahead shuffle testing.
 
 ### Optimization Only on Reliable Collections
 
@@ -288,7 +289,6 @@ Configured data-quality reliability reasons can include:
 - `max_missing_bar_pct_exceeded(...)` when `continuity.max_missing_bar_pct` is breached
 - `max_kurtosis_exceeded(...)` when `kurtosis` is breached
 - stationarity or outlier reasons when those modules are configured
-- `lookahead_shuffle_test_exceeded(...)` when shuffled-bar performance stays above threshold
 
 The sample-size / degrees-of-freedom guard is config-driven and remains under
 `validation.optimization`, not `validation.data_quality`:

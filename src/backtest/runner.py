@@ -192,10 +192,10 @@ class BacktestRunner:
         "data_quality.kurtosis",
         "data_quality.outlier_detection",
         "data_quality.stationarity",
-        "data_quality.lookahead_shuffle_test",
         "optimization.feasibility",
         "result_consistency.outlier_dependency",
         "result_consistency.execution_price_variance",
+        "result_consistency.lookahead_shuffle_test",
     )
 
     _STATIONARITY_TRUE = "true"
@@ -428,9 +428,6 @@ class BacktestRunner:
             "stationarity": BacktestRunner._serialize_stationarity_profile(
                 getattr(data_quality, "stationarity", None)
             ),
-            "lookahead_shuffle_test": BacktestRunner._serialize_lookahead_shuffle_test_profile(
-                getattr(data_quality, "lookahead_shuffle_test", None)
-            ),
         }
 
     @staticmethod
@@ -467,6 +464,9 @@ class BacktestRunner:
                 if execution_price_variance is not None
                 else None
             ),
+            "lookahead_shuffle_test": BacktestRunner._serialize_lookahead_shuffle_test_profile(
+                getattr(result_consistency, "lookahead_shuffle_test", None)
+            ),
         }
 
     @staticmethod
@@ -491,8 +491,6 @@ class BacktestRunner:
             active.add("data_quality.outlier_detection")
         if getattr(data_quality, "stationarity", None) is not None:
             active.add("data_quality.stationarity")
-        if getattr(data_quality, "lookahead_shuffle_test", None) is not None:
-            active.add("data_quality.lookahead_shuffle_test")
         return active
 
     @staticmethod
@@ -510,6 +508,8 @@ class BacktestRunner:
             active.add("result_consistency.outlier_dependency")
         if getattr(result_consistency, "execution_price_variance", None) is not None:
             active.add("result_consistency.execution_price_variance")
+        if getattr(result_consistency, "lookahead_shuffle_test", None) is not None:
+            active.add("result_consistency.lookahead_shuffle_test")
         return active
 
     def _build_validation_metadata(self) -> dict[str, Any]:
@@ -1236,8 +1236,8 @@ class BacktestRunner:
                     "stage": decision.stage,
                     "error": "; ".join(decision.reasons) if decision.reasons else "gate_failed",
                 }
-                if context_extra and "strategy" in context_extra:
-                    failure["strategy"] = context_extra["strategy"]
+                if context_extra:
+                    failure.update(context_extra)
                 self._failure_record(failure)
         return decision
 
@@ -1572,12 +1572,12 @@ class BacktestRunner:
         self, collection: CollectionConfig
     ) -> ValidationLookaheadShuffleTestConfig | None:
         collection_validation = getattr(collection, "validation", None)
-        resolved_dq: ValidationDataQualityConfig | None = (
-            getattr(collection_validation, "data_quality", None) if collection_validation else None
+        resolved_rc: ResultConsistencyConfig | None = (
+            getattr(collection_validation, "result_consistency", None) if collection_validation else None
         )
-        if resolved_dq is None:
-            return None
-        return getattr(resolved_dq, "lookahead_shuffle_test", None)
+        if resolved_rc is not None:
+            return getattr(resolved_rc, "lookahead_shuffle_test", None)
+        return None
 
     def _resolve_calendar_policy(
         self,
@@ -2316,11 +2316,42 @@ class BacktestRunner:
         )
         return request, None, outcome
 
+    def _evaluate_strategy_signals(
+        self,
+        *,
+        plan: StrategyPlan,
+        state: JobState,
+        validated_data: ValidatedData,
+        prepared: ExecutionPreparedData,
+        params: dict[str, Any],
+        use_cache: bool,
+        track_runtime_errors: bool,
+    ) -> tuple[EvaluationRequest, dict[str, Any] | None, EvaluationOutcome | None]:
+        full_params = {**plan.fixed_params, **params}
+        entries, exits = self._generate_aligned_signals(
+            plan.strategy,
+            validated_data.raw_df,
+            full_params,
+            plan=plan,
+            state=state,
+            track_runtime_errors=track_runtime_errors,
+        )
+        return self._evaluate_signals_with_request(
+            plan=plan,
+            state=state,
+            prepared=prepared,
+            full_params=full_params,
+            entries=entries,
+            exits=exits,
+            use_cache=use_cache,
+        )
+
     def _lookahead_shuffle_test_result(
         self,
         context: ValidationContext,
         plan: StrategyPlan,
         policy: ValidationLookaheadShuffleTestConfig | None,
+        params: dict[str, Any] | None = None,
     ) -> tuple[str | None, dict[str, Any] | None]:
         if policy is None or context.validated_data is None:
             return None, None
@@ -2353,7 +2384,7 @@ class BacktestRunner:
             bars_per_year = self._bars_per_year(context.job.timeframe)
             fees, slippage = self._fees_slippage_for(context.job.collection)
             rng = np.random.default_rng(derived_seed)
-            full_params = dict(plan.fixed_params)
+            effective_params = params or {}
             metric_values: list[float] = []
 
             for _ in range(policy.permutations):
@@ -2377,20 +2408,19 @@ class BacktestRunner:
                         f"{float(shuffled_raw[close_col].astype(float).iloc[-1])}"
                     ),
                 )
-                entries, exits = self._generate_aligned_signals(
-                    plan.strategy,
-                    shuffled_raw,
-                    full_params,
-                    track_runtime_errors=False,
-                )
-                _, _, outcome = self._evaluate_signals_with_request(
+                _, _, outcome = self._evaluate_strategy_signals(
                     plan=plan,
                     state=context.state,
+                    validated_data=ValidatedData(
+                        raw_df=shuffled_raw,
+                        continuity=context.validated_data.continuity,
+                        reliability_on_fail=context.validated_data.reliability_on_fail,
+                        reliability_reasons=context.validated_data.reliability_reasons,
+                    ),
                     prepared=prepared,
-                    full_params=full_params,
-                    entries=entries,
-                    exits=exits,
+                    params=effective_params,
                     use_cache=False,
+                    track_runtime_errors=False,
                 )
                 if outcome.valid and np.isfinite(outcome.metric_value):
                     metric_values.append(float(outcome.metric_value))
@@ -2452,33 +2482,6 @@ class BacktestRunner:
                 passed=True,
                 action="baseline_only",
                 reasons=skip_reasons,
-                stage="strategy_optimization",
-            )
-        reliability_on_fail = validated_data.reliability_on_fail
-        lookahead_policy = self._load_lookahead_shuffle_test_policy(context.job.collection)
-        lookahead_reason, lookahead_meta = self._lookahead_shuffle_test_result(
-            context,
-            plan,
-            lookahead_policy,
-        )
-        if lookahead_reason is not None and lookahead_policy is not None:
-            if reliability_on_fail == "skip_optimization":
-                self._mark_plan_optimization_skipped(plan, [lookahead_reason])
-                if isinstance(plan.optimization_details, dict):
-                    plan.optimization_details["lookahead_shuffle_test"] = (
-                        dict(lookahead_meta) if isinstance(lookahead_meta, dict) else {}
-                    )
-                    plan.optimization_details["reliability_reasons"] = [lookahead_reason]
-                return GateDecision(
-                    passed=True,
-                    action="baseline_only",
-                    reasons=[lookahead_reason],
-                    stage="strategy_optimization",
-                )
-            return GateDecision(
-                passed=False,
-                action=reliability_on_fail or "skip_job",
-                reasons=[lookahead_reason],
                 stage="strategy_optimization",
             )
         policy = self._load_optimization_policy(context.job.collection)
@@ -2545,31 +2548,22 @@ class BacktestRunner:
         params: dict[str, Any],
     ) -> float:
         """Evaluate one parameter set, preferring mode-aware cache when available."""
-        full_params = {**plan.fixed_params, **params}
-        call_params = full_params.copy()
         try:
-            entries, exits = self._generate_aligned_signals(
-                plan.strategy,
-                validated_data.raw_df,
-                call_params,
+            request, cached, outcome = self._evaluate_strategy_signals(
                 plan=plan,
                 state=state,
+                validated_data=validated_data,
+                prepared=prepared,
+                params=params,
+                use_cache=True,
                 track_runtime_errors=True,
             )
         except Exception:
             return float("nan")
-
-        request, cached, outcome = self._evaluate_signals_with_request(
-            plan=plan,
-            state=state,
-            prepared=prepared,
-            full_params=full_params,
-            entries=entries,
-            exits=exits,
-            use_cache=True,
-        )
         if cached is not None:
+            full_params = {**plan.fixed_params, **params}
             return self._apply_cached_evaluation(plan, validated_data, request, cached, full_params)
+        full_params = {**plan.fixed_params, **params}
         return self._apply_fresh_evaluation(
             plan=plan,
             state=state,
@@ -2888,12 +2882,20 @@ class BacktestRunner:
             job=state.job,
         )
 
-    def _strategy_validate_results(self, state: JobState, outcome: StrategyEvalOutcome) -> GateDecision:
+    def _strategy_validate_results(
+        self,
+        state: JobState,
+        outcome: StrategyEvalOutcome,
+        plan: StrategyPlan,
+        validated_data: ValidatedData,
+    ) -> GateDecision:
         context = ValidationContext(
             stage="strategy_validation",
             state=state,
             mode=self.mode_config.mode,
             job=state.job,
+            validated_data=validated_data,
+            plan=plan,
             outcome=outcome,
         )
         common_decision = self._strategy_validate_results_common(context)
@@ -2973,12 +2975,30 @@ class BacktestRunner:
     def _strategy_validate_results_common(self, context: ValidationContext) -> GateDecision:
         # Keep this gate lightweight for now; stricter schema checks can be added later.
         outcome = context.outcome
+        plan = context.plan
+        validated_data = context.validated_data
         if outcome is None:
             return GateDecision(False, "reject_result", ["missing_strategy_outcome"], "strategy_validation")
+        if plan is None or validated_data is None:
+            return GateDecision(False, "reject_result", ["missing_strategy_plan_context"], "strategy_validation")
         if not outcome.has_valid_candidate:
             return GateDecision(False, "reject_result", ["no_valid_candidate"], "strategy_validation")
 
         reasons = self._collect_strategy_validation_reasons(context, outcome)
+        lookahead_policy = self._load_lookahead_shuffle_test_policy(context.job.collection)
+        if lookahead_policy is not None:
+            lookahead_reason, lookahead_meta = self._lookahead_shuffle_test_result(
+                context,
+                plan,
+                lookahead_policy,
+                params=outcome.best_params if isinstance(outcome.best_params, dict) else None,
+            )
+            if lookahead_meta is not None and isinstance(outcome.best_stats, dict):
+                result_validation = dict(outcome.best_stats.get("result_validation", {}))
+                result_validation["lookahead_shuffle_test"] = dict(lookahead_meta)
+                outcome.best_stats["result_validation"] = result_validation
+            if lookahead_reason is not None:
+                reasons.append(lookahead_reason)
         if reasons:
             decision = GateDecision(False, "reject_result", reasons, "strategy_validation")
         else:
@@ -3174,10 +3194,18 @@ class BacktestRunner:
                 outcome = self._strategy_run(plan, state, validated_data, prepared)
                 if outcome is None:
                     continue
+                validation_decision = self._strategy_validate_results(
+                    state, outcome, plan, validated_data
+                )
+                validation_context_extra: dict[str, Any] = {"strategy": outcome.strategy}
+                if isinstance(outcome.best_stats, dict):
+                    result_validation = outcome.best_stats.get("result_validation")
+                    if isinstance(result_validation, dict):
+                        validation_context_extra["result_validation"] = dict(result_validation)
                 validation_decision = self._handle_gate_decision(
                     state,
-                    self._strategy_validate_results(state, outcome),
-                    context_extra={"strategy": outcome.strategy},
+                    validation_decision,
+                    context_extra=validation_context_extra,
                     blocked_collections=blocked_collections,
                 )
                 if not validation_decision.passed:

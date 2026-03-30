@@ -497,7 +497,6 @@ def test_serialize_data_quality_profile_keeps_schema_and_key_order():
             min_points=20,
             regime_shift=SimpleNamespace(window=30, mean_shift_max=0.25, vol_ratio_max=1.5),
         ),
-        lookahead_shuffle_test=SimpleNamespace(permutations=20, threshold=0.0, seed=1337),
     )
 
     payload = BacktestRunner._serialize_data_quality_profile(data_quality)
@@ -510,7 +509,6 @@ def test_serialize_data_quality_profile_keeps_schema_and_key_order():
         "kurtosis",
         "outlier_detection",
         "stationarity",
-        "lookahead_shuffle_test",
     ]
     assert payload["continuity"] == {
         "min_score": 0.8,
@@ -527,6 +525,32 @@ def test_serialize_data_quality_profile_keeps_schema_and_key_order():
             "vol_ratio_max": 1.5,
         },
     }
+
+
+def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
+    result_consistency = SimpleNamespace(
+        outlier_dependency=SimpleNamespace(
+            slices=5,
+            profit_share_threshold=0.8,
+            trade_share_threshold=0.05,
+        ),
+        execution_price_variance=SimpleNamespace(price_tolerance_bps=1.0),
+        lookahead_shuffle_test=SimpleNamespace(permutations=20, threshold=0.0, seed=1337),
+    )
+
+    payload = BacktestRunner._serialize_result_consistency_profile(result_consistency)
+
+    assert list(payload.keys()) == [
+        "outlier_dependency",
+        "execution_price_variance",
+        "lookahead_shuffle_test",
+    ]
+    assert payload["outlier_dependency"] == {
+        "slices": 5,
+        "profit_share_threshold": 0.8,
+        "trade_share_threshold": 0.05,
+    }
+    assert payload["execution_price_variance"] == {"price_tolerance_bps": 1.0}
     assert payload["lookahead_shuffle_test"] == {
         "permutations": 20,
         "threshold": 0.0,
@@ -2080,13 +2104,12 @@ def test_lookahead_shuffle_test_result_is_deterministic(tmp_path, monkeypatch):
     ]
     runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(
-            on_fail="skip_optimization",
+        result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=9,
                 threshold=0.0,
                 seed=7,
-            ),
+            )
         ),
     )
     resolve_validation_overrides(runner.cfg)
@@ -2107,7 +2130,7 @@ def test_lookahead_shuffle_test_result_is_deterministic(tmp_path, monkeypatch):
         reliability_reasons=[],
     )
     context = ValidationContext(
-        stage="strategy_optimization",
+        stage="strategy_validation",
         state=state,
         mode="backtest",
         job=state.job,
@@ -2129,7 +2152,9 @@ def test_lookahead_shuffle_test_result_is_deterministic(tmp_path, monkeypatch):
     assert runner.evaluation_cache.saved == []
 
 
-def test_run_all_lookahead_shuffle_test_skip_job_blocks_optimization(tmp_path, monkeypatch):
+def test_run_all_lookahead_shuffle_test_rejects_result_in_strategy_validation(
+    tmp_path, monkeypatch
+):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.strategies = [
         StrategyConfig(
@@ -2141,13 +2166,12 @@ def test_run_all_lookahead_shuffle_test_skip_job_blocks_optimization(tmp_path, m
     ]
     runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(
-            on_fail="skip_job",
+        result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=9,
                 threshold=0.0,
                 seed=7,
-            ),
+            )
         ),
     )
     resolve_validation_overrides(runner.cfg)
@@ -2162,14 +2186,15 @@ def test_run_all_lookahead_shuffle_test_skip_job_blocks_optimization(tmp_path, m
     results = runner.run_all()
 
     assert results == []
-    assert eval_calls["count"] == 9
+    assert eval_calls["count"] == 10
     assert len(runner.failures) == 1
     failure = runner.failures[0]
-    assert failure["stage"] == "strategy_optimization"
+    assert failure["stage"] == "strategy_validation"
     assert "lookahead_shuffle_test_exceeded" in failure["error"]
+    assert failure["result_validation"]["lookahead_shuffle_test"]["is_complete"] is True
 
 
-def test_run_all_lookahead_shuffle_test_skip_optimization_keeps_baseline_result(
+def test_run_all_lookahead_shuffle_test_attaches_result_validation_metadata(
     tmp_path, monkeypatch
 ):
     runner = _make_runner(tmp_path, monkeypatch)
@@ -2183,13 +2208,12 @@ def test_run_all_lookahead_shuffle_test_skip_optimization_keeps_baseline_result(
     ]
     runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(
-            on_fail="skip_optimization",
+        result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=9,
-                threshold=0.0,
+                threshold=999.0,
                 seed=7,
-            ),
+            )
         ),
     )
     resolve_validation_overrides(runner.cfg)
@@ -2205,14 +2229,9 @@ def test_run_all_lookahead_shuffle_test_skip_optimization_keeps_baseline_result(
 
     assert len(results) == 1
     assert eval_calls["count"] == 10
-    optimization = results[0].stats.get("optimization")
-    assert optimization is not None
-    assert optimization["reason"].startswith("lookahead_shuffle_test_exceeded(")
-    assert any(
-        reason.startswith("lookahead_shuffle_test_exceeded(")
-        for reason in optimization.get("reliability_reasons", [])
-    )
-    assert optimization["lookahead_shuffle_test"]["is_complete"] is True
+    result_validation = results[0].stats.get("result_validation")
+    assert result_validation is not None
+    assert result_validation["lookahead_shuffle_test"]["is_complete"] is True
 
 
 def test_run_all_reliability_not_verified_skips_job(tmp_path, monkeypatch):

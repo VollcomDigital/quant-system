@@ -58,7 +58,6 @@ class ValidationDataQualityConfig:
     kurtosis: float | None = None
     outlier_detection: "ValidationOutlierDetectionConfig | None" = None
     stationarity: "ValidationStationarityConfig | None" = None
-    lookahead_shuffle_test: "ValidationLookaheadShuffleTestConfig | None" = None
     is_verified: bool | None = None
     on_fail: str | None = None
 
@@ -130,6 +129,7 @@ class ResultConsistencyExecutionPriceVarianceConfig:
 class ResultConsistencyConfig:
     outlier_dependency: ResultConsistencyOutlierDependencyConfig | None = None
     execution_price_variance: ResultConsistencyExecutionPriceVarianceConfig | None = None
+    lookahead_shuffle_test: ValidationLookaheadShuffleTestConfig | None = None
 
 
 @dataclass
@@ -198,10 +198,6 @@ def _merge_data_quality_config(
         getattr(base, "stationarity", None),
         getattr(override, "stationarity", None),
     )
-    lookahead_shuffle_test = _merge_lookahead_shuffle_test_config(
-        getattr(base, "lookahead_shuffle_test", None),
-        getattr(override, "lookahead_shuffle_test", None),
-    )
     is_verified = _merge_replace(
         getattr(base, "is_verified", None),
         getattr(override, "is_verified", None),
@@ -216,7 +212,6 @@ def _merge_data_quality_config(
         kurtosis=kurtosis,
         outlier_detection=outlier_detection,
         stationarity=stationarity,
-        lookahead_shuffle_test=lookahead_shuffle_test,
         is_verified=is_verified,
         on_fail=str(on_fail).strip().lower(),
     )
@@ -262,11 +257,16 @@ def _merge_result_consistency_config(
         getattr(base, "execution_price_variance", None),
         getattr(override, "execution_price_variance", None),
     )
-    if outlier_dependency is None and execution_price_variance is None:
+    lookahead_shuffle_test = _merge_lookahead_shuffle_test_config(
+        getattr(base, "lookahead_shuffle_test", None),
+        getattr(override, "lookahead_shuffle_test", None),
+    )
+    if outlier_dependency is None and execution_price_variance is None and lookahead_shuffle_test is None:
         return None
     return ResultConsistencyConfig(
         outlier_dependency=outlier_dependency,
         execution_price_variance=execution_price_variance,
+        lookahead_shuffle_test=lookahead_shuffle_test,
     )
 
 
@@ -541,7 +541,7 @@ def _merge_lookahead_shuffle_test_config(
             ),
             seed=int(seed) if seed is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED,
         ),
-        "validation.data_quality.lookahead_shuffle_test",
+        "validation.result_consistency.lookahead_shuffle_test",
     )
 
 
@@ -750,6 +750,11 @@ def _parse_validation_data_quality(
     if raw is None:
         return None
     parsed_raw = require_mapping(raw, prefix)
+    if "lookahead_shuffle_test" in parsed_raw:
+        raise ValueError(
+            f"Invalid `{prefix}.lookahead_shuffle_test`: this module moved to "
+            "`validation.result_consistency.lookahead_shuffle_test`"
+        )
 
     on_fail = parse_required_on_fail(
         parsed_raw.get("on_fail"),
@@ -771,10 +776,6 @@ def _parse_validation_data_quality(
     stationarity_cfg = _parse_stationarity(
         parsed_raw.get("stationarity"), f"{prefix}.stationarity"
     )
-    lookahead_shuffle_test_cfg = _parse_lookahead_shuffle_test(
-        parsed_raw.get("lookahead_shuffle_test"),
-        f"{prefix}.lookahead_shuffle_test",
-    )
     is_verified = parse_optional_bool(parsed_raw, prefix, "is_verified")
 
     cfg = ValidationDataQualityConfig(
@@ -783,7 +784,6 @@ def _parse_validation_data_quality(
         kurtosis=kurtosis_cfg,
         outlier_detection=outlier_detection_cfg,
         stationarity=stationarity_cfg,
-        lookahead_shuffle_test=lookahead_shuffle_test_cfg,
         is_verified=is_verified,
         on_fail=on_fail,
     )
@@ -956,7 +956,6 @@ def _parse_validation(raw: Any, prefix: str) -> ValidationConfig | None:
         if isinstance(result_consistency_raw, dict)
         else None
     )
-
     if data_quality_cfg is None and optimization_cfg is None and result_consistency_cfg is None:
         # Keep validation fully optional; no synthetic policy object when both modules are absent.
         return None
@@ -1019,16 +1018,28 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
         if isinstance(execution_price_variance_raw, dict)
         else None
     )
+    lookahead_shuffle_test_raw = parsed_raw.get("lookahead_shuffle_test")
+    if lookahead_shuffle_test_raw is not None and not isinstance(lookahead_shuffle_test_raw, dict):
+        raise ValueError(f"Invalid `{prefix}.lookahead_shuffle_test`: expected a mapping")
+    lookahead_shuffle_test = (
+        _parse_lookahead_shuffle_test(
+            lookahead_shuffle_test_raw,
+            f"{prefix}.lookahead_shuffle_test",
+        )
+        if isinstance(lookahead_shuffle_test_raw, dict)
+        else None
+    )
 
-    if outlier_dependency is None and execution_price_variance is None:
+    if outlier_dependency is None and execution_price_variance is None and lookahead_shuffle_test is None:
         raise ValueError(
             f"Invalid `{prefix}`: expected at least one configured module "
-            "(`outlier_dependency` or `execution_price_variance`)"
+            "(`outlier_dependency`, `execution_price_variance`, or `lookahead_shuffle_test`)"
         )
 
     return ResultConsistencyConfig(
         outlier_dependency=outlier_dependency,
         execution_price_variance=execution_price_variance,
+        lookahead_shuffle_test=lookahead_shuffle_test,
     )
 
 
