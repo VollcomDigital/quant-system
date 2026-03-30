@@ -2292,6 +2292,10 @@ class BacktestRunner:
             prepared.fractional,
         )
 
+    @staticmethod
+    def _lookahead_shuffle_indeterminate_reason(reason: str) -> str:
+        return f"lookahead_shuffle_test_indeterminate(reason={reason})"
+
     def _lookahead_shuffle_test_result(
         self,
         context: ValidationContext,
@@ -2304,7 +2308,7 @@ class BacktestRunner:
 
         raw_df = context.validated_data.raw_df
         if raw_df.empty:
-            return None, {
+            return self._lookahead_shuffle_indeterminate_reason("empty_dataframe"), {
                 "is_complete": False,
                 "reason": "empty_dataframe",
                 "metric_name": self.cfg.metric,
@@ -2319,7 +2323,7 @@ class BacktestRunner:
         )
         close_col = self._resolve_close_column(raw_df)
         if close_col is None:
-            return None, {
+            return self._lookahead_shuffle_indeterminate_reason("missing_close_column"), {
                 "is_complete": False,
                 "reason": "missing_close_column",
                 "metric_name": self.cfg.metric,
@@ -2369,7 +2373,7 @@ class BacktestRunner:
                     metric_values.append(float(outcome.metric_value))
 
             if not metric_values:
-                return None, {
+                return self._lookahead_shuffle_indeterminate_reason("no_finite_metrics"), {
                     "is_complete": False,
                     "reason": "no_finite_metrics",
                     "permutations": policy.permutations,
@@ -2402,7 +2406,7 @@ class BacktestRunner:
                 return reason, diagnostics
             return None, diagnostics
         except Exception as exc:
-            return None, {
+            return self._lookahead_shuffle_indeterminate_reason(str(exc)), {
                 "is_complete": False,
                 "reason": str(exc),
                 "permutations": policy.permutations,

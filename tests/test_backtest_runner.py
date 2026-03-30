@@ -2252,13 +2252,72 @@ def test_lookahead_shuffle_test_result_does_not_track_runtime_errors(
 
     reason, meta = runner._lookahead_shuffle_test_result(context, plan, policy)
 
-    assert reason is None
+    assert reason is not None
+    assert reason.startswith("lookahead_shuffle_test_indeterminate(")
     assert meta is not None
     assert meta["is_complete"] is False
     assert meta["reason"] == "signal boom"
     assert runner._runtime_signal_error_counts == {}
     assert runner.metrics["result_cache_misses"] == 0
     assert runner.evaluation_cache.saved == []
+
+
+def test_run_all_lookahead_shuffle_test_indeterminate_rejects_result(
+    tmp_path, monkeypatch
+):
+    class _ShuffleSensitiveStrategy(BaseStrategy):
+        name = "shuffle_sensitive"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            if not df["Close"].is_monotonic_increasing:
+                raise RuntimeError("signal boom")
+            entries = pd.Series(False, index=df.index)
+            exits = pd.Series(False, index=df.index)
+            entries.iloc[0] = True
+            exits.iloc[-1] = True
+            return entries, exits
+
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.strategies = [
+        StrategyConfig(
+            name="shuffle_sensitive",
+            module=None,
+            cls=None,
+            params={},
+        )
+    ]
+    runner.external_index = {"shuffle_sensitive": _ShuffleSensitiveStrategy}
+    runner.cfg.validation = ValidationConfig(
+        result_consistency=ResultConsistencyConfig(
+            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
+                permutations=5,
+                threshold=0.0,
+                seed=7,
+            )
+        ),
+    )
+    resolve_validation_overrides(runner.cfg)
+
+    class _Source:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            return _make_trending_ohlcv(25)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+
+    assert results == []
+    assert eval_calls["count"] == 1
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["stage"] == "strategy_validation"
+    assert failure["error"].startswith("lookahead_shuffle_test_indeterminate(")
+    assert failure["result_validation"]["lookahead_shuffle_test"]["is_complete"] is False
+    assert failure["result_validation"]["lookahead_shuffle_test"]["reason"] == "signal boom"
 
 
 def test_run_all_lookahead_shuffle_test_rejects_result_in_strategy_validation(
