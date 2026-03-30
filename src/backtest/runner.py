@@ -2215,7 +2215,8 @@ class BacktestRunner:
                 stage="strategy_optimization",
             )
 
-        optimization_on_fail, min_bars_cfg, dof_multiplier, _runtime_error_max = policy
+        optimization_on_fail, min_bars_cfg, dof_multiplier, _ = policy
+
         bars_available = len(validated_data.raw_df)
         insufficient_bars, min_bars_required = self._insufficient_bars_for_optimization(
             plan,
