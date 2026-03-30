@@ -1705,7 +1705,7 @@ class BacktestRunner:
         try:
             pvalue = float(adfuller(values, autolag="AIC")[1])
         except Exception as exc:
-            get_logger().warning("stationarity adfuller failed", exc_info=exc)
+            get_logger().debug("stationarity adfuller failed", exc_info=exc)
             return None, "stationarity_adf_indeterminate(reason=adfuller_failed)", None
         if not np.isfinite(pvalue):
             return None, "stationarity_adf_indeterminate(reason=adfuller_non_finite)", None
@@ -1756,7 +1756,7 @@ class BacktestRunner:
         try:
             pvalue = float(kpss_fn(values, nlags="auto")[1])
         except Exception as exc:
-            get_logger().warning("stationarity kpss failed", exc_info=exc)
+            get_logger().debug("stationarity kpss failed", exc_info=exc)
             return None, "stationarity_kpss_indeterminate(reason=kpss_failed)", None
         if not np.isfinite(pvalue):
             return None, "stationarity_kpss_indeterminate(reason=kpss_non_finite)", None
