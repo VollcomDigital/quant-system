@@ -1557,7 +1557,10 @@ class BacktestRunner:
         policy = getattr(collection_validation, "optimization", None)
         if policy is None:
             return None
-        runtime_error_max_per_tuple = int(getattr(policy, "runtime_error_max_per_tuple", 1))
+        runtime_error_max_per_tuple_raw = getattr(policy, "runtime_error_max_per_tuple", None)
+        runtime_error_max_per_tuple = (
+            1 if runtime_error_max_per_tuple_raw is None else int(runtime_error_max_per_tuple_raw)
+        )
         return policy.on_fail, policy.min_bars, policy.dof_multiplier, runtime_error_max_per_tuple
 
     @staticmethod

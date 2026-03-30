@@ -1487,6 +1487,28 @@ def test_run_all_runtime_signal_errors_threshold_one_skips_remaining_params(tmp_
     )
 
 
+def test_load_optimization_policy_defaults_runtime_error_threshold_when_none(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    collection = CollectionConfig(
+        name="demo",
+        source="custom",
+        symbols=["AAPL"],
+        validation=ValidationConfig(
+            optimization=OptimizationPolicyConfig(
+                on_fail="baseline_only",
+                min_bars=1,
+                dof_multiplier=1,
+                runtime_error_max_per_tuple=None,
+            )
+        ),
+    )
+
+    policy = runner._load_optimization_policy(collection)
+
+    assert policy is not None
+    assert policy[3] == 1
+
+
 def test_run_all_runtime_signal_errors_threshold_n_skips_after_n(tmp_path, monkeypatch):
     calls = {"count": 0}
 
