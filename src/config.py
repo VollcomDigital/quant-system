@@ -750,11 +750,6 @@ def _parse_validation_data_quality(
     if raw is None:
         return None
     parsed_raw = require_mapping(raw, prefix)
-    if "lookahead_shuffle_test" in parsed_raw:
-        raise ValueError(
-            f"Invalid `{prefix}.lookahead_shuffle_test`: this module moved to "
-            "`validation.result_consistency.lookahead_shuffle_test`"
-        )
 
     on_fail = parse_required_on_fail(
         parsed_raw.get("on_fail"),

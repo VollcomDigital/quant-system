@@ -210,7 +210,7 @@ validation:
     assert col.validation.data_quality.on_fail == "skip_optimization"
 
 
-def test_load_config_lookahead_shuffle_test_legacy_data_quality_location_is_rejected(
+def test_load_config_lookahead_shuffle_test_legacy_data_quality_location_is_ignored(
     tmp_path: Path,
 ):
     config_text = """
@@ -231,8 +231,11 @@ validation:
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
 
-    with pytest.raises(ValueError, match=r"validation\.data_quality\.lookahead_shuffle_test"):
-        load_config(path)
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.on_fail == "skip_job"
+    assert cfg.validation.result_consistency is None
 
 
 @pytest.mark.parametrize(
