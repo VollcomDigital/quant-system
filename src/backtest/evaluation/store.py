@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from .contracts import EvaluationModeConfig, ResultRecord
+from .contracts import EvaluationModeConfig, ResultRecord, EvaluationCacheRecord
 
 EVALUATION_SCHEMA_VERSION = "1"
 
@@ -37,6 +37,7 @@ class EvaluationCache:
                     slippage REAL,
                     evaluation_mode TEXT,
                     mode_config_hash TEXT,
+                    validation_config_hash TEXT,
                     engine_version TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     PRIMARY KEY(
@@ -51,6 +52,7 @@ class EvaluationCache:
                         slippage,
                         evaluation_mode,
                         mode_config_hash,
+                        validation_config_hash,
                         engine_version
                     )
                 )
@@ -83,6 +85,7 @@ class EvaluationCache:
         slippage: float,
         evaluation_mode: str,
         mode_config_hash: str,
+        validation_config_hash: str,
     ) -> dict[str, Any] | None:
         params_json = json.dumps(params, sort_keys=True)
         con = sqlite3.connect(self.db_path)
@@ -95,7 +98,8 @@ class EvaluationCache:
                 WHERE collection=? AND symbol=? AND timeframe=? AND strategy=?
                   AND params_json=? AND metric_name=? AND data_fingerprint=?
                   AND fees=? AND slippage=?
-                  AND evaluation_mode=? AND mode_config_hash=? AND engine_version=?
+                  AND evaluation_mode=? AND mode_config_hash=? AND validation_config_hash=?
+                  AND engine_version=?
                 """,
                 (
                     collection,
@@ -109,6 +113,7 @@ class EvaluationCache:
                     slippage,
                     evaluation_mode,
                     mode_config_hash,
+                    validation_config_hash,
                     EVALUATION_SCHEMA_VERSION,
                 ),
             )
@@ -122,24 +127,8 @@ class EvaluationCache:
         finally:
             con.close()
 
-    def set(
-        self,
-        *,
-        collection: str,
-        symbol: str,
-        timeframe: str,
-        strategy: str,
-        params: dict[str, Any],
-        metric_name: str,
-        metric_value: float,
-        stats: dict[str, Any],
-        data_fingerprint: str,
-        fees: float,
-        slippage: float,
-        evaluation_mode: str,
-        mode_config_hash: str,
-    ) -> None:
-        params_json = json.dumps(params, sort_keys=True)
+    def set(self, *, record: EvaluationCacheRecord) -> None:
+        params_json = json.dumps(record.params, sort_keys=True)
         con = sqlite3.connect(self.db_path)
         try:
             con.execute(
@@ -159,24 +148,26 @@ class EvaluationCache:
                     slippage,
                     evaluation_mode,
                     mode_config_hash,
+                    validation_config_hash,
                     engine_version
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    collection,
-                    symbol,
-                    timeframe,
-                    strategy,
+                    record.collection,
+                    record.symbol,
+                    record.timeframe,
+                    record.strategy,
                     params_json,
-                    metric_name,
-                    float(metric_value),
-                    json.dumps(stats, sort_keys=True),
-                    data_fingerprint,
-                    fees,
-                    slippage,
-                    evaluation_mode,
-                    mode_config_hash,
+                    record.metric_name,
+                    float(record.metric_value),
+                    json.dumps(record.stats, sort_keys=True),
+                    record.data_fingerprint,
+                    record.fees,
+                    record.slippage,
+                    record.evaluation_mode,
+                    record.mode_config_hash,
+                    record.validation_config_hash,
                     EVALUATION_SCHEMA_VERSION,
                 ),
             )
@@ -274,6 +265,19 @@ class ResultStore:
                 """
                 CREATE INDEX IF NOT EXISTS idx_result_records_run
                 ON result_records(run_id, collection, symbol, timeframe, strategy)
+                """
+            )
+            con.execute(
+                """
+                CREATE TABLE IF NOT EXISTS run_metadata (
+                    run_id TEXT PRIMARY KEY,
+                    evaluation_mode TEXT,
+                    mode_config_hash TEXT,
+                    validation_profile_json TEXT,
+                    active_gates_json TEXT,
+                    inactive_gates_json TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
                 """
             )
             has_identity_index, identity_index_valid = self._identity_index_matches_expected(con)
@@ -400,5 +404,80 @@ class ResultStore:
                 }
                 for row in cur.fetchall()
             ]
+        finally:
+            con.close()
+
+    def upsert_run_metadata(
+        self,
+        *,
+        run_id: str,
+        evaluation_mode: str,
+        mode_config_hash: str,
+        validation_profile: dict[str, Any],
+        active_gates: list[str],
+        inactive_gates: list[str],
+    ) -> None:
+        con = sqlite3.connect(self.db_path)
+        try:
+            con.execute(
+                """
+                INSERT INTO run_metadata
+                (
+                    run_id,
+                    evaluation_mode,
+                    mode_config_hash,
+                    validation_profile_json,
+                    active_gates_json,
+                    inactive_gates_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(run_id) DO UPDATE SET
+                    evaluation_mode=excluded.evaluation_mode,
+                    mode_config_hash=excluded.mode_config_hash,
+                    validation_profile_json=excluded.validation_profile_json,
+                    active_gates_json=excluded.active_gates_json,
+                    inactive_gates_json=excluded.inactive_gates_json
+                """,
+                (
+                    run_id,
+                    evaluation_mode,
+                    mode_config_hash,
+                    json.dumps(validation_profile, sort_keys=True),
+                    json.dumps(active_gates, sort_keys=True),
+                    json.dumps(inactive_gates, sort_keys=True),
+                ),
+            )
+            con.commit()
+        finally:
+            con.close()
+
+    def get_run_metadata(self, run_id: str) -> dict[str, Any] | None:
+        con = sqlite3.connect(self.db_path)
+        con.row_factory = sqlite3.Row
+        try:
+            row = con.execute(
+                """
+                SELECT
+                    run_id,
+                    evaluation_mode,
+                    mode_config_hash,
+                    validation_profile_json,
+                    active_gates_json,
+                    inactive_gates_json
+                FROM run_metadata
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return {
+                "run_id": row["run_id"],
+                "evaluation_mode": row["evaluation_mode"],
+                "mode_config_hash": row["mode_config_hash"],
+                "validation_profile": json.loads(row["validation_profile_json"]),
+                "active_gates": list(json.loads(row["active_gates_json"])),
+                "inactive_gates": list(json.loads(row["inactive_gates_json"])),
+            }
         finally:
             con.close()

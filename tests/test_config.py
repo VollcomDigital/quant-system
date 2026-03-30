@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config import load_config
+from src.config import ValidationOutlierDetectionConfig, load_config, resolve_validation_overrides
 
 
 def test_load_config_allows_missing_strategies(tmp_path: Path):
@@ -69,7 +69,8 @@ metric: sharpe
 validation:
   data_quality:
     min_data_points: 500
-    min_continuity_score: 0.98
+    continuity:
+      min_score: 0.98
     on_fail: skip_job
 """
     path = tmp_path / "config.yaml"
@@ -79,7 +80,8 @@ validation:
     assert cfg.validation is not None
     assert cfg.validation.data_quality is not None
     assert cfg.validation.data_quality.min_data_points == 500
-    assert cfg.validation.data_quality.min_continuity_score == pytest.approx(0.98)
+    assert cfg.validation.data_quality.continuity is not None
+    assert cfg.validation.data_quality.continuity.min_score == pytest.approx(0.98)
     assert cfg.validation.data_quality.on_fail == "skip_job"
 
 
@@ -92,14 +94,16 @@ collections:
     validation:
       data_quality:
         min_data_points: 250
-        min_continuity_score: 0.95
+        continuity:
+          min_score: 0.95
         on_fail: skip_optimization
 timeframes: ['1d']
 metric: sharpe
 validation:
   data_quality:
     min_data_points: 500
-    min_continuity_score: 0.98
+    continuity:
+      min_score: 0.98
     on_fail: skip_job
 """
     path = tmp_path / "config.yaml"
@@ -112,7 +116,8 @@ validation:
     assert col.validation is not None
     assert col.validation.data_quality is not None
     assert col.validation.data_quality.min_data_points == 250
-    assert col.validation.data_quality.min_continuity_score == pytest.approx(0.95)
+    assert col.validation.data_quality.continuity is not None
+    assert col.validation.data_quality.continuity.min_score == pytest.approx(0.95)
     assert col.validation.data_quality.on_fail == "skip_optimization"
 
 
@@ -149,10 +154,8 @@ validation:
     "reliability_yaml",
     [
         "on_fail: abort_run",
-        "min_continuity_score: 1.2",
-        "max_missing_bar_pct: 101",
     ],
-    ids=["invalid_on_fail", "invalid_continuity_score", "invalid_max_missing_bar_pct"],
+    ids=["invalid_on_fail"],
 )
 def test_load_config_reliability_thresholds_invalid_values(tmp_path: Path, reliability_yaml: str):
     config_text = f"""
@@ -170,6 +173,27 @@ validation:
     path.write_text(config_text)
 
     with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_reliability_thresholds_invalid_continuity_score(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    continuity:
+      min_score: 1.2
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"validation\.data_quality\.continuity\.min_score"):
         load_config(path)
 
 
@@ -256,6 +280,287 @@ validation:
         load_config(path)
 
 
+def test_load_config_optimization_policy_inherited_to_collections(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test_a
+    source: yfinance
+    symbols: ['AAPL']
+  - name: test_b
+    source: yfinance
+    symbols: ['MSFT']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  optimization:
+    on_fail: baseline_only
+    min_bars: 321
+    dof_multiplier: 11
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    for col in cfg.collections:
+        assert col.validation is not None
+        assert col.validation.optimization is not None
+        assert col.validation.optimization.on_fail == "baseline_only"
+        assert col.validation.optimization.min_bars == 321
+        assert col.validation.optimization.dof_multiplier == 11
+
+
+def test_load_config_optimization_policy_collection_override_merges_with_global(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    validation:
+      optimization:
+        on_fail: baseline_only
+        min_bars: 200
+        dof_multiplier: 9
+timeframes: ['1d']
+metric: sharpe
+validation:
+  optimization:
+    on_fail: skip_job
+    min_bars: 123
+    dof_multiplier: 7
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    col = cfg.collections[0]
+    assert col.validation is not None
+    assert col.validation.optimization is not None
+    # Collection-level optimization policy takes precedence over global values.
+    assert col.validation.optimization.on_fail == "baseline_only"
+    assert col.validation.optimization.min_bars == 200
+    assert col.validation.optimization.dof_multiplier == 9
+
+
+def test_load_config_result_consistency_policy(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    outlier_dependency:
+      slices: 6
+      profit_share_threshold: 0.80
+      trade_share_threshold: 0.05
+    execution_price_variance:
+      price_tolerance_bps: 1.0
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.result_consistency is not None
+    assert cfg.validation.result_consistency.outlier_dependency is not None
+    assert cfg.validation.result_consistency.execution_price_variance is not None
+    assert cfg.validation.result_consistency.outlier_dependency.slices == 6
+    assert cfg.validation.result_consistency.outlier_dependency.profit_share_threshold == pytest.approx(
+        0.80
+    )
+    assert cfg.validation.result_consistency.outlier_dependency.trade_share_threshold == pytest.approx(
+        0.05
+    )
+    assert (
+        cfg.validation.result_consistency.execution_price_variance.price_tolerance_bps
+        == pytest.approx(1.0)
+    )
+    col = cfg.collections[0]
+    assert col.validation is not None
+    assert col.validation.result_consistency is not None
+    assert col.validation.result_consistency.outlier_dependency is not None
+    assert col.validation.result_consistency.outlier_dependency.slices == 6
+    assert col.validation.result_consistency.outlier_dependency.profit_share_threshold == pytest.approx(
+        0.80
+    )
+    assert col.validation.result_consistency.outlier_dependency.trade_share_threshold == pytest.approx(
+        0.05
+    )
+
+
+def test_load_config_result_consistency_collection_override(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    validation:
+      result_consistency:
+        outlier_dependency:
+          slices: 4
+          profit_share_threshold: 0.75
+          trade_share_threshold: 0.10
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    outlier_dependency:
+      slices: 8
+      profit_share_threshold: 0.80
+      trade_share_threshold: 0.05
+    execution_price_variance:
+      price_tolerance_bps: 0.5
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    col = cfg.collections[0]
+    assert col.validation is not None
+    assert col.validation.result_consistency is not None
+    assert col.validation.result_consistency.outlier_dependency is not None
+    assert col.validation.result_consistency.outlier_dependency.slices == 4
+    assert col.validation.result_consistency.outlier_dependency.profit_share_threshold == pytest.approx(
+        0.75
+    )
+    assert col.validation.result_consistency.outlier_dependency.trade_share_threshold == pytest.approx(
+        0.10
+    )
+    # Collection inherits global execution_price_variance when not overridden.
+    assert col.validation.result_consistency.execution_price_variance is not None
+    assert (
+        col.validation.result_consistency.execution_price_variance.price_tolerance_bps
+        == pytest.approx(0.5)
+    )
+
+
+def test_load_config_result_consistency_invalid_slices(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    outlier_dependency:
+      slices: 1
+      profit_share_threshold: 0.80
+      trade_share_threshold: 0.05
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_result_consistency_requires_profit_share_threshold(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    outlier_dependency:
+      slices: 5
+      trade_share_threshold: 0.05
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_result_consistency_requires_trade_share_threshold(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    outlier_dependency:
+      slices: 5
+      profit_share_threshold: 0.80
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_result_consistency_threshold_out_of_range(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    outlier_dependency:
+      slices: 5
+      profit_share_threshold: 1.2
+      trade_share_threshold: 0.05
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_result_consistency_execution_price_variance_requires_tolerance(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    execution_price_variance: {}
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_result_consistency_execution_price_variance_tolerance_non_negative(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    execution_price_variance:
+      price_tolerance_bps: -0.1
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
 def test_load_config_data_quality_calendar(tmp_path: Path):
     config_text = """
 collections:
@@ -266,10 +571,12 @@ timeframes: ['1d']
 metric: sharpe
 validation:
   data_quality:
-    calendar:
-      kind: exchange
-      exchange: XNYS
-      timezone: UTC-05:00
+    on_fail: skip_job
+    continuity:
+      calendar:
+        kind: exchange
+        exchange: XNYS
+        timezone: UTC-05:00
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -277,10 +584,11 @@ validation:
     cfg = load_config(path)
     assert cfg.validation is not None
     assert cfg.validation.data_quality is not None
-    assert cfg.validation.data_quality.calendar is not None
-    assert cfg.validation.data_quality.calendar.kind == "exchange"
-    assert cfg.validation.data_quality.calendar.exchange == "XNYS"
-    assert cfg.validation.data_quality.calendar.timezone == "UTC-05:00"
+    assert cfg.validation.data_quality.continuity is not None
+    assert cfg.validation.data_quality.continuity.calendar is not None
+    assert cfg.validation.data_quality.continuity.calendar.kind == "exchange"
+    assert cfg.validation.data_quality.continuity.calendar.exchange == "XNYS"
+    assert cfg.validation.data_quality.continuity.calendar.timezone == "UTC-05:00"
 
 
 def test_load_config_data_quality_calendar_invalid_kind(tmp_path: Path):
@@ -293,8 +601,10 @@ timeframes: ['1d']
 metric: sharpe
 validation:
   data_quality:
-    calendar:
-      kind: invalid
+    on_fail: skip_job
+    continuity:
+      calendar:
+        kind: invalid
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -313,12 +623,210 @@ timeframes: ['1d']
 metric: sharpe
 validation:
   data_quality:
-    calendar:
-      kind: exchange
-      timezone: America/New_York
+    on_fail: skip_job
+    continuity:
+      calendar:
+        kind: exchange
+        timezone: America/New_York
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
 
     with pytest.raises(ValueError):
         load_config(path)
+
+
+def test_load_config_data_quality_continuity_without_calendar_keeps_calendar_none(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    continuity:
+      min_score: 0.98
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.continuity is not None
+    assert cfg.validation.data_quality.continuity.calendar is None
+
+
+def test_load_config_data_quality_outlier_settings(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    outlier_detection:
+      max_outlier_pct: 1.5
+      method: modified_zscore
+      zscore_threshold: 3.5
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.outlier_detection is not None
+    assert cfg.validation.data_quality.outlier_detection.max_outlier_pct == pytest.approx(1.5)
+    assert cfg.validation.data_quality.outlier_detection.method == "modified_zscore"
+    assert cfg.validation.data_quality.outlier_detection.zscore_threshold == pytest.approx(3.5)
+
+
+def test_load_config_data_quality_outlier_collection_requires_method_and_threshold(
+    tmp_path: Path,
+):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    validation:
+      data_quality:
+        on_fail: skip_job
+        outlier_detection:
+          max_outlier_pct: 2.0
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    outlier_detection:
+      max_outlier_pct: 1.5
+      method: zscore
+      zscore_threshold: 3.0
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_data_quality_invalid_outlier_method(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    outlier_detection:
+      max_outlier_pct: 2.0
+      method: invalid
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_data_quality_outlier_missing_threshold(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    outlier_detection:
+      max_outlier_pct: 2.0
+      method: zscore
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_resolve_validation_overrides_normalizes_programmatic_outlier_method(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    outlier_detection:
+      max_outlier_pct: 2.0
+      method: zscore
+      zscore_threshold: 3.0
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.data_quality is not None
+    assert cfg.collections[0].validation.data_quality.outlier_detection is not None
+    cfg.collections[0].validation.data_quality.outlier_detection = ValidationOutlierDetectionConfig(
+        max_outlier_pct=2.0,
+        method="Modified_Zscore",
+        zscore_threshold=3.5,
+    )
+
+    resolve_validation_overrides(cfg)
+    normalized = cfg.collections[0].validation.data_quality.outlier_detection
+    assert normalized is not None
+    assert normalized.method == "modified_zscore"
+
+
+def test_resolve_validation_overrides_rejects_programmatic_outlier_percent_out_of_range(
+    tmp_path: Path,
+):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    outlier_detection:
+      max_outlier_pct: 2.0
+      method: zscore
+      zscore_threshold: 3.0
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.data_quality is not None
+    assert cfg.collections[0].validation.data_quality.outlier_detection is not None
+    cfg.collections[0].validation.data_quality.outlier_detection = ValidationOutlierDetectionConfig(
+        max_outlier_pct=200.0,
+        method="zscore",
+        zscore_threshold=3.0,
+    )
+
+    with pytest.raises(ValueError, match="max_outlier_pct"):
+        resolve_validation_overrides(cfg)

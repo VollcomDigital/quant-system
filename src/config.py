@@ -53,17 +53,30 @@ class ValidationCalendarConfig:
 @dataclass
 class ValidationDataQualityConfig:
     min_data_points: int | None = None
-    max_missing_bar_pct: float | None = None
-    max_kurtosis: float | None = None
-    min_continuity_score: float | None = None
+    continuity: "ValidationContinuityConfig | None" = None
+    kurtosis: float | None = None
+    outlier_detection: "ValidationOutlierDetectionConfig | None" = None
     on_fail: str | None = None
+
+@dataclass
+class ValidationContinuityConfig:
+    min_score: float | None = None
+    max_missing_bar_pct: float | None = None
     calendar: ValidationCalendarConfig | None = None
+
+
+@dataclass
+class ValidationOutlierDetectionConfig:
+    max_outlier_pct: float
+    method: str
+    zscore_threshold: float
 
 
 @dataclass
 class ValidationConfig:
     data_quality: ValidationDataQualityConfig | None = None
     optimization: "OptimizationPolicyConfig | None" = None
+    result_consistency: "ResultConsistencyConfig | None" = None
 
 
 @dataclass
@@ -71,6 +84,24 @@ class OptimizationPolicyConfig:
     on_fail: str
     min_bars: int
     dof_multiplier: int
+
+
+@dataclass
+class ResultConsistencyOutlierDependencyConfig:
+    slices: int
+    profit_share_threshold: float
+    trade_share_threshold: float
+
+
+@dataclass
+class ResultConsistencyExecutionPriceVarianceConfig:
+    price_tolerance_bps: float
+
+
+@dataclass
+class ResultConsistencyConfig:
+    outlier_dependency: ResultConsistencyOutlierDependencyConfig | None = None
+    execution_price_variance: ResultConsistencyExecutionPriceVarianceConfig | None = None
 
 
 @dataclass
@@ -95,6 +126,336 @@ class Config:
     validation: ValidationConfig | None = None
 
 
+DEFAULT_CALENDAR_KIND = "auto"
+
+
+def _merge_replace(base: Any, override: Any) -> Any:
+    return override if override is not None else base
+
+
+def _merged_field(base: Any, override: Any, field: str) -> Any:
+    override_value = getattr(override, field, None)
+    if override_value is not None:
+        return override_value
+    return getattr(base, field, None)
+
+
+def _merge_data_quality_config(
+    base: ValidationDataQualityConfig | None,
+    override: ValidationDataQualityConfig | None,
+) -> ValidationDataQualityConfig | None:
+    if base is None and override is None:
+        return None
+    min_data_points = _merge_replace(
+        getattr(base, "min_data_points", None),
+        getattr(override, "min_data_points", None),
+    )
+    continuity = _merge_continuity_config(
+        getattr(base, "continuity", None),
+        getattr(override, "continuity", None),
+    )
+    kurtosis = _merge_replace(
+        getattr(base, "kurtosis", None),
+        getattr(override, "kurtosis", None),
+    )
+    outlier_detection = _merge_outlier_detection_config(
+        getattr(base, "outlier_detection", None),
+        getattr(override, "outlier_detection", None),
+    )
+
+    on_fail = _merged_field(base, override, "on_fail")
+    if on_fail is None:
+        raise ValueError("Invalid `validation.data_quality`: missing required field(s): on_fail")
+    return ValidationDataQualityConfig(
+        min_data_points=min_data_points,
+        continuity=continuity,
+        kurtosis=kurtosis,
+        outlier_detection=outlier_detection,
+        on_fail=str(on_fail).strip().lower(),
+    )
+
+
+def _merge_optimization_config(
+    base: OptimizationPolicyConfig | None,
+    override: OptimizationPolicyConfig | None,
+) -> OptimizationPolicyConfig | None:
+    if base is None and override is None:
+        return None
+    on_fail = _merged_field(base, override, "on_fail")
+    if on_fail is None:
+        raise ValueError("Invalid `validation.optimization`: missing required field(s): on_fail")
+    min_bars = _merged_field(base, override, "min_bars")
+    if min_bars is None:
+        raise ValueError("Invalid `validation.optimization`: missing required field(s): min_bars")
+    dof_multiplier = _merged_field(base, override, "dof_multiplier")
+    if dof_multiplier is None:
+        raise ValueError("Invalid `validation.optimization`: missing required field(s): dof_multiplier")
+    return OptimizationPolicyConfig(
+        on_fail=str(on_fail).strip().lower(),
+        min_bars=int(min_bars),
+        dof_multiplier=int(dof_multiplier),
+    )
+
+
+def _merge_result_consistency_config(
+    base: ResultConsistencyConfig | None,
+    override: ResultConsistencyConfig | None,
+) -> ResultConsistencyConfig | None:
+    if base is None and override is None:
+        return None
+    outlier_dependency = _merge_result_consistency_outlier_dependency_config(
+        getattr(base, "outlier_dependency", None),
+        getattr(override, "outlier_dependency", None),
+    )
+    execution_price_variance = _merge_result_consistency_execution_price_variance_config(
+        getattr(base, "execution_price_variance", None),
+        getattr(override, "execution_price_variance", None),
+    )
+    if outlier_dependency is None and execution_price_variance is None:
+        return None
+    return ResultConsistencyConfig(
+        outlier_dependency=outlier_dependency,
+        execution_price_variance=execution_price_variance,
+    )
+
+
+def _merge_result_consistency_outlier_dependency_config(
+    base: ResultConsistencyOutlierDependencyConfig | None,
+    override: ResultConsistencyOutlierDependencyConfig | None,
+) -> ResultConsistencyOutlierDependencyConfig | None:
+    if base is None and override is None:
+        return None
+    slices = _merged_field(base, override, "slices")
+    if slices is None:
+        raise ValueError(
+            "Invalid `validation.result_consistency.outlier_dependency`: "
+            "missing required field(s): slices"
+        )
+    profit_share_threshold = _merged_field(base, override, "profit_share_threshold")
+    if profit_share_threshold is None:
+        raise ValueError(
+            "Invalid `validation.result_consistency.outlier_dependency`: "
+            "missing required field(s): profit_share_threshold"
+        )
+    trade_share_threshold = _merged_field(base, override, "trade_share_threshold")
+    if trade_share_threshold is None:
+        raise ValueError(
+            "Invalid `validation.result_consistency.outlier_dependency`: "
+            "missing required field(s): trade_share_threshold"
+        )
+    return ResultConsistencyOutlierDependencyConfig(
+        slices=int(slices),
+        profit_share_threshold=float(profit_share_threshold),
+        trade_share_threshold=float(trade_share_threshold),
+    )
+
+
+def _merge_result_consistency_execution_price_variance_config(
+    base: ResultConsistencyExecutionPriceVarianceConfig | None,
+    override: ResultConsistencyExecutionPriceVarianceConfig | None,
+) -> ResultConsistencyExecutionPriceVarianceConfig | None:
+    if base is None and override is None:
+        return None
+    price_tolerance_bps = _merged_field(base, override, "price_tolerance_bps")
+    if price_tolerance_bps is None:
+        raise ValueError(
+            "Invalid `validation.result_consistency.execution_price_variance`: "
+            "missing required field(s): price_tolerance_bps"
+        )
+    return ResultConsistencyExecutionPriceVarianceConfig(
+        price_tolerance_bps=float(price_tolerance_bps),
+    )
+
+def _merge_continuity_config(
+    base: ValidationContinuityConfig | None,
+    override: ValidationContinuityConfig | None,
+) -> ValidationContinuityConfig | None:
+    if base is None and override is None:
+        return None
+    min_score = _merged_field(base, override, "min_score")
+    max_missing_bar_pct = _merged_field(base, override, "max_missing_bar_pct")
+    calendar = _merge_calendar_config(
+        getattr(base, "calendar", None),
+        getattr(override, "calendar", None),
+    )
+    return ValidationContinuityConfig(
+        min_score=min_score,
+        max_missing_bar_pct=max_missing_bar_pct,
+        calendar=calendar,
+    )
+
+
+def _merge_calendar_config(
+    base: ValidationCalendarConfig | None,
+    override: ValidationCalendarConfig | None,
+) -> ValidationCalendarConfig | None:
+    if base is None and override is None:
+        return None
+    kind = str(_merged_field(base, override, "kind") or DEFAULT_CALENDAR_KIND).strip().lower()
+    exchange = _merged_field(base, override, "exchange")
+    timezone = _merged_field(base, override, "timezone")
+    return ValidationCalendarConfig(kind=kind, exchange=exchange, timezone=timezone)
+
+
+def _merge_outlier_detection_config(
+    base: ValidationOutlierDetectionConfig | None,
+    override: ValidationOutlierDetectionConfig | None,
+) -> ValidationOutlierDetectionConfig | None:
+    if base is None and override is None:
+        return None
+
+    # Reuse parse-path normalization/validation so merge-path behavior stays strict and identical.
+    return _parse_outlier_detection(
+        {
+            "max_outlier_pct": _merged_field(base, override, "max_outlier_pct"),
+            "method": _merged_field(base, override, "method"),
+            "zscore_threshold": _merged_field(base, override, "zscore_threshold"),
+        },
+        "validation.data_quality.outlier_detection",
+    )
+
+
+def resolve_validation_overrides(cfg: Config) -> None:
+    """Resolve effective collection-level validation policies.
+
+    For each module (`data_quality`, `optimization`, `result_consistency`):
+    effective policy = merge(global_policy, collection_override).
+    """
+    validation_cfg = cfg.validation
+    if validation_cfg is None:
+        global_data_quality_policy = None
+        global_optimization_policy = None
+        global_result_consistency_policy = None
+    else:
+        # Build normalized runtime globals without mutating the source config object.
+        global_data_quality_policy = (
+            _merge_data_quality_config(validation_cfg.data_quality, None)
+            if validation_cfg.data_quality is not None
+            else None
+        )
+        global_optimization_policy = (
+            _merge_optimization_config(validation_cfg.optimization, None)
+            if validation_cfg.optimization is not None
+            else None
+        )
+        global_result_consistency_policy = (
+            _merge_result_consistency_config(validation_cfg.result_consistency, None)
+            if validation_cfg.result_consistency is not None
+            else None
+        )
+
+    for collection in cfg.collections:
+        collection_validation = collection.validation
+        resolved_data_quality = _merge_data_quality_config(
+            global_data_quality_policy,
+            getattr(collection_validation, "data_quality", None),
+        )
+        resolved_optimization = _merge_optimization_config(
+            global_optimization_policy,
+            getattr(collection_validation, "optimization", None),
+        )
+        resolved_result_consistency = _merge_result_consistency_config(
+            global_result_consistency_policy,
+            getattr(collection_validation, "result_consistency", None),
+        )
+        if (
+            resolved_data_quality is None
+            and resolved_optimization is None
+            and resolved_result_consistency is None
+        ):
+            continue
+        collection.validation = ValidationConfig(
+            data_quality=resolved_data_quality,
+            optimization=resolved_optimization,
+            result_consistency=resolved_result_consistency,
+        )
+
+
+def require_mapping(raw: Any, prefix: str) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid `{prefix}`: expected a mapping")
+    return cast(dict[str, Any], raw)
+
+
+def parse_optional_int(
+    raw: dict[str, Any],
+    prefix: str,
+    key: str,
+    *,
+    min_value: int | None = None,
+    max_value: int | None = None,
+) -> int | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    parsed = int(value)
+    if min_value is not None and parsed < min_value:
+        raise ValueError(f"`{prefix}.{key}` must be >= {min_value}")
+    if max_value is not None and parsed > max_value:
+        raise ValueError(f"`{prefix}.{key}` must be <= {max_value}")
+    return parsed
+
+
+def parse_required_int(
+    raw: dict[str, Any],
+    prefix: str,
+    key: str,
+    *,
+    min_value: int | None = None,
+    max_value: int | None = None,
+) -> int:
+    value = parse_optional_int(raw, prefix, key, min_value=min_value, max_value=max_value)
+    if value is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): {key}")
+    return value
+
+
+def parse_optional_float(
+    raw: dict[str, Any],
+    prefix: str,
+    key: str,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    parsed = float(value)
+    if min_value is not None and parsed < min_value:
+        raise ValueError(f"`{prefix}.{key}` must be >= {min_value}")
+    if max_value is not None and parsed > max_value:
+        raise ValueError(f"`{prefix}.{key}` must be <= {max_value}")
+    return parsed
+
+
+def parse_required_float(
+    raw: dict[str, Any],
+    prefix: str,
+    key: str,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> float:
+    value = parse_optional_float(raw, prefix, key, min_value=min_value, max_value=max_value)
+    if value is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): {key}")
+    return value
+
+
+def parse_optional_str(
+    raw: dict[str, Any],
+    key: str,
+    *,
+    normalize: bool = True,
+) -> str | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    parsed = str(value).strip()
+    return parsed.lower() if normalize else parsed
+
+
 def _parse_on_fail(
     raw_value: Any,
     field_path: str,
@@ -110,6 +471,19 @@ def _parse_on_fail(
     return on_fail
 
 
+def parse_required_on_fail(
+    raw_value: Any,
+    field_path: str,
+    allowed_on_fail: set[str],
+) -> str:
+    parsed = _parse_on_fail(raw_value, field_path, allowed_on_fail)
+    if parsed is None:
+        section = field_path.rsplit(".", 1)[0]
+        key = field_path.rsplit(".", 1)[1]
+        raise ValueError(f"Invalid `{section}`: missing required field(s): {key}")
+    return parsed
+
+
 def _parse_utc_timezone(raw_value: Any, field_path: str) -> str | None:
     if raw_value is None:
         return None
@@ -123,88 +497,119 @@ def _parse_utc_timezone(raw_value: Any, field_path: str) -> str | None:
     return timezone
 
 
-def _parse_validation_data_quality_thresholds(
+def _parse_validation_data_quality(
     raw: Any, prefix: str
 ) -> ValidationDataQualityConfig | None:
     if raw is None:
         return None
-    if not isinstance(raw, dict):
-        raise ValueError(f"Invalid `{prefix}`: expected a mapping")
+    parsed_raw = require_mapping(raw, prefix)
 
-    on_fail = _parse_on_fail(
-        raw.get("on_fail"),
+    on_fail = parse_required_on_fail(
+        parsed_raw.get("on_fail"),
         f"{prefix}.on_fail",
         {"skip_optimization", "skip_job", "skip_collection"},
     )
-    calendar_cfg = _parse_validation_calendar(raw.get("calendar"), f"{prefix}.calendar")
-
-    def _as_optional_int(value: Any, field: str) -> int | None:
-        if value is None:
-            return None
-        parsed = int(value)
-        if parsed < 0:
-            raise ValueError(f"`{prefix}.{field}` must be >= 0")
-        return parsed
-
-    def _as_optional_float(value: Any, field: str) -> float | None:
-        if value is None:
-            return None
-        parsed = float(value)
-        if parsed < 0:
-            raise ValueError(f"`{prefix}.{field}` must be >= 0")
-        return parsed
+    min_data_points_cfg = parse_optional_int(
+        parsed_raw, prefix, "min_data_points", min_value=0
+    )
+    continuity_cfg = _parse_continuity(
+        parsed_raw.get("continuity"), f"{prefix}.continuity"
+    )
+    kurtosis_cfg = parse_optional_float(
+        parsed_raw, prefix, "kurtosis", min_value=0
+    )
+    outlier_detection_cfg = _parse_outlier_detection(
+        parsed_raw.get("outlier_detection"), f"{prefix}.outlier_detection"
+    )
 
     cfg = ValidationDataQualityConfig(
-        min_data_points=_as_optional_int(raw.get("min_data_points"), "min_data_points"),
-        max_missing_bar_pct=_as_optional_float(raw.get("max_missing_bar_pct"), "max_missing_bar_pct"),
-        max_kurtosis=_as_optional_float(raw.get("max_kurtosis"), "max_kurtosis"),
-        min_continuity_score=_as_optional_float(
-            raw.get("min_continuity_score"), "min_continuity_score"
-        ),
+        min_data_points=min_data_points_cfg,
+        continuity=continuity_cfg,
+        kurtosis=kurtosis_cfg,
+        outlier_detection=outlier_detection_cfg,
         on_fail=on_fail,
+    )
+    return cfg
+
+def _parse_continuity(
+    raw: Any,
+    prefix: str,
+) -> ValidationContinuityConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    min_score = parse_optional_float(parsed_raw, prefix, "min_score", min_value=0, max_value=1)
+    max_missing = parse_optional_float(
+        parsed_raw, prefix, "max_missing_bar_pct", min_value=0, max_value=100
+    )
+    calendar_cfg = _parse_validation_calendar(parsed_raw.get("calendar"), f"{prefix}.calendar")
+    return ValidationContinuityConfig(
+        min_score=min_score,
+        max_missing_bar_pct=max_missing,
         calendar=calendar_cfg,
     )
-    if cfg.min_continuity_score is not None and not 0.0 <= cfg.min_continuity_score <= 1.0:
-        raise ValueError(f"`{prefix}.min_continuity_score` must be between 0 and 1")
-    if cfg.max_missing_bar_pct is not None and not 0.0 <= cfg.max_missing_bar_pct <= 100.0:
-        raise ValueError(f"`{prefix}.max_missing_bar_pct` must be between 0 and 100")
-    return cfg
+
+def _parse_outlier_detection(
+    raw: Any, prefix: str
+) -> ValidationOutlierDetectionConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    max_outlier_pct = parse_required_float(
+        parsed_raw, prefix, "max_outlier_pct", min_value=0, max_value=100
+    )
+    method = parse_optional_str(parsed_raw, "method")
+    if method is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): method")
+    if method not in {"zscore", "modified_zscore"}:
+        raise ValueError(
+            f"Invalid `{prefix}.method`: expected one of ['modified_zscore', 'zscore']"
+        )
+    zscore_threshold = parse_required_float(parsed_raw, prefix, "zscore_threshold")
+    if zscore_threshold <= 0:
+        raise ValueError(f"`{prefix}.zscore_threshold` must be > 0")
+    return ValidationOutlierDetectionConfig(
+        max_outlier_pct=max_outlier_pct,
+        method=method,
+        zscore_threshold=zscore_threshold,
+    )
 
 
 def _parse_validation_calendar(raw: Any, prefix: str) -> ValidationCalendarConfig | None:
     if raw is None:
         return None
-    if not isinstance(raw, dict):
-        raise ValueError(f"Invalid `{prefix}`: expected a mapping")
-    kind = str(raw.get("kind", "auto")).strip().lower()
+    parsed_raw = require_mapping(raw, prefix)
+    kind = str(parsed_raw.get("kind", "auto")).strip().lower()
     allowed_kinds = {"auto", "crypto_24_7", "weekday", "exchange"}
     if kind not in allowed_kinds:
         raise ValueError(
             f"Invalid `{prefix}.kind`: expected one of {sorted(allowed_kinds)}, got '{kind}'"
         )
-    exchange = raw.get("exchange")
+    exchange = parsed_raw.get("exchange")
     return ValidationCalendarConfig(
         kind=kind,
         exchange=str(exchange).strip() if exchange is not None else None,
-        timezone=_parse_utc_timezone(raw.get("timezone"), f"{prefix}.timezone"),
+        timezone=_parse_utc_timezone(parsed_raw.get("timezone"), f"{prefix}.timezone"),
     )
 
 
 def _parse_validation(raw: Any, prefix: str) -> ValidationConfig | None:
     if raw is None:
         return None
-    if not isinstance(raw, dict):
-        raise ValueError(f"Invalid `{prefix}`: expected a mapping")
+    parsed_raw = require_mapping(raw, prefix)
 
-    data_quality_raw = raw.get("data_quality")
+    data_quality_raw = parsed_raw.get("data_quality")
     if data_quality_raw is not None and not isinstance(data_quality_raw, dict):
         raise ValueError(f"Invalid `{prefix}.data_quality`: expected a mapping")
-    optimization_raw = raw.get("optimization")
+    optimization_raw = parsed_raw.get("optimization")
     if optimization_raw is not None and not isinstance(optimization_raw, dict):
         raise ValueError(f"Invalid `{prefix}.optimization`: expected a mapping")
+    result_consistency_raw = parsed_raw.get("result_consistency")
+    if result_consistency_raw is not None and not isinstance(result_consistency_raw, dict):
+        raise ValueError(f"Invalid `{prefix}.result_consistency`: expected a mapping")
 
     data_quality_cfg = (
-        _parse_validation_data_quality_thresholds(data_quality_raw, f"{prefix}.data_quality")
+        _parse_validation_data_quality(data_quality_raw, f"{prefix}.data_quality")
         if isinstance(data_quality_raw, dict)
         else None
     )
@@ -213,53 +618,125 @@ def _parse_validation(raw: Any, prefix: str) -> ValidationConfig | None:
         if isinstance(optimization_raw, dict)
         else None
     )
+    result_consistency_cfg = (
+        _parse_result_consistency(result_consistency_raw, f"{prefix}.result_consistency")
+        if isinstance(result_consistency_raw, dict)
+        else None
+    )
 
-    if data_quality_cfg is None and optimization_cfg is None:
+    if data_quality_cfg is None and optimization_cfg is None and result_consistency_cfg is None:
+        # Keep validation fully optional; no synthetic policy object when both modules are absent.
         return None
-    return ValidationConfig(data_quality=data_quality_cfg, optimization=optimization_cfg)
+    return ValidationConfig(
+        data_quality=data_quality_cfg,
+        optimization=optimization_cfg,
+        result_consistency=result_consistency_cfg,
+    )
 
 
 def _parse_optimization_policy(raw: Any, prefix: str) -> OptimizationPolicyConfig | None:
     if raw is None:
         return None
-    if not isinstance(raw, dict):
-        raise ValueError(f"Invalid `{prefix}`: expected a mapping")
-
-    required_fields = ("on_fail", "min_bars", "dof_multiplier")
-    missing_fields = [field for field in required_fields if raw.get(field) is None]
-    if missing_fields:
-        raise ValueError(
-            f"Invalid `{prefix}`: missing required field(s): {', '.join(missing_fields)}"
-        )
-
-    on_fail = cast(
-        str,
-        _parse_on_fail(
-            raw.get("on_fail"),
-            f"{prefix}.on_fail",
-            {"baseline_only", "skip_job"},
-        ),
+    parsed_raw = require_mapping(raw, prefix)
+    on_fail = parse_required_on_fail(
+        parsed_raw.get("on_fail"),
+        f"{prefix}.on_fail",
+        {"baseline_only", "skip_job"},
     )
 
-    def _as_optional_int(value: Any, field: str) -> int | None:
-        if value is None:
-            return None
-        parsed = int(value)
-        if parsed < 0:
-            raise ValueError(f"`{prefix}.{field}` must be >= 0")
-        return parsed
-
-    min_bars = _as_optional_int(raw.get("min_bars"), "min_bars")
-    dof_multiplier = _as_optional_int(raw.get("dof_multiplier"), "dof_multiplier")
-    if min_bars is None or dof_multiplier is None:
-        raise ValueError(
-            f"Invalid `{prefix}`: `min_bars` and `dof_multiplier` are required"
-        )
+    min_bars = parse_required_int(parsed_raw, prefix, "min_bars", min_value=0)
+    dof_multiplier = parse_required_int(parsed_raw, prefix, "dof_multiplier", min_value=0)
 
     return OptimizationPolicyConfig(
         on_fail=on_fail,
         min_bars=min_bars,
         dof_multiplier=dof_multiplier,
+    )
+
+
+def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+
+    outlier_dependency_raw = parsed_raw.get("outlier_dependency")
+    if outlier_dependency_raw is not None and not isinstance(outlier_dependency_raw, dict):
+        raise ValueError(f"Invalid `{prefix}.outlier_dependency`: expected a mapping")
+    execution_price_variance_raw = parsed_raw.get("execution_price_variance")
+    if execution_price_variance_raw is not None and not isinstance(execution_price_variance_raw, dict):
+        raise ValueError(f"Invalid `{prefix}.execution_price_variance`: expected a mapping")
+
+    outlier_dependency = (
+        _parse_result_consistency_outlier_dependency(
+            outlier_dependency_raw,
+            f"{prefix}.outlier_dependency",
+        )
+        if isinstance(outlier_dependency_raw, dict)
+        else None
+    )
+    execution_price_variance = (
+        _parse_result_consistency_execution_price_variance(
+            execution_price_variance_raw,
+            f"{prefix}.execution_price_variance",
+        )
+        if isinstance(execution_price_variance_raw, dict)
+        else None
+    )
+
+    if outlier_dependency is None and execution_price_variance is None:
+        raise ValueError(
+            f"Invalid `{prefix}`: expected at least one configured module "
+            "(`outlier_dependency` or `execution_price_variance`)"
+        )
+
+    return ResultConsistencyConfig(
+        outlier_dependency=outlier_dependency,
+        execution_price_variance=execution_price_variance,
+    )
+
+
+def _parse_result_consistency_outlier_dependency(
+    raw: Any, prefix: str
+) -> ResultConsistencyOutlierDependencyConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    slices = parse_required_int(parsed_raw, prefix, "slices", min_value=2)
+    profit_share_threshold = parse_required_float(
+        parsed_raw,
+        prefix,
+        "profit_share_threshold",
+        min_value=0.0,
+        max_value=1.0,
+    )
+    trade_share_threshold = parse_required_float(
+        parsed_raw,
+        prefix,
+        "trade_share_threshold",
+        min_value=0.0,
+        max_value=1.0,
+    )
+    return ResultConsistencyOutlierDependencyConfig(
+        slices=slices,
+        profit_share_threshold=float(profit_share_threshold),
+        trade_share_threshold=float(trade_share_threshold),
+    )
+
+
+def _parse_result_consistency_execution_price_variance(
+    raw: Any, prefix: str
+) -> ResultConsistencyExecutionPriceVarianceConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    price_tolerance_bps = parse_required_float(
+        parsed_raw,
+        prefix,
+        "price_tolerance_bps",
+        min_value=0.0,
+    )
+    return ResultConsistencyExecutionPriceVarianceConfig(
+        price_tolerance_bps=float(price_tolerance_bps),
     )
 
 
@@ -353,4 +830,5 @@ def load_config(path: str | Path) -> Config:
         notifications=notifications_cfg,
         validation=validation_cfg,
     )
+    resolve_validation_overrides(cfg)
     return cfg

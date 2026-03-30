@@ -1,21 +1,34 @@
 from __future__ import annotations
 
+import json
 from decimal import Decimal
 from math import isfinite
 from types import SimpleNamespace
+from types import MethodType
 
 import pandas as pd
 import pytest
 
+from src.backtest.evaluation.contracts import (
+    EvaluationModeConfig,
+    EvaluationOutcome,
+    EvaluationRequest,
+)
 from src.backtest.runner import BacktestRunner, BestResult, GateDecision
 from src.config import (
     CollectionConfig,
     Config,
     OptimizationPolicyConfig,
+    ResultConsistencyConfig,
+    ResultConsistencyExecutionPriceVarianceConfig,
+    ResultConsistencyOutlierDependencyConfig,
     StrategyConfig,
     ValidationCalendarConfig,
     ValidationConfig,
+    ValidationContinuityConfig,
     ValidationDataQualityConfig,
+    ValidationOutlierDetectionConfig,
+    resolve_validation_overrides,
 )
 from src.strategies.base import BaseStrategy
 
@@ -221,13 +234,22 @@ def _make_runner(
     if patch_sim:
 
         def _fake_sim(self, *args, **kwargs):
-            return returns, equity, stats
+            return returns, equity, stats, pd.DataFrame()
 
         monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _fake_sim)
 
     runner.results_cache = _StubResultsCache()
     runner.evaluation_cache = _StubEvaluationCache()
     runner.mode_config_hash = runner.evaluation_cache.hash_mode_config(runner.mode_config)
+    original_run_all = BacktestRunner.run_all
+
+    def _run_all_with_resolved_cfg(self, only_cached=False):
+        # Tests often mutate runner.cfg after construction; resolve overrides
+        # at invocation time to keep config ownership in src/config.py.
+        resolve_validation_overrides(self.cfg)
+        return original_run_all(self, only_cached=only_cached)
+
+    runner.run_all = MethodType(_run_all_with_resolved_cfg, runner)
     return runner
 
 
@@ -246,6 +268,15 @@ def test_bars_per_year_various_units():
 def test_timeframe_to_timedelta_supports_common_aliases():
     assert BacktestRunner._timeframe_to_timedelta("1wk") == pd.Timedelta(weeks=1)
     assert BacktestRunner._timeframe_to_timedelta("1mo") == pd.Timedelta(days=30)
+
+
+def test_compute_outlier_mask_rejects_unsupported_method():
+    returns = pd.Series([0.01, -0.01, 0.02, -0.02], dtype=float)
+    mask, issue = BacktestRunner._compute_outlier_mask(
+        returns=returns, method="bad_method", threshold=3.0
+    )
+    assert mask is None
+    assert issue == "unsupported_method:bad_method"
 
 
 @pytest.mark.parametrize(
@@ -383,9 +414,13 @@ def test_data_validation_calendar_timezone_changes_weekday_continuity(tmp_path, 
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
         data_quality=ValidationDataQualityConfig(
-            calendar=ValidationCalendarConfig(kind="weekday", timezone="UTC-05:00")
+            continuity=ValidationContinuityConfig(
+                calendar=ValidationCalendarConfig(kind="weekday", timezone="UTC-05:00")
+            ),
+            on_fail="skip_job",
         )
     )
+    resolve_validation_overrides(runner.cfg)
     idx = pd.to_datetime(["2024-01-06 00:30:00+00:00", "2024-01-09 00:30:00+00:00"], utc=True)
     df = pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
     context = SimpleNamespace(
@@ -801,6 +836,84 @@ def test_run_all_uses_cached_results(tmp_path, monkeypatch):
     assert runner.results_cache.set_calls == runner.metrics["result_cache_hits"]
 
 
+def test_run_all_cached_invalid_outcomes_remain_invalid(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+
+    class _ReplayEvaluationCache(_StubEvaluationCache):
+        def __init__(self):
+            super().__init__()
+            self._store = {}
+
+        @staticmethod
+        def _cache_key(payload):
+            return (
+                payload["collection"],
+                payload["symbol"],
+                payload["timeframe"],
+                payload["strategy"],
+                json.dumps(payload["params"], sort_keys=True),
+                payload["metric_name"],
+                payload["data_fingerprint"],
+                float(payload["fees"]),
+                float(payload["slippage"]),
+                payload["evaluation_mode"],
+                payload["mode_config_hash"],
+                payload["validation_config_hash"],
+            )
+
+        def get(self, **kwargs):
+            self.retrieved.append(kwargs)
+            return self._store.get(self._cache_key(kwargs))
+
+        def set(self, **kwargs):
+            self.saved.append(kwargs)
+            self._store[self._cache_key(kwargs)] = {
+                "metric_value": float(kwargs["metric_value"]),
+                "stats": dict(kwargs["stats"]),
+            }
+
+    class _AlwaysInvalidEvaluator:
+        def __init__(self, calls):
+            self._calls = calls
+
+        def evaluate(self, *args, **kwargs):
+            self._calls["count"] += 1
+            return EvaluationOutcome(
+                metric_value=123.0,
+                stats={"forced_invalid": True},
+                valid=False,
+                attempted=True,
+                simulation_executed=True,
+                metric_computed=True,
+                reject_reason="forced_invalid",
+            )
+
+    runner.evaluation_cache = _ReplayEvaluationCache()
+    runner.mode_config_hash = runner.evaluation_cache.hash_mode_config(runner.mode_config)
+    eval_calls = {"count": 0}
+    monkeypatch.setattr(
+        BacktestRunner,
+        "_get_evaluator",
+        lambda self: _AlwaysInvalidEvaluator(eval_calls),
+    )
+
+    first_results = runner.run_all()
+    assert first_results == []
+    assert eval_calls["count"] > 0
+    assert runner.evaluation_cache.saved
+    assert all(
+        saved["metric_value"] == float("-inf") for saved in runner.evaluation_cache.saved
+    )
+
+    def _fail_if_fresh_eval(self):
+        raise AssertionError("Fresh evaluator should not run when evaluation cache is warm")
+
+    monkeypatch.setattr(BacktestRunner, "_get_evaluator", _fail_if_fresh_eval)
+    second_results = runner.run_all()
+    assert second_results == []
+    assert runner.metrics["result_cache_hits"] == 0
+
+
 def test_run_all_handles_failed_and_nan_metrics(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
@@ -834,7 +947,7 @@ def test_run_all_handles_failed_and_nan_metrics(tmp_path, monkeypatch):
                 "calmar": 0.0,
             }
         )
-        return returns, equity, stats
+        return returns, equity, stats, pd.DataFrame()
 
     monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _sim_with_none)
     monkeypatch.setattr(
@@ -947,10 +1060,11 @@ def test_run_pybroker_simulation_generates_metrics(tmp_path, monkeypatch):
     )
 
     assert result is not None
-    returns, equity_curve, stats = result
+    returns, equity_curve, stats, trades_frame = result
     assert len(returns) == len(equity_curve)
     assert "sharpe" in stats and "trades" in stats
     assert stats["trades"] == 1
+    assert isinstance(trades_frame, pd.DataFrame)
 
 
 def test_run_all_records_fetch_failures(tmp_path, monkeypatch):
@@ -1036,7 +1150,7 @@ def _patch_pybroker_simulation(monkeypatch) -> dict[str, int]:
             "drawdown_curve": [],
             "trades_log": [],
         }
-        return returns, equity, stats
+        return returns, equity, stats, pd.DataFrame()
 
     monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _fake_sim)
     return eval_calls
@@ -1115,7 +1229,10 @@ def test_run_all_optimization_policy_skip_job_on_infeasible_search(tmp_path, mon
 def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_optimization"),
+        data_quality=ValidationDataQualityConfig(
+            min_data_points=10,
+            on_fail="skip_optimization",
+        ),
     )
     _patch_source_with_bars(monkeypatch, bars=5)
     eval_calls = _patch_pybroker_simulation(monkeypatch)
@@ -1130,10 +1247,54 @@ def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkey
     assert any("min_data_points_not_met" in r for r in reasons)
 
 
+def test_run_all_data_quality_without_continuity_still_computes_diagnostics(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            on_fail="skip_job",
+        ),
+    )
+
+    _patch_source_with_bars(monkeypatch, bars=5)
+    _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    continuity = results[0].stats["data_reliability"]["continuity"]
+    assert continuity["expected_bars"] == 5
+    assert continuity["actual_bars"] == 5
+    assert continuity["missing_bars"] == 0
+
+
+def test_run_all_data_quality_without_continuity_rejects_insufficient_bars(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            on_fail="skip_optimization",
+        ),
+    )
+    _patch_source_with_bars(monkeypatch, bars=1)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert len(runner.failures) == 1
+    assert runner.failures[0]["stage"] == "data_validation"
+    assert "insufficient_bars_for_continuity" in runner.failures[0]["error"]
+
+
 def test_run_all_reliability_skip_evaluation_on_continuity_threshold(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(min_continuity_score=0.95, on_fail="skip_job"),
+        data_quality=ValidationDataQualityConfig(
+            continuity=ValidationContinuityConfig(min_score=0.95),
+            on_fail="skip_job",
+        ),
     )
 
     class _GappySource:
@@ -1165,7 +1326,10 @@ def test_run_all_reliability_skip_evaluation_on_continuity_threshold(tmp_path, m
 def test_run_all_reliability_skip_evaluation_on_missing_bar_pct_threshold(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(max_missing_bar_pct=10.0, on_fail="skip_job"),
+        data_quality=ValidationDataQualityConfig(
+            continuity=ValidationContinuityConfig(max_missing_bar_pct=10.0),
+            on_fail="skip_job",
+        ),
     )
 
     class _GappySource:
@@ -1197,7 +1361,10 @@ def test_run_all_reliability_skip_evaluation_on_missing_bar_pct_threshold(tmp_pa
 def test_run_all_reliability_skip_evaluation_on_max_kurtosis(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(max_kurtosis=1.0, on_fail="skip_job"),
+        data_quality=ValidationDataQualityConfig(
+            kurtosis=1.0,
+            on_fail="skip_job",
+        ),
     )
 
     class _LeptokurticSource:
@@ -1225,6 +1392,91 @@ def test_run_all_reliability_skip_evaluation_on_max_kurtosis(tmp_path, monkeypat
     failure = runner.failures[0]
     assert failure["stage"] == "data_validation"
     assert "max_kurtosis_exceeded" in failure["error"]
+
+
+def test_run_all_reliability_skip_evaluation_on_max_outlier_pct(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            outlier_detection=ValidationOutlierDetectionConfig(
+                max_outlier_pct=1.0,
+                method="modified_zscore",
+                zscore_threshold=3.5,
+            ),
+            on_fail="skip_job",
+        ),
+    )
+
+    class _SpikySource:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            idx = pd.date_range("2024-01-01", periods=52, freq="D")
+            returns = [0.01, -0.008, 0.012, -0.009] * 12 + [0.70, 0.01, -0.008]
+            closes = [100.0]
+            for ret in returns:
+                closes.append(closes[-1] * (1.0 + ret))
+            return pd.DataFrame(
+                {
+                    "Open": closes,
+                    "High": closes,
+                    "Low": closes,
+                    "Close": closes,
+                    "Volume": [100] * len(closes),
+                },
+                index=idx,
+            )
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _SpikySource())
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert runner.failures
+    failure = runner.failures[0]
+    assert failure["stage"] == "data_validation"
+    assert "max_outlier_pct_exceeded" in failure["error"]
+
+
+def test_run_all_outlier_indeterminate_on_mad_zero(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            outlier_detection=ValidationOutlierDetectionConfig(
+                max_outlier_pct=1.0,
+                method="modified_zscore",
+                zscore_threshold=3.5,
+            ),
+            on_fail="skip_job",
+        ),
+    )
+
+    class _FlatWithSingleSpikeSource:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            idx = pd.date_range("2024-01-01", periods=50, freq="D")
+            closes = [100.0] * 25 + [300.0] + [100.0] * 24
+            return pd.DataFrame(
+                {
+                    "Open": closes,
+                    "High": closes,
+                    "Low": closes,
+                    "Close": closes,
+                    "Volume": [100] * len(closes),
+                },
+                index=idx,
+            )
+
+    monkeypatch.setattr(
+        BacktestRunner, "_make_source", lambda self, col: _FlatWithSingleSpikeSource()
+    )
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert results == []
+    assert eval_calls["count"] == 0
+    assert runner.failures
+    failure = runner.failures[0]
+    assert failure["stage"] == "data_validation"
+    assert "outlier_check_indeterminate(method=modified_zscore, reason=mad_zero)" in failure["error"]
 
 
 def test_run_all_fetches_once_per_symbol_timeframe_with_multiple_strategies(tmp_path, monkeypatch):
@@ -1278,7 +1530,10 @@ def test_run_all_skip_evaluation_adds_single_failure_for_multiple_strategies(tmp
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.strategies = []
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_job"),
+        data_quality=ValidationDataQualityConfig(
+            min_data_points=10,
+            on_fail="skip_job",
+        ),
     )
     monkeypatch.setattr(
         "src.backtest.runner.discover_external_strategies",
@@ -1311,7 +1566,10 @@ def test_run_all_skip_optimization_still_evaluates_each_strategy(tmp_path, monke
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.strategies = []
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_optimization"),
+        data_quality=ValidationDataQualityConfig(
+            min_data_points=10,
+            on_fail="skip_optimization",
+        ),
         optimization=OptimizationPolicyConfig(
             on_fail="baseline_only",
             min_bars=100,
@@ -1353,7 +1611,10 @@ def test_run_all_skip_optimization_does_not_skip_no_param_strategy(tmp_path, mon
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.strategies = []
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_optimization"),
+        data_quality=ValidationDataQualityConfig(
+            min_data_points=10,
+            on_fail="skip_optimization",
+        ),
         optimization=OptimizationPolicyConfig(
             on_fail="skip_job",
             min_bars=60,
@@ -1429,7 +1690,7 @@ def test_strategy_plan_skip_optimization_does_not_leak_to_next_strategy(tmp_path
             "drawdown_curve": [],
             "trades_log": [],
         }
-        return returns, equity, stats
+        return returns, equity, stats, pd.DataFrame()
 
     monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _counting_sim)
     monkeypatch.setattr(
@@ -1451,12 +1712,18 @@ def test_run_all_collection_reliability_override_takes_precedence(tmp_path, monk
         fees=0.0004,
         slippage=0.0003,
         validation=ValidationConfig(
-            data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_optimization"),
+            data_quality=ValidationDataQualityConfig(
+                min_data_points=10,
+                on_fail="skip_optimization",
+            ),
         ),
     )
     runner = _make_runner(tmp_path, monkeypatch, collections=[collection])
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_job"),
+        data_quality=ValidationDataQualityConfig(
+            min_data_points=10,
+            on_fail="skip_job",
+        ),
     )
     _patch_source_with_bars(monkeypatch, bars=5)
     eval_calls = _patch_pybroker_simulation(monkeypatch)
@@ -1492,7 +1759,10 @@ def test_run_all_reliability_skip_collection_blocks_remaining_jobs_in_collection
     ]
     runner = _make_runner(tmp_path, monkeypatch, collections=collections)
     runner.cfg.validation = ValidationConfig(
-        data_quality=ValidationDataQualityConfig(min_data_points=10, on_fail="skip_collection"),
+        data_quality=ValidationDataQualityConfig(
+            min_data_points=10,
+            on_fail="skip_collection",
+        ),
     )
 
     fetch_calls = {"bad_col": 0, "good_col": 0}
@@ -1520,6 +1790,92 @@ def test_run_all_reliability_skip_collection_blocks_remaining_jobs_in_collection
     assert failure["collection"] == "bad_col"
     assert failure["stage"] == "data_validation"
     assert "min_data_points_not_met" in failure["error"]
+
+
+def test_run_all_outlier_skip_collection_blocks_remaining_jobs_in_collection(
+    tmp_path, monkeypatch
+):
+    collections = [
+        CollectionConfig(
+            name="bad_col",
+            source="custom",
+            symbols=["AAPL", "MSFT"],
+            fees=0.0004,
+            slippage=0.0003,
+        ),
+        CollectionConfig(
+            name="good_col",
+            source="custom",
+            symbols=["NVDA"],
+            fees=0.0004,
+            slippage=0.0003,
+        ),
+    ]
+    runner = _make_runner(tmp_path, monkeypatch, collections=collections)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            outlier_detection=ValidationOutlierDetectionConfig(
+                max_outlier_pct=1.0,
+                method="modified_zscore",
+                zscore_threshold=3.5,
+            ),
+            on_fail="skip_collection",
+        ),
+    )
+
+    fetch_calls = {"bad_col": 0, "good_col": 0}
+
+    class _Source:
+        def __init__(self, collection_name: str):
+            self.collection_name = collection_name
+
+        def fetch(self, symbol, timeframe, only_cached=False):
+            fetch_calls[self.collection_name] += 1
+            if self.collection_name == "bad_col":
+                idx = pd.date_range("2024-01-01", periods=52, freq="D")
+                returns = [0.01, -0.008, 0.012, -0.009] * 12 + [0.70, 0.01, -0.008]
+                closes = [100.0]
+                for ret in returns:
+                    closes.append(closes[-1] * (1.0 + ret))
+                return pd.DataFrame(
+                    {
+                        "Open": closes,
+                        "High": closes,
+                        "Low": closes,
+                        "Close": closes,
+                        "Volume": [100] * len(closes),
+                    },
+                    index=idx,
+                )
+            idx = pd.date_range("2024-01-01", periods=53, freq="D")
+            returns = [0.01, -0.008, 0.012, -0.009] * 13
+            closes = [100.0]
+            for ret in returns:
+                closes.append(closes[-1] * (1.0 + ret))
+            return pd.DataFrame(
+                {
+                    "Open": closes,
+                    "High": closes,
+                    "Low": closes,
+                    "Close": closes,
+                    "Volume": [100] * len(closes),
+                },
+                index=idx,
+            )
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source(col.name))
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert len(results) == 1
+    assert fetch_calls["bad_col"] == 1
+    assert fetch_calls["good_col"] == 1
+    assert eval_calls["count"] == 2
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["collection"] == "bad_col"
+    assert failure["stage"] == "data_validation"
+    assert "max_outlier_pct_exceeded" in failure["error"]
 
 
 def test_run_all_collection_cache_isolation_for_same_name_collections(tmp_path, monkeypatch):
@@ -1563,6 +1919,287 @@ def test_run_all_collection_cache_isolation_for_same_name_collections(tmp_path, 
     assert make_source_calls == {"good": 1, "bad": 1}
     assert any(
         failure["stage"] == "collection_validation" and "bad source config" in failure["error"]
+        for failure in runner.failures
+    )
+
+
+def test_run_all_rejects_result_on_outlier_dependency(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
+    runner.cfg.validation = ValidationConfig(
+        result_consistency=ResultConsistencyConfig(
+            outlier_dependency=ResultConsistencyOutlierDependencyConfig(
+                slices=5,
+                profit_share_threshold=0.80,
+                trade_share_threshold=0.05,
+            ),
+        ),
+    )
+    resolve_validation_overrides(runner.cfg)
+
+    def _sim_with_concentrated_pnl(self, *args, **kwargs):
+        dates = pd.date_range("2024-01-01", periods=120, freq="D")
+        returns = pd.Series([0.001] * 120, index=dates)
+        equity = (1 + returns).cumprod()
+        trades_log = [
+            {"pnl": 1.0, "exit_date": f"2024-01-{(i % 28) + 1:02d}"} for i in range(99)
+        ] + [{"pnl": 500.0, "exit_date": "2024-03-15"}]
+        trades_frame = pd.DataFrame(trades_log)
+        stats = {
+            "sharpe": 1.0,
+            "sortino": 1.0,
+            "omega": 1.0,
+            "tail_ratio": 1.0,
+            "profit": 1.0,
+            "pain_index": 0.0,
+            "trades": 100,
+            "max_drawdown": -0.1,
+            "cagr": 0.1,
+            "calmar": 1.0,
+            "equity_curve": [],
+            "drawdown_curve": [],
+            "trades_log": [],
+        }
+        return returns, equity, stats, trades_frame
+
+    monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _sim_with_concentrated_pnl)
+    results = runner.run_all()
+
+    assert results == []
+    assert any(
+        failure["stage"] == "strategy_validation"
+        and "outlier_dependency_exceeded" in failure["error"]
+        for failure in runner.failures
+    )
+
+
+def test_trade_meta_slice_profit_share_includes_earliest_exit_timestamp(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    evaluator = runner._get_evaluator()
+    request = EvaluationRequest(
+        collection="demo",
+        symbol="AAPL",
+        timeframe="1d",
+        source="custom",
+        strategy="dummy",
+        params={},
+        metric_name="sharpe",
+        data_fingerprint="fingerprint",
+        fees=0.0,
+        slippage=0.0,
+        bars_per_year=252,
+        mode_config=EvaluationModeConfig(mode="backtest", payload={}),
+        result_consistency_outlier_dependency_slices=2,
+        result_consistency_outlier_dependency_profit_share_threshold=None,
+    )
+    trades_frame = pd.DataFrame(
+        [
+            {"pnl": 100.0, "exit_date": "2024-01-01"},
+            {"pnl": 100.0, "exit_date": "2024-01-02"},
+            {"pnl": 200.0, "exit_date": "2024-01-03"},
+        ]
+    )
+
+    data_frame = pd.DataFrame(
+        {
+            "open": [10.0, 10.0, 10.0],
+            "high": [11.0, 11.0, 11.0],
+            "low": [9.0, 9.0, 9.0],
+            "close": [10.0, 10.0, 10.0],
+            "volume": [100.0, 100.0, 100.0],
+        }
+    )
+    dates = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"])
+    trade_meta = evaluator._build_trade_meta(
+        trades_frame,
+        data_frame,
+        dates,
+        3,
+        request,
+    )
+
+    assert trade_meta["outlier_dependency"]["max_slice_profit_share"] == pytest.approx(0.5)
+
+
+def test_trade_meta_truncated_trades_reports_observed_and_expected_counts(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    evaluator = runner._get_evaluator()
+    request = EvaluationRequest(
+        collection="demo",
+        symbol="AAPL",
+        timeframe="1d",
+        source="custom",
+        strategy="dummy",
+        params={},
+        metric_name="sharpe",
+        data_fingerprint="fingerprint",
+        fees=0.0,
+        slippage=0.0,
+        bars_per_year=252,
+        mode_config=EvaluationModeConfig(mode="backtest", payload={}),
+        result_consistency_outlier_dependency_slices=2,
+        result_consistency_outlier_dependency_profit_share_threshold=0.8,
+    )
+    trades_frame = pd.DataFrame(
+        [
+            {"pnl": 1.0, "exit_date": "2024-01-01"},
+            {"pnl": -1.0, "exit_date": "2024-01-02"},
+        ]
+    )
+    data_frame = pd.DataFrame(
+        {
+            "open": [10.0, 10.0],
+            "high": [11.0, 11.0],
+            "low": [9.0, 9.0],
+            "close": [10.0, 10.0],
+            "volume": [100.0, 100.0],
+        }
+    )
+    dates = pd.to_datetime(["2024-01-01", "2024-01-02"])
+
+    trade_meta = evaluator._build_trade_meta(
+        trades_frame,
+        data_frame,
+        dates,
+        5,
+        request,
+    )
+    outlier_meta = trade_meta["outlier_dependency"]
+    assert outlier_meta["is_complete"] is False
+    assert outlier_meta["reason"] == "truncated_trades_frame"
+    assert outlier_meta["analyzed_trades_count"] == 2
+    assert outlier_meta["total_trades"] == 2
+    assert outlier_meta["expected_trades"] == 5
+
+
+def test_compute_dominant_trade_share_uses_all_trades_denominator(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    evaluator = runner._get_evaluator()
+    pnls = pd.Series([10.0] * 10 + [-1.0] * 90).to_numpy()
+
+    dominant_trade_count, dominant_trade_share = evaluator._compute_dominant_trade_share(pnls, 0.80)
+
+    assert dominant_trade_count == 8
+    assert dominant_trade_share == pytest.approx(0.08)
+
+
+def test_collect_reliability_reasons_dispatches_outlier_reason_to_subclass():
+    class _DispatchRunner(BacktestRunner):
+        @classmethod
+        def _outlier_pct_reason(
+            cls,
+            *,
+            raw_df: pd.DataFrame,
+            outlier_detection: ValidationOutlierDetectionConfig | None,
+        ) -> str | None:
+            return "subclass_outlier_reason"
+
+    reasons = _DispatchRunner._collect_reliability_reasons(
+        raw_df=pd.DataFrame({"Close": [1.0, 2.0, 3.0]}),
+        continuity={},
+        min_data_points_cfg=None,
+        continuity_cfg=None,
+        kurtosis_cfg=None,
+        outlier_detection=None,
+    )
+
+    assert reasons == ["subclass_outlier_reason"]
+
+
+def test_run_all_result_consistency_skips_check_for_missing_trades_frame(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
+    runner.cfg.validation = ValidationConfig(
+        result_consistency=ResultConsistencyConfig(
+            outlier_dependency=ResultConsistencyOutlierDependencyConfig(
+                slices=5,
+                profit_share_threshold=0.80,
+                trade_share_threshold=0.05,
+            ),
+            execution_price_variance=ResultConsistencyExecutionPriceVarianceConfig(
+                price_tolerance_bps=1.0
+            ),
+        ),
+    )
+    resolve_validation_overrides(runner.cfg)
+
+    def _sim_with_missing_trades_frame(self, *args, **kwargs):
+        dates = pd.date_range("2024-01-01", periods=120, freq="D")
+        returns = pd.Series([0.001] * 120, index=dates)
+        equity = (1 + returns).cumprod()
+        stats = {
+            "sharpe": 1.0,
+            "sortino": 1.0,
+            "omega": 1.0,
+            "tail_ratio": 1.0,
+            "profit": 1.0,
+            "pain_index": 0.0,
+            "trades": 100,
+            "max_drawdown": -0.1,
+            "cagr": 0.1,
+            "calmar": 1.0,
+            "equity_curve": [],
+            "drawdown_curve": [],
+            "trades_log": [],
+        }
+        return returns, equity, stats, pd.DataFrame()
+
+    monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _sim_with_missing_trades_frame)
+    results = runner.run_all()
+
+    assert len(results) >= 1
+    assert not any("outlier_dependency_exceeded" in failure["error"] for failure in runner.failures)
+    assert not any("execution_price_variance_exceeded" in failure["error"] for failure in runner.failures)
+
+
+def test_run_all_rejects_result_on_execution_price_variance(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
+    runner.cfg.validation = ValidationConfig(
+        result_consistency=ResultConsistencyConfig(
+            execution_price_variance=ResultConsistencyExecutionPriceVarianceConfig(
+                price_tolerance_bps=0.0
+            )
+        ),
+    )
+    resolve_validation_overrides(runner.cfg)
+
+    def _sim_with_impossible_fill(self, *args, **kwargs):
+        dates = pd.date_range("2024-01-01", periods=3, freq="D")
+        returns = pd.Series([0.01, -0.005, 0.002], index=dates)
+        equity = (1 + returns).cumprod()
+        trades_frame = pd.DataFrame(
+            [
+                {
+                    "entry_price": 120.0,
+                    "entry_date": "2024-01-01",
+                    "exit_price": 90.0,
+                    "exit_date": "2024-01-02",
+                    "pnl": -1.0,
+                }
+            ]
+        )
+        stats = {
+            "sharpe": 1.0,
+            "sortino": 1.0,
+            "omega": 1.0,
+            "tail_ratio": 1.0,
+            "profit": 1.0,
+            "pain_index": 0.0,
+            "trades": 1,
+            "max_drawdown": -0.1,
+            "cagr": 0.1,
+            "calmar": 1.0,
+            "equity_curve": [],
+            "drawdown_curve": [],
+            "trades_log": [],
+        }
+        return returns, equity, stats, trades_frame
+
+    monkeypatch.setattr(BacktestRunner, "_run_pybroker_simulation", _sim_with_impossible_fill)
+    results = runner.run_all()
+
+    assert results == []
+    assert any(
+        failure["stage"] == "strategy_validation"
+        and "execution_price_variance_exceeded" in failure["error"]
         for failure in runner.failures
     )
 

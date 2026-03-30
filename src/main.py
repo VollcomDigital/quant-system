@@ -184,6 +184,7 @@ def run(
             "started_at": start_ts.isoformat() + "Z",
             "finished_at": end_ts.isoformat() + "Z",
             "duration_sec": duration,
+            "validation": getattr(runner, "validation_metadata", {}),
         }
     )
     runs_manifest = collect_runs_manifest(
@@ -235,6 +236,7 @@ def run(
             "runs": runs_manifest,
             "manifest_refresh": manifest_status,
             "notifications": notification_events,
+            "validation": getattr(runner, "validation_metadata", {}),
         }
         summary_json = safe_json_dumps(summary, indent=2)
         (base_out / SUMMARY_JSON_FILENAME).write_text(summary_json)
@@ -248,14 +250,14 @@ def run(
             )
         metrics = summary.get("metrics", {}) or {}
         failures = summary.get("failures", []) or []
-        failed_strategies = sorted(
+        strategies_with_failures = sorted(
             {
                 str(item.get("strategy")).strip()
                 for item in failures
                 if isinstance(item, dict) and item.get("strategy")
             }
         )
-        failed_collections = sorted(
+        collections_with_failures = sorted(
             {
                 str(item.get("collection")).strip()
                 for item in failures
@@ -274,10 +276,17 @@ def run(
         typer.echo(f"- fresh_simulation_runs: {metrics.get('fresh_simulation_runs', 0)}")
         typer.echo(f"- fresh_metric_evals: {metrics.get('fresh_metric_evals', 0)}")
         typer.echo(f"- strategies_count: {metrics.get('strategies_count', 0)}")
-        if failed_strategies:
-            typer.echo(f"- failed_strategies: {', '.join(failed_strategies)}")
-        if failed_collections:
-            typer.echo(f"- failed_collections: {', '.join(failed_collections)}")
+        active_validation_gates = summary.get("validation", {}).get("active_gates", [])
+        if active_validation_gates:
+            typer.echo(f"- active_validation_gates: {', '.join(active_validation_gates)}")
+        if strategies_with_failures:
+            typer.echo(
+                f"- strategies_with_failures: {', '.join(strategies_with_failures)}"
+            )
+        if collections_with_failures:
+            typer.echo(
+                f"- collections_with_failures: {', '.join(collections_with_failures)}"
+            )
         typer.echo(f"- duration_sec: {summary.get('duration_sec')}")
     except Exception as exc:
         logger.warning("summary emit failed", exc_info=exc)

@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 import inspect
 import itertools
+import hashlib
+import json
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -13,7 +15,15 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
-from ..config import CollectionConfig, Config
+from ..config import (
+    CollectionConfig,
+    Config,
+    ResultConsistencyExecutionPriceVarianceConfig,
+    ResultConsistencyOutlierDependencyConfig,
+    ValidationContinuityConfig,
+    ValidationOutlierDetectionConfig,
+    ResultConsistencyConfig,
+)
 from ..data.alpaca_source import AlpacaSource
 from ..data.alphavantage_source import AlphaVantageSource
 from ..data.base import DataSource
@@ -28,6 +38,7 @@ from ..strategies.registry import discover_external_strategies
 from ..utils.telemetry import get_logger, log_json, time_block
 from .evaluation.adapters import normalized_rows_to_legacy_rows
 from .evaluation.contracts import (
+    EvaluationCacheRecord,
     EvaluationModeConfig,
     EvaluationRequest,
     ResultRecord,
@@ -95,6 +106,7 @@ class JobState:
     job: JobContext
     current_stage: StageName = "created"
     policy_skip_optimization: bool = False
+    validation_config_hash: str = ""
     decisions: dict[StageName, GateDecision] = field(default_factory=dict)
     reasons_by_stage: dict[StageName, list[str]] = field(default_factory=dict)
 
@@ -108,7 +120,7 @@ class FetchedData:
 class ValidatedData:
     raw_df: pd.DataFrame
     continuity: dict[str, float | int]
-    reliability_on_fail: str
+    reliability_on_fail: str | None
     reliability_reasons: list[str]
 
 
@@ -167,6 +179,17 @@ class ValidationContext:
 
 class BacktestRunner:
     _CRYPTO_SOURCE_NAMES = {"binance", "bybit", "ccxt", "coinbase", "kraken", "okx", "kucoin"}
+    _VALIDATION_GATE_IDS = (
+        "data_quality.min_required_bars",
+        "data_quality.min_data_points",
+        "data_quality.continuity.min_score",
+        "data_quality.continuity.max_missing_bar_pct",
+        "data_quality.kurtosis",
+        "data_quality.outlier_detection",
+        "optimization.feasibility",
+        "result_consistency.outlier_dependency",
+        "result_consistency.execution_price_variance",
+    )
 
     def __init__(
         self,
@@ -203,6 +226,9 @@ class BacktestRunner:
         self.mode_config_hash = self.evaluation_cache.hash_mode_config(self.mode_config)
         self._result_store_write_failures = 0
         self._evaluation_cache_write_failures = 0
+        self.validation_metadata: dict[str, Any] = {}
+        self.active_validation_gates: list[str] = []
+        self.inactive_validation_gates: list[str] = []
         self._evaluator: BacktestEvaluator | None = None
 
     def _ensure_pybroker(self) -> tuple[Any, ...]:
@@ -252,7 +278,11 @@ class BacktestRunner:
 
     def _evaluation_cache_set(self, **kwargs: Any) -> None:
         try:
-            self.evaluation_cache.set(**kwargs)
+            if isinstance(self.evaluation_cache, EvaluationCache):
+                record = EvaluationCacheRecord.from_mapping(kwargs)
+                self.evaluation_cache.set(record=record)
+            else:
+                self.evaluation_cache.set(**kwargs)
         except Exception as exc:
             self._evaluation_cache_write_failures += 1
             if self._evaluation_cache_write_failures <= 3:
@@ -273,6 +303,202 @@ class BacktestRunner:
                 self.logger.warning(
                     "result store write failures continuing; suppressing further warnings"
                 )
+
+    def _result_store_upsert_run_metadata(
+        self,
+        *,
+        validation_profile: dict[str, Any],
+        active_gates: list[str],
+        inactive_gates: list[str],
+    ) -> None:
+        if self.run_id is None:
+            return
+        try:
+            self.result_store.upsert_run_metadata(
+                run_id=self.run_id,
+                evaluation_mode=self.mode_config.mode,
+                mode_config_hash=self.mode_config_hash,
+                validation_profile=validation_profile,
+                active_gates=active_gates,
+                inactive_gates=inactive_gates,
+            )
+        except Exception as exc:
+            self._result_store_write_failures += 1
+            if self._result_store_write_failures <= 3:
+                self.logger.warning("run metadata write failed", exc_info=exc)
+            elif self._result_store_write_failures == 4:
+                self.logger.warning(
+                    "result store write failures continuing; suppressing further warnings"
+                )
+
+    @staticmethod
+    def _serialize_data_quality_profile(data_quality: Any) -> dict[str, Any] | None:
+        if data_quality is None:
+            return None
+        continuity = getattr(data_quality, "continuity", None)
+        calendar = getattr(continuity, "calendar", None) if continuity is not None else None
+        calendar_payload = None
+        if calendar is not None:
+            calendar_payload = {
+                "kind": getattr(calendar, "kind", None),
+                "exchange": getattr(calendar, "exchange", None),
+                "timezone": getattr(calendar, "timezone", None),
+            }
+        outlier = getattr(data_quality, "outlier_detection", None)
+        return {
+            "on_fail": getattr(data_quality, "on_fail", None),
+            "min_data_points": getattr(data_quality, "min_data_points", None),
+            "continuity": (
+                {
+                    "min_score": getattr(continuity, "min_score", None),
+                    "max_missing_bar_pct": getattr(continuity, "max_missing_bar_pct", None),
+                    "calendar": calendar_payload,
+                }
+                if continuity is not None
+                else None
+            ),
+            "kurtosis": getattr(data_quality, "kurtosis", None),
+            "outlier_detection": (
+                {
+                    "max_outlier_pct": getattr(outlier, "max_outlier_pct", None),
+                    "method": getattr(outlier, "method", None),
+                    "zscore_threshold": getattr(outlier, "zscore_threshold", None),
+                }
+                if outlier is not None
+                else None
+            ),
+        }
+
+    @staticmethod
+    def _serialize_optimization_profile(optimization: Any) -> dict[str, Any] | None:
+        if optimization is None:
+            return None
+        return {
+            "on_fail": getattr(optimization, "on_fail", None),
+            "min_bars": getattr(optimization, "min_bars", None),
+            "dof_multiplier": getattr(optimization, "dof_multiplier", None),
+        }
+
+    @staticmethod
+    def _serialize_result_consistency_profile(result_consistency: Any) -> dict[str, Any] | None:
+        if result_consistency is None:
+            return None
+        outlier_dependency = getattr(result_consistency, "outlier_dependency", None)
+        execution_price_variance = getattr(result_consistency, "execution_price_variance", None)
+        return {
+            "outlier_dependency": (
+                {
+                    "slices": getattr(outlier_dependency, "slices", None),
+                    "profit_share_threshold": getattr(outlier_dependency, "profit_share_threshold", None),
+                    "trade_share_threshold": getattr(outlier_dependency, "trade_share_threshold", None),
+                }
+                if outlier_dependency is not None
+                else None
+            ),
+            "execution_price_variance": (
+                {
+                    "price_tolerance_bps": getattr(execution_price_variance, "price_tolerance_bps", None),
+                }
+                if execution_price_variance is not None
+                else None
+            ),
+        }
+
+    @staticmethod
+    def _active_data_quality_gates(data_quality: Any) -> set[str]:
+        active: set[str] = set()
+        if data_quality is None:
+            return active
+        # Continuity precondition checks (<2 bars, timeframe sanity) run for any
+        # configured data-quality policy because continuity diagnostics are always computed.
+        active.add("data_quality.min_required_bars")
+        if getattr(data_quality, "min_data_points", None) is not None:
+            active.add("data_quality.min_data_points")
+        continuity = getattr(data_quality, "continuity", None)
+        if continuity is not None:
+            if getattr(continuity, "min_score", None) is not None:
+                active.add("data_quality.continuity.min_score")
+            if getattr(continuity, "max_missing_bar_pct", None) is not None:
+                active.add("data_quality.continuity.max_missing_bar_pct")
+        if getattr(data_quality, "kurtosis", None) is not None:
+            active.add("data_quality.kurtosis")
+        if getattr(data_quality, "outlier_detection", None) is not None:
+            active.add("data_quality.outlier_detection")
+        return active
+
+    @staticmethod
+    def _active_optimization_gates(optimization: Any) -> set[str]:
+        if optimization is None:
+            return set()
+        return {"optimization.feasibility"}
+
+    @staticmethod
+    def _active_result_consistency_gates(result_consistency: Any) -> set[str]:
+        if result_consistency is None:
+            return set()
+        active: set[str] = set()
+        if getattr(result_consistency, "outlier_dependency", None) is not None:
+            active.add("result_consistency.outlier_dependency")
+        if getattr(result_consistency, "execution_price_variance", None) is not None:
+            active.add("result_consistency.execution_price_variance")
+        return active
+
+    def _build_validation_metadata(self) -> dict[str, Any]:
+        collection_profiles: list[dict[str, Any]] = []
+        active_gates_union: set[str] = set()
+
+        for collection in self.cfg.collections:
+            collection_validation = getattr(collection, "validation", None)
+            collection_dq = getattr(collection_validation, "data_quality", None)
+            collection_optimization = getattr(collection_validation, "optimization", None)
+            collection_result_consistency = getattr(collection_validation, "result_consistency", None)
+            collection_active = self._active_data_quality_gates(collection_dq)
+            collection_active.update(self._active_optimization_gates(collection_optimization))
+            collection_active.update(
+                self._active_result_consistency_gates(collection_result_consistency)
+            )
+            active_gates_union.update(collection_active)
+            collection_profiles.append(
+                {
+                    "collection": collection.name,
+                    "source": collection.source,
+                    "data_quality": self._serialize_data_quality_profile(collection_dq),
+                    "optimization": self._serialize_optimization_profile(collection_optimization),
+                    "result_consistency": self._serialize_result_consistency_profile(
+                        collection_result_consistency
+                    ),
+                    "active_gates": sorted(collection_active),
+                }
+            )
+
+        active_gates = sorted(active_gates_union)
+        inactive_gates = sorted(set(self._VALIDATION_GATE_IDS).difference(active_gates_union))
+        profile = {
+            "collections": collection_profiles,
+        }
+        return {
+            "profile": profile,
+            "active_gates": active_gates,
+            "inactive_gates": inactive_gates,
+        }
+
+    def _build_job_validation_profile(self, collection: CollectionConfig) -> dict[str, Any]:
+        collection_validation = getattr(collection, "validation", None)
+        collection_dq = getattr(collection_validation, "data_quality", None)
+        collection_optimization = getattr(collection_validation, "optimization", None)
+        collection_result_consistency = getattr(collection_validation, "result_consistency", None)
+        return {
+            "data_quality": self._serialize_data_quality_profile(collection_dq),
+            "optimization": self._serialize_optimization_profile(collection_optimization),
+            "result_consistency": self._serialize_result_consistency_profile(
+                collection_result_consistency
+            ),
+        }
+
+    @staticmethod
+    def _hash_validation_profile(profile: dict[str, Any]) -> str:
+        payload = json.dumps(profile, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def _get_evaluator(self) -> BacktestEvaluator:
         if self._evaluator is None:
@@ -737,7 +963,7 @@ class BacktestRunner:
         timeframe: str,
         fractional: bool,
         periods_per_year: int,
-    ) -> tuple[pd.Series, pd.Series, dict[str, Any]] | None:
+    ) -> tuple[pd.Series, pd.Series, dict[str, Any], pd.DataFrame] | None:
         strategy_cls, config_cls, fee_mode_cls, price_type_cls, data_col_enum = (
             self._ensure_pybroker()
         )
@@ -821,13 +1047,9 @@ class BacktestRunner:
         else:
             trades_frame = pd.DataFrame()
 
-        trades_records: list[dict[str, Any]] = []
         if not trades_frame.empty:
             for column in trades_frame.columns:
                 trades_frame[column] = trades_frame[column].map(self._convert_decimal)
-                if pd.api.types.is_datetime64_any_dtype(trades_frame[column]):
-                    trades_frame[column] = trades_frame[column].dt.strftime("%Y-%m-%dT%H:%M:%S")
-            trades_records = trades_frame.head(50).to_dict("records")
 
         trade_count = int(getattr(result.metrics, "trade_count", len(trades_frame)))
         omega = float(omega_ratio(returns))
@@ -865,9 +1087,8 @@ class BacktestRunner:
             "calmar": calmar,
             "equity_curve": self._sample_series(equity_curve),
             "drawdown_curve": self._sample_series(drawdown_series),
-            "trades_log": trades_records,
         }
-        return returns, equity_curve, stats
+        return returns, equity_curve, stats, trades_frame
 
     def _failure_record(self, payload: dict[str, Any]) -> None:
         self.failures.append(payload)
@@ -1146,45 +1367,68 @@ class BacktestRunner:
         if fetched_data.raw_df.empty:
             return GateDecision(False, "skip_job", ["empty_dataframe"], "data_validation"), None
 
-        global_validation = getattr(self.cfg, "validation", None)
-        collection_validation = getattr(context.job.collection, "validation", None)
-        has_data_quality_policy = (
-            getattr(global_validation, "data_quality", None) is not None
-            or getattr(collection_validation, "data_quality", None) is not None
-        )
-
         (
             reliability_on_fail,
-            min_data_points,
-            min_continuity_score,
-            max_missing_bar_pct,
-            max_kurtosis,
+            min_data_points_cfg,
+            continuity_cfg,
+            kurtosis_cfg,
+            outlier_detection,
             calendar_kind,
             calendar_exchange,
             calendar_timezone,
         ) = (
-            self._resolve_data_quality_policy(context.job.collection)
+            self._load_data_quality_policy(context.job.collection)
         )
+        # `on_fail` is required by config whenever a data-quality policy exists,
+        # so `reliability_on_fail is None` means data-quality policy is unset.
+        if reliability_on_fail is None:
+            # Even with policy disabled, we keep best-effort continuity diagnostics in result stats.
+            continuity: dict[str, float | int] = {}
+            default_calendar_kind, default_calendar_exchange, _ = self._resolve_calendar_policy(
+                None, context.job.collection.source
+            )
+            try:
+                continuity = self.compute_continuity_score(
+                    fetched_data.raw_df,
+                    context.job.timeframe,
+                    calendar_kind=default_calendar_kind,
+                    exchange_calendar=default_calendar_exchange,
+                )
+            except ValueError:
+                # No policy is configured, so continuity diagnostics are best-effort only.
+                continuity = {}
+            validated_data = ValidatedData(
+                raw_df=fetched_data.raw_df,
+                continuity=continuity,
+                reliability_on_fail=None,
+                reliability_reasons=[],
+            )
+            return GateDecision(True, "continue", [], "data_validation"), validated_data
+
+        continuity: dict[str, float | int] = {}
+        continuity_calendar_kind = calendar_kind
+        continuity_calendar_exchange = calendar_exchange
+        if continuity_calendar_kind is None:
+            continuity_calendar_kind, continuity_calendar_exchange, _ = self._resolve_calendar_policy(
+                None, context.job.collection.source
+            )
         try:
             continuity = self.compute_continuity_score(
                 fetched_data.raw_df,
                 context.job.timeframe,
-                calendar_kind=calendar_kind,
-                exchange_calendar=calendar_exchange,
+                calendar_kind=continuity_calendar_kind,
+                exchange_calendar=continuity_calendar_exchange,
                 calendar_timezone=calendar_timezone,
             )
         except ValueError as exc:
-            # Preserve pre-validation behavior unless a data-quality policy is configured.
-            if has_data_quality_policy:
-                return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
-            continuity = {}
+            return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
         reliability_reasons = self._collect_reliability_reasons(
             raw_df=fetched_data.raw_df,
             continuity=continuity,
-            min_data_points=min_data_points,
-            min_continuity_score=min_continuity_score,
-            max_missing_bar_pct=max_missing_bar_pct,
-            max_kurtosis=max_kurtosis,
+            min_data_points_cfg=min_data_points_cfg,
+            continuity_cfg=continuity_cfg,
+            kurtosis_cfg=kurtosis_cfg,
+            outlier_detection=outlier_detection,
         )
         if not reliability_reasons:
             decision = GateDecision(True, "continue", [], "data_validation")
@@ -1203,88 +1447,90 @@ class BacktestRunner:
         )
         return decision, validated_data
 
-    def _resolve_data_quality_policy(
+    def _load_data_quality_policy(
         self, collection: CollectionConfig
-    ) -> tuple[str, int | None, float | None, float | None, float | None, str, str | None, str | None]:
-        global_validation = getattr(self.cfg, "validation", None)
+    ) -> tuple[
+        str | None,
+        int | None,
+        ValidationContinuityConfig | None,
+        float | None,
+        ValidationOutlierDetectionConfig | None,
+        str | None,
+        str | None,
+        str | None,
+    ]:
         collection_validation = getattr(collection, "validation", None)
-        global_dq = getattr(global_validation, "data_quality", None)
-        collection_dq = getattr(collection_validation, "data_quality", None)
-        # Collection override takes precedence over global validation defaults.
-        on_fail = self._resolve_data_quality_value(collection_dq, global_dq, "on_fail")
-        on_fail = str(on_fail).strip().lower() if on_fail is not None else "skip_optimization"
-        min_data_points = self._resolve_data_quality_value(collection_dq, global_dq, "min_data_points")
-        min_continuity_score = self._resolve_data_quality_value(
-            collection_dq, global_dq, "min_continuity_score"
-        )
-        max_missing_bar_pct = self._resolve_data_quality_value(
-            collection_dq, global_dq, "max_missing_bar_pct"
-        )
-        max_kurtosis = self._resolve_data_quality_value(collection_dq, global_dq, "max_kurtosis")
-        calendar_cfg = self._resolve_data_quality_value(collection_dq, global_dq, "calendar")
-        calendar_kind, calendar_exchange, calendar_timezone = self._resolve_calendar_policy(
-            calendar_cfg, collection.source
-        )
+        resolved_dq = getattr(collection_validation, "data_quality", None) if collection_validation else None
+        if resolved_dq is None:
+            # Sentinel for "no data-quality policy configured for this collection".
+            return None, None, None, None, None, None, None, None
+        on_fail = resolved_dq.on_fail
+        min_data_points_cfg = resolved_dq.min_data_points
+        continuity_cfg = resolved_dq.continuity
+        kurtosis_cfg = resolved_dq.kurtosis
+        outlier_detection = resolved_dq.outlier_detection
+        calendar_kind: str | None = None
+        calendar_exchange: str | None = None
+        calendar_timezone: str | None = None
+        if continuity_cfg is not None:
+            calendar_kind, calendar_exchange, calendar_timezone = self._resolve_calendar_policy(
+                continuity_cfg.calendar, collection.source
+            )
         return (
             on_fail,
-            min_data_points,
-            min_continuity_score,
-            max_missing_bar_pct,
-            max_kurtosis,
+            min_data_points_cfg,
+            continuity_cfg,
+            kurtosis_cfg,
+            outlier_detection,
             calendar_kind,
             calendar_exchange,
             calendar_timezone,
         )
-
-    @staticmethod
-    def _resolve_data_quality_value(
-        collection_dq: Any, global_dq: Any, field_name: str
-    ) -> Any:
-        if collection_dq is not None:
-            collection_value = getattr(collection_dq, field_name, None)
-            if collection_value is not None:
-                return collection_value
-        return getattr(global_dq, field_name, None)
 
     def _resolve_calendar_policy(
         self,
         calendar_cfg: Any,
         source: str,
     ) -> tuple[str, str | None, str | None]:
-        calendar_kind = str(getattr(calendar_cfg, "kind", "auto")).strip().lower()
-        calendar_exchange = None
-        calendar_timezone = None
-        if calendar_cfg is not None:
-            exchange_value = getattr(calendar_cfg, "exchange", None)
-            if exchange_value is not None:
-                calendar_exchange = str(exchange_value).strip()
-            timezone_value = getattr(calendar_cfg, "timezone", None)
-            if timezone_value is not None:
-                calendar_timezone = str(timezone_value).strip().upper()
+        if calendar_cfg is None:
+            calendar_kind = (
+                "crypto_24_7"
+                if source.strip().lower() in self._CRYPTO_SOURCE_NAMES
+                else "weekday"
+            )
+            calendar_exchange = None
+            calendar_timezone = None
+            return calendar_kind, calendar_exchange, calendar_timezone
+        calendar_kind = calendar_cfg.kind
+        calendar_exchange = calendar_cfg.exchange
+        calendar_timezone = calendar_cfg.timezone
         if calendar_kind == "auto":
             calendar_kind = (
                 "crypto_24_7" if source.strip().lower() in self._CRYPTO_SOURCE_NAMES else "weekday"
             )
         return calendar_kind, calendar_exchange, calendar_timezone
 
-    def _resolve_optimization_policy(self) -> tuple[str, int, int] | None:
-        # `validation.optimization` is optional; when omitted no feasibility gate is applied.
-        validation_cfg = getattr(self.cfg, "validation", None)
-        policy = getattr(validation_cfg, "optimization", None)
+    def _load_optimization_policy(self, collection: CollectionConfig) -> tuple[str, int, int] | None:
+        # `validation.optimization` is optional per collection; when omitted no feasibility gate is applied.
+        collection_validation = getattr(collection, "validation", None)
+        policy = getattr(collection_validation, "optimization", None)
         if policy is None:
             return None
-        on_fail = str(policy.on_fail).strip().lower()
-        min_bars = int(policy.min_bars)
-        dof_multiplier = int(policy.dof_multiplier)
-        return on_fail, min_bars, dof_multiplier
+        return policy.on_fail, policy.min_bars, policy.dof_multiplier
+
+    @staticmethod
+    def _load_result_consistency_policy(collection: CollectionConfig) -> ResultConsistencyConfig | None:
+        collection_validation = getattr(collection, "validation", None)
+        return getattr(collection_validation, "result_consistency", None)
 
     @staticmethod
     def _continuity_threshold_reason(
-        continuity: dict[str, float | int], min_continuity_score: float | None
+        continuity: dict[str, float | int],
+        continuity_cfg: ValidationContinuityConfig | None,
     ) -> str | None:
-        if min_continuity_score is None:
+        if continuity_cfg is None or continuity_cfg.min_score is None:
             return None
-        threshold = float(min_continuity_score)
+        threshold = float(continuity_cfg.min_score)
         continuity_score = float(continuity.get("score", 0.0))
         if continuity_score < threshold:
             return (
@@ -1294,10 +1540,13 @@ class BacktestRunner:
         return None
 
     @staticmethod
-    def _min_data_points_reason(raw_df: pd.DataFrame, min_data_points: int | None) -> str | None:
-        if min_data_points is None:
+    def _min_data_points_reason(
+        raw_df: pd.DataFrame,
+        min_data_points_cfg: int | None,
+    ) -> str | None:
+        if min_data_points_cfg is None:
             return None
-        required = int(min_data_points)
+        required = int(min_data_points_cfg)
         available = len(raw_df)
         if available < required:
             return f"min_data_points_not_met(required={required}, available={available})"
@@ -1305,11 +1554,12 @@ class BacktestRunner:
 
     @staticmethod
     def _missing_bar_pct_reason(
-        continuity: dict[str, float | int], max_missing_bar_pct: float | None
+        continuity: dict[str, float | int],
+        continuity_cfg: ValidationContinuityConfig | None,
     ) -> str | None:
-        if max_missing_bar_pct is None:
+        if continuity_cfg is None or continuity_cfg.max_missing_bar_pct is None:
             return None
-        threshold = float(max_missing_bar_pct)
+        threshold = float(continuity_cfg.max_missing_bar_pct)
         expected_bars = int(continuity.get("expected_bars", 0))
         missing_bars = int(continuity.get("missing_bars", 0))
         missing_bar_pct = (
@@ -1331,13 +1581,17 @@ class BacktestRunner:
         return None
 
     @classmethod
-    def _max_kurtosis_reason(cls, raw_df: pd.DataFrame, max_kurtosis: float | None) -> str | None:
-        if max_kurtosis is None:
+    def _max_kurtosis_reason(
+        cls,
+        raw_df: pd.DataFrame,
+        kurtosis_cfg: float | None,
+    ) -> str | None:
+        if kurtosis_cfg is None:
             return None
         close_col = cls._resolve_close_column(raw_df)
         if close_col is None:
             return None
-        threshold = float(max_kurtosis)
+        threshold = float(kurtosis_cfg)
         returns = raw_df[close_col].astype(float).pct_change().dropna()
         if returns.empty:
             return None
@@ -1349,27 +1603,88 @@ class BacktestRunner:
             )
         return None
 
-    @staticmethod
+    @classmethod
     def _collect_reliability_reasons(
+        cls,
         *,
         raw_df: pd.DataFrame,
         continuity: dict[str, float | int],
-        min_data_points: int | None,
-        min_continuity_score: float | None,
-        max_missing_bar_pct: float | None,
-        max_kurtosis: float | None,
+        min_data_points_cfg: int | None,
+        continuity_cfg: ValidationContinuityConfig | None,
+        kurtosis_cfg: float | None,
+        outlier_detection: ValidationOutlierDetectionConfig | None,
     ) -> list[str]:
         reasons: list[str] = []
         reason_checks = (
-            BacktestRunner._continuity_threshold_reason(continuity, min_continuity_score),
-            BacktestRunner._min_data_points_reason(raw_df, min_data_points),
-            BacktestRunner._missing_bar_pct_reason(continuity, max_missing_bar_pct),
-            BacktestRunner._max_kurtosis_reason(raw_df, max_kurtosis),
+            cls._continuity_threshold_reason(continuity, continuity_cfg),
+            cls._min_data_points_reason(raw_df, min_data_points_cfg),
+            cls._missing_bar_pct_reason(continuity, continuity_cfg),
+            cls._max_kurtosis_reason(raw_df, kurtosis_cfg),
+            cls._outlier_pct_reason(
+                raw_df=raw_df,
+                outlier_detection=outlier_detection,
+            ),
         )
         for reason in reason_checks:
             if reason is not None:
                 reasons.append(reason)
         return reasons
+
+    @classmethod
+    def _outlier_pct_reason(
+        cls,
+        *,
+        raw_df: pd.DataFrame,
+        outlier_detection: ValidationOutlierDetectionConfig | None,
+    ) -> str | None:
+        if outlier_detection is None:
+            return None
+        close_col = cls._resolve_close_column(raw_df)
+        if close_col is None:
+            return None
+        returns = raw_df[close_col].astype(float).pct_change().replace([np.inf, -np.inf], np.nan).dropna()
+        if returns.empty:
+            return None
+        method = outlier_detection.method
+        threshold = outlier_detection.zscore_threshold
+        outlier_mask, issue = cls._compute_outlier_mask(returns=returns, method=method, threshold=threshold)
+        if issue is not None:
+            return f"outlier_check_indeterminate(method={method}, reason={issue})"
+        if outlier_mask is None:
+            return None
+        outlier_pct = float(outlier_mask.mean() * 100.0)
+        allowed = outlier_detection.max_outlier_pct
+        if outlier_pct > allowed:
+            return (
+                "max_outlier_pct_exceeded("
+                f"method={method}, threshold={threshold}, max_allowed={allowed}, available={outlier_pct})"
+            )
+        return None
+
+    @staticmethod
+    def _compute_outlier_mask(
+        *,
+        returns: pd.Series,
+        method: str,
+        threshold: float,
+    ) -> tuple[np.ndarray | None, str | None]:
+        values = returns.to_numpy(dtype=float)
+        if values.size == 0:
+            return None, "empty_returns"
+        if method == "zscore":
+            mean_val = float(np.mean(values))
+            std_val = float(np.std(values, ddof=1))
+            if not np.isfinite(std_val) or std_val <= 0:
+                return None, "std_zero"
+            return np.abs((values - mean_val) / std_val) > threshold, None
+        if method != "modified_zscore":
+            return None, f"unsupported_method:{method}"
+        median_val = float(np.median(values))
+        mad = float(np.median(np.abs(values - median_val)))
+        if mad <= 0:
+            return None, "mad_zero"
+        modified_z = 0.6745 * (values - median_val) / mad
+        return np.abs(modified_z) > threshold, None
 
     @staticmethod
     def _data_validation_backtest(_context: ValidationContext) -> GateDecision:
@@ -1569,7 +1884,7 @@ class BacktestRunner:
                 reasons=skip_reasons,
                 stage="strategy_optimization",
             )
-        policy = self._resolve_optimization_policy()
+        policy = self._load_optimization_policy(context.job.collection)
         if policy is None:
             self._reset_plan_optimization_state(plan)
             return GateDecision(
@@ -1650,20 +1965,7 @@ class BacktestRunner:
         entries = entries.reindex(validated_data.raw_df.index, fill_value=False)
         exits = exits.reindex(validated_data.raw_df.index, fill_value=False)
 
-        request = EvaluationRequest(
-            collection=state.job.collection.name,
-            symbol=state.job.symbol,
-            timeframe=state.job.timeframe,
-            source=state.job.source,
-            strategy=plan.strategy.name,
-            params=full_params,
-            metric_name=self.cfg.metric,
-            data_fingerprint=prepared.fingerprint,
-            fees=prepared.fees,
-            slippage=prepared.slippage,
-            bars_per_year=prepared.bars_per_year,
-            mode_config=self.mode_config,
-        )
+        request = self._build_evaluation_request(plan, state, prepared, full_params)
 
         cached = self.evaluation_cache.get(
             collection=request.collection,
@@ -1677,34 +1979,10 @@ class BacktestRunner:
             slippage=request.slippage,
             evaluation_mode=self.mode_config.mode,
             mode_config_hash=self.mode_config_hash,
+            validation_config_hash=state.validation_config_hash,
         )
         if cached is not None:
-            self.metrics["result_cache_hits"] += 1
-            plan.evaluations += 1
-            val_cached = float(cached["metric_value"])
-            cached_stats = self._enrich_evaluation_stats(cached["stats"], plan, validated_data)
-            # Legacy cache continues to be written for reporting compatibility.
-            self._cache_set(
-                collection=request.collection,
-                symbol=request.symbol,
-                timeframe=request.timeframe,
-                strategy=request.strategy,
-                params=request.params,
-                metric_name=request.metric_name,
-                metric_value=val_cached,
-                stats=cached_stats,
-                data_fingerprint=request.data_fingerprint,
-                fees=request.fees,
-                slippage=request.slippage,
-                run_id=self.run_id,
-                evaluation_mode=self.mode_config.mode,
-                mode_config_hash=self.mode_config_hash,
-            )
-            if val_cached > plan.best_val:
-                plan.best_val = val_cached
-                plan.best_params = full_params.copy()
-                plan.best_stats = cached_stats
-            return val_cached
+            return self._apply_cached_evaluation(plan, validated_data, request, cached, full_params)
 
         self.metrics["result_cache_misses"] += 1
         outcome = self._get_evaluator().evaluate(
@@ -1715,17 +1993,108 @@ class BacktestRunner:
             exits,
             prepared.fractional,
         )
+        return self._apply_fresh_evaluation(
+            plan=plan,
+            state=state,
+            validated_data=validated_data,
+            request=request,
+            outcome=outcome,
+            full_params=full_params,
+        )
+
+    def _build_evaluation_request(
+        self,
+        plan: StrategyPlan,
+        state: JobState,
+        prepared: ExecutionPreparedData,
+        full_params: dict[str, Any],
+    ) -> EvaluationRequest:
+        result_consistency_policy = self._load_result_consistency_policy(state.job.collection)
+        outlier_policy = (
+            result_consistency_policy.outlier_dependency
+            if result_consistency_policy is not None
+            else None
+        )
+        execution_price_policy = (
+            result_consistency_policy.execution_price_variance
+            if result_consistency_policy is not None
+            else None
+        )
+        return EvaluationRequest(
+            collection=state.job.collection.name,
+            symbol=state.job.symbol,
+            timeframe=state.job.timeframe,
+            source=state.job.source,
+            strategy=plan.strategy.name,
+            params=full_params,
+            metric_name=self.cfg.metric,
+            data_fingerprint=prepared.fingerprint,
+            fees=prepared.fees,
+            slippage=prepared.slippage,
+            bars_per_year=prepared.bars_per_year,
+            mode_config=self.mode_config,
+            result_consistency_outlier_dependency_slices=(
+                outlier_policy.slices if outlier_policy is not None else None
+            ),
+            result_consistency_outlier_dependency_profit_share_threshold=(
+                outlier_policy.profit_share_threshold if outlier_policy is not None else None
+            ),
+            result_consistency_execution_price_tolerance_bps=(
+                execution_price_policy.price_tolerance_bps
+                if execution_price_policy is not None
+                else None
+            ),
+        )
+
+    def _apply_cached_evaluation(
+        self,
+        plan: StrategyPlan,
+        validated_data: ValidatedData,
+        request: EvaluationRequest,
+        cached: dict[str, Any],
+        full_params: dict[str, Any],
+    ) -> float:
+        metric_val = float(cached["metric_value"])
+        plan.evaluations += 1
+        if not np.isfinite(metric_val):
+            return float("-inf")
+        self.metrics["result_cache_hits"] += 1
+        stats = self._enrich_evaluation_stats(cached["stats"], plan, validated_data)
+        self._cache_set(
+            collection=request.collection,
+            symbol=request.symbol,
+            timeframe=request.timeframe,
+            strategy=request.strategy,
+            params=request.params,
+            metric_name=request.metric_name,
+            metric_value=metric_val,
+            stats=stats,
+            data_fingerprint=request.data_fingerprint,
+            fees=request.fees,
+            slippage=request.slippage,
+            run_id=self.run_id,
+            evaluation_mode=self.mode_config.mode,
+            mode_config_hash=self.mode_config_hash,
+        )
+        self._update_best_result(plan, metric_val, full_params, stats)
+        return metric_val
+
+    def _apply_fresh_evaluation(
+        self,
+        *,
+        plan: StrategyPlan,
+        state: JobState,
+        validated_data: ValidatedData,
+        request: EvaluationRequest,
+        outcome: EvaluationOutcome,
+        full_params: dict[str, Any],
+    ) -> float:
         raw_stats = dict(outcome.stats)
         stats = self._enrich_evaluation_stats(raw_stats, plan, validated_data)
         plan.evaluations += 1
-        # Evaluator owns execution-state flags; runner only aggregates.
-        if outcome.simulation_executed:
-            self.metrics["fresh_simulation_runs"] += 1
-        if outcome.metric_computed:
-            self.metrics["fresh_metric_evals"] += 1
-            # Backward-compatible alias for existing dashboards/tests.
-            self.metrics["param_evals"] = self.metrics["fresh_metric_evals"]
+        self._track_fresh_evaluation_metrics(outcome)
         metric_val = float(outcome.metric_value)
+        cached_metric_val = metric_val if outcome.valid else float("-inf")
         if outcome.valid or outcome.metric_computed:
             self._evaluation_cache_set(
                 collection=request.collection,
@@ -1734,16 +2103,15 @@ class BacktestRunner:
                 strategy=request.strategy,
                 params=request.params,
                 metric_name=request.metric_name,
-                metric_value=metric_val,
+                metric_value=cached_metric_val,
                 stats=raw_stats,
                 data_fingerprint=request.data_fingerprint,
                 fees=request.fees,
                 slippage=request.slippage,
                 evaluation_mode=self.mode_config.mode,
                 mode_config_hash=self.mode_config_hash,
+                validation_config_hash=state.validation_config_hash,
             )
-
-            # Legacy cache remains the compatibility source for current reporters.
             self._cache_set(
                 collection=request.collection,
                 symbol=request.symbol,
@@ -1751,7 +2119,7 @@ class BacktestRunner:
                 strategy=request.strategy,
                 params=request.params,
                 metric_name=request.metric_name,
-                metric_value=metric_val,
+                metric_value=cached_metric_val,
                 stats=stats,
                 data_fingerprint=request.data_fingerprint,
                 fees=request.fees,
@@ -1762,11 +2130,29 @@ class BacktestRunner:
             )
         if not outcome.valid:
             return float("-inf")
+        self._update_best_result(plan, metric_val, full_params, stats)
+        return metric_val
+
+    def _track_fresh_evaluation_metrics(self, outcome: EvaluationOutcome) -> None:
+        # Evaluator owns execution-state flags; runner only aggregates.
+        if outcome.simulation_executed:
+            self.metrics["fresh_simulation_runs"] += 1
+        if outcome.metric_computed:
+            self.metrics["fresh_metric_evals"] += 1
+            # Backward-compatible alias for existing dashboards/tests.
+            self.metrics["param_evals"] = self.metrics["fresh_metric_evals"]
+
+    @staticmethod
+    def _update_best_result(
+        plan: StrategyPlan,
+        metric_val: float,
+        full_params: dict[str, Any],
+        stats: dict[str, Any],
+    ) -> None:
         if metric_val > plan.best_val:
             plan.best_val = metric_val
             plan.best_params = full_params.copy()
             plan.best_stats = stats
-        return float(metric_val)
 
     def _strategy_run(
         self,
@@ -1869,8 +2255,73 @@ class BacktestRunner:
         )
         return self._compose_gate_decisions("strategy_validation", common_decision, mode_decision)
 
+    def _outlier_dependency_reason(
+        self,
+        stats: dict[str, Any],
+        policy: ResultConsistencyOutlierDependencyConfig,
+    ) -> str | None:
+        trade_meta = stats.get("trade_meta")
+        if not isinstance(trade_meta, dict):
+            return None
+        outlier_meta = trade_meta.get("outlier_dependency")
+        if not isinstance(outlier_meta, dict):
+            return None
+        if not bool(outlier_meta.get("is_complete", False)):
+            return None
+        dominant_trade_share_raw = outlier_meta.get("dominant_trade_share_for_profit_share")
+        if dominant_trade_share_raw is None:
+            return None
+        dominant_trade_share = float(dominant_trade_share_raw)
+        if dominant_trade_share >= policy.trade_share_threshold:
+            return None
+        dominant_trade_count = outlier_meta.get("dominant_trade_count_for_profit_share")
+        slice_concentration = outlier_meta.get("max_slice_profit_share")
+
+        reason = (
+            "outlier_dependency_exceeded("
+            f"dominant_trade_share={dominant_trade_share:.4f}, "
+            f"dominant_trade_count={dominant_trade_count}, "
+            f"profit_share_threshold={policy.profit_share_threshold}, "
+            f"trade_share_threshold={policy.trade_share_threshold}, "
+            f"slices={policy.slices}"
+        )
+        if isinstance(slice_concentration, (float, int)):
+            reason += f", max_slice_profit_share={float(slice_concentration):.4f}"
+        reason += ")"
+        return reason
+
     @staticmethod
-    def _strategy_validate_results_common(context: ValidationContext) -> GateDecision:
+    def _execution_price_variance_reason(
+        stats: dict[str, Any],
+        policy: ResultConsistencyExecutionPriceVarianceConfig,
+    ) -> str | None:
+        trade_meta = stats.get("trade_meta")
+        if not isinstance(trade_meta, dict):
+            return None
+        execution_meta = trade_meta.get("execution_price_variance")
+        if not isinstance(execution_meta, dict):
+            return None
+        # Missing metadata is explicitly non-blocking for this gate.
+        if not bool(execution_meta.get("is_complete", False)):
+            return None
+        violations_raw = execution_meta.get("violations")
+        if violations_raw is None:
+            return None
+        violations = int(violations_raw)
+        if violations <= 0:
+            return None
+        checked_fills = execution_meta.get("checked_fills")
+        violation_ratio = execution_meta.get("violation_ratio")
+        return (
+            "execution_price_variance_exceeded("
+            f"violations={violations}, "
+            f"checked_fills={checked_fills}, "
+            f"violation_ratio={violation_ratio}, "
+            f"price_tolerance_bps={policy.price_tolerance_bps}"
+            ")"
+        )
+
+    def _strategy_validate_results_common(self, context: ValidationContext) -> GateDecision:
         # Keep this gate lightweight for now; stricter schema checks can be added later.
         outcome = context.outcome
         if outcome is None:
@@ -1878,14 +2329,38 @@ class BacktestRunner:
         if not outcome.has_valid_candidate:
             return GateDecision(False, "reject_result", ["no_valid_candidate"], "strategy_validation")
 
-        reasons: list[str] = []
-        if not np.isfinite(outcome.best_val):
-            reasons.append("best_metric_not_finite")
+        reasons = self._collect_strategy_validation_reasons(context, outcome)
         if reasons:
             decision = GateDecision(False, "reject_result", reasons, "strategy_validation")
         else:
             decision = GateDecision(True, "continue", [], "strategy_validation")
         return decision
+
+    def _collect_strategy_validation_reasons(
+        self,
+        context: ValidationContext,
+        outcome: StrategyEvalOutcome,
+    ) -> list[str]:
+        reasons: list[str] = []
+        if not np.isfinite(outcome.best_val):
+            reasons.append("best_metric_not_finite")
+        policy = self._load_result_consistency_policy(context.job.collection)
+        if policy is None or not isinstance(outcome.best_stats, dict):
+            return reasons
+        outlier_policy = policy.outlier_dependency
+        if outlier_policy is not None:
+            reason = self._outlier_dependency_reason(outcome.best_stats, outlier_policy)
+            if reason is not None:
+                reasons.append(reason)
+        execution_price_policy = policy.execution_price_variance
+        if execution_price_policy is not None:
+            reason = self._execution_price_variance_reason(
+                outcome.best_stats,
+                execution_price_policy,
+            )
+            if reason is not None:
+                reasons.append(reason)
+        return reasons
 
     @staticmethod
     def _strategy_validate_results_backtest(_context: ValidationContext) -> GateDecision:
@@ -1944,11 +2419,21 @@ class BacktestRunner:
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
         )
+        validation_metadata = self._build_validation_metadata()
+        self.validation_metadata = validation_metadata
+        self.active_validation_gates = list(validation_metadata.get("active_gates", []))
+        self.inactive_validation_gates = list(validation_metadata.get("inactive_gates", []))
+        self._result_store_upsert_run_metadata(
+            validation_profile=validation_metadata.get("profile", {}),
+            active_gates=self.active_validation_gates,
+            inactive_gates=self.inactive_validation_gates,
+        )
 
         jobs = self._create_job_list()
         # Cache collection gate decisions so each collection is validated once per run.
         validated_collections: dict[int, GateDecision] = {}
         validated_collection_sources: dict[int, DataSource] = {}
+        validation_hash_by_collection: dict[int, str] = {}
         blocked_collections: set[int] = set()
 
         for job in jobs:
@@ -2004,6 +2489,15 @@ class BacktestRunner:
             if not prep_decision.passed or prepared is None:
                 continue
 
+            # Compute once per collection: hash keys evaluation-cache correctness
+            # from the effective collection-level validation profile.
+            validation_hash = validation_hash_by_collection.get(collection_key)
+            if validation_hash is None:
+                validation_hash = self._hash_validation_profile(
+                    self._build_job_validation_profile(state.job.collection)
+                )
+                validation_hash_by_collection[collection_key] = validation_hash
+            state.validation_config_hash = validation_hash
             for strat_name in self.external_index.keys():
                 self.metrics["symbols_tested"] += 1
                 # Strategy stage: create plan -> validate plan -> run -> validate results.
