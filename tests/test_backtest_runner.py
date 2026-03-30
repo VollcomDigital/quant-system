@@ -650,7 +650,7 @@ def test_stationarity_adf_reason_returns_indeterminate_when_statsmodels_missing(
     original_adfuller = BacktestRunner._stationarity_adfuller
     try:
         BacktestRunner._stationarity_adfuller = staticmethod(lambda: None)
-        reason = BacktestRunner._stationarity_adf_reason(raw_df, stationarity_cfg)
+        _, reason, _ = BacktestRunner._stationarity_adf_assessment(raw_df, stationarity_cfg)
     finally:
         BacktestRunner._stationarity_adfuller = original_adfuller
 
@@ -774,7 +774,7 @@ def test_stationarity_adf_reason_flags_constant_returns_series():
         min_points=20,
     )
 
-    reason = BacktestRunner._stationarity_adf_reason(raw_df, stationarity_cfg)
+    _, reason, _ = BacktestRunner._stationarity_adf_assessment(raw_df, stationarity_cfg)
 
     assert reason is not None
     assert reason.startswith("stationarity_")
