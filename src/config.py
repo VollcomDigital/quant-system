@@ -102,7 +102,7 @@ class OptimizationPolicyConfig:
     on_fail: str
     min_bars: int
     dof_multiplier: int
-    runtime_error_max_per_tuple: int = 1
+    runtime_error_max_per_tuple: int | None = None
 
 
 @dataclass
@@ -892,7 +892,7 @@ def _parse_optimization_policy(raw: Any, prefix: str) -> OptimizationPolicyConfi
         on_fail=on_fail,
         min_bars=min_bars,
         dof_multiplier=dof_multiplier,
-        runtime_error_max_per_tuple=runtime_error_max_per_tuple or 1,
+        runtime_error_max_per_tuple=runtime_error_max_per_tuple,
     )
 
 

@@ -456,6 +456,41 @@ validation:
     assert col.validation.optimization.runtime_error_max_per_tuple == 3
 
 
+def test_load_config_optimization_policy_collection_override_inherits_runtime_error_threshold(
+    tmp_path: Path,
+):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    validation:
+      optimization:
+        on_fail: baseline_only
+        min_bars: 200
+        dof_multiplier: 9
+timeframes: ['1d']
+metric: sharpe
+validation:
+  optimization:
+    on_fail: skip_job
+    min_bars: 123
+    dof_multiplier: 7
+    runtime_error_max_per_tuple: 2
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    col = cfg.collections[0]
+    assert col.validation is not None
+    assert col.validation.optimization is not None
+    assert col.validation.optimization.on_fail == "baseline_only"
+    assert col.validation.optimization.min_bars == 200
+    assert col.validation.optimization.dof_multiplier == 9
+    assert col.validation.optimization.runtime_error_max_per_tuple == 2
+
+
 def test_load_config_result_consistency_policy(tmp_path: Path):
     config_text = """
 collections:
