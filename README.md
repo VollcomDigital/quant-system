@@ -204,6 +204,8 @@ See new collection examples under `config/collections/` for FX intraday via Finn
 - `validation.data_quality` controls job-level data gates (for collection/symbol/timeframe):
   - `on_fail` is required: `skip_job | skip_collection | skip_optimization`
   - `min_data_points` is optional: minimum number of bars required
+  - `is_verified` is optional: set `false` to mark a collection as manually unverified and
+    emit `collection_not_verified`
   - `continuity` is optional:
     - `min_score` minimum continuity score (0..1)
     - `max_missing_bar_pct` maximum missing bars percentage across expected bars
@@ -261,6 +263,33 @@ Structured logs reflect this directly via gate actions:
 - `strategy_optimization_gate` can emit `baseline_only` (strategy-level baseline fallback) or `skip_job`.
 - `strategy_validation_gate` can emit `reject_result` for outlier dependency
   and execution price variance.
+
+### Optimization Only on Reliable Collections
+
+Use `validation.data_quality` to decide whether unreliable collections should only skip
+optimization or block execution entirely:
+
+- `on_fail: skip_optimization` keeps the job running, disables parameter search for that
+  collection/symbol/timeframe, and falls back to baseline evaluation where the strategy supports it.
+- `on_fail: skip_job` blocks the current collection/symbol/timeframe job.
+- `on_fail: skip_collection` blocks the rest of the jobs in that collection after the first failure.
+
+Configured data-quality reliability reasons can include:
+
+- `collection_not_verified` when `validation.data_quality.is_verified: false`
+- `max_missing_bar_pct_exceeded(...)` when `continuity.max_missing_bar_pct` is breached
+- `max_kurtosis_exceeded(...)` when `kurtosis` is breached
+- stationarity or outlier reasons when those modules are configured
+
+The sample-size / degrees-of-freedom guard is config-driven and remains under
+`validation.optimization`, not `validation.data_quality`:
+
+- `min_bars` is an absolute optimization floor
+- `dof_multiplier` multiplies the number of tunable parameter dimensions
+- optimization is skipped when available bars are below `max(min_bars, dof_multiplier * n_params)`
+
+This keeps thresholds explicit in config and lets `on_fail` decide whether the outcome is
+optimization-only fallback or a full block.
 
 For implementation details (continuity decision flow, weekday filtering scope, and
 vectorized gap counting), see `DEVELOPMENT.md`.

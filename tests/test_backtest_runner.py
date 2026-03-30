@@ -481,6 +481,61 @@ def test_data_validation_stationarity_rejects_constant_series(tmp_path, monkeypa
     assert any(reason.startswith("stationarity_") for reason in validated_data.reliability_reasons)
 
 
+def test_data_validation_collects_multiple_reliability_reasons(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            continuity=ValidationContinuityConfig(max_missing_bar_pct=10.0),
+            kurtosis=1.0,
+            is_verified=False,
+            on_fail="skip_job",
+        )
+    )
+    resolve_validation_overrides(runner.cfg)
+    closes = [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 400.0, 100.0, 100.0, 100.0, 100.0, 100.0, 100.0]
+    df = pd.DataFrame(
+        {
+            "Open": closes,
+            "High": closes,
+            "Low": closes,
+            "Close": closes,
+            "Volume": [100] * len(closes),
+        },
+        index=pd.date_range("2024-01-01", periods=len(closes), freq="D"),
+    )
+    context = SimpleNamespace(
+        job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
+        fetched_data=SimpleNamespace(raw_df=df),
+    )
+
+    def _mock_continuity_score(cls, df, timeframe, **kwargs):
+        return {
+            "score": 0.7,
+            "coverage_ratio": 0.8,
+            "expected_bars": 20,
+            "actual_bars": 13,
+            "unique_bars": 13,
+            "duplicate_bars": 0,
+            "missing_bars": 4,
+            "largest_gap_bars": 2,
+        }
+
+    monkeypatch.setattr(
+        BacktestRunner,
+        "compute_continuity_score",
+        classmethod(_mock_continuity_score),
+    )
+
+    decision, validated_data = runner._data_validation_common(context)
+
+    assert not decision.passed
+    assert decision.action == "skip_job"
+    assert validated_data is not None
+    assert any(reason.startswith("max_missing_bar_pct_exceeded") for reason in validated_data.reliability_reasons)
+    assert any(reason.startswith("max_kurtosis_exceeded") for reason in validated_data.reliability_reasons)
+    assert "collection_not_verified" in validated_data.reliability_reasons
+
+
 def test_stationarity_adf_reason_returns_indeterminate_when_statsmodels_missing():
     idx = pd.date_range("2024-01-01", periods=40, freq="D")
     raw_df = pd.DataFrame({"Close": np.linspace(100.0, 120.0, len(idx))}, index=idx)
