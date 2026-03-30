@@ -500,17 +500,24 @@ def _merge_stationarity_config(
 def _normalize_lookahead_shuffle_test_config(
     cfg: ValidationLookaheadShuffleTestConfig | None,
     prefix: str,
+    *,
+    default_permutations: int | None = None,
+    default_threshold: float | None = None,
+    default_seed: int | None = None,
 ) -> ValidationLookaheadShuffleTestConfig | None:
     if cfg is None:
         return None
-    permutations = int(getattr(cfg, "permutations", LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS))
-    if permutations < 5:
+    permutations_raw = getattr(cfg, "permutations", None)
+    permutations = default_permutations if permutations_raw is None else int(permutations_raw)
+    if permutations is not None and permutations < 5:
         raise ValueError(f"`{prefix}.permutations` must be >= 5")
-    threshold = float(getattr(cfg, "threshold", LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD))
-    if not math.isfinite(threshold):
+    threshold_raw = getattr(cfg, "threshold", None)
+    threshold = default_threshold if threshold_raw is None else float(threshold_raw)
+    if threshold is not None and not math.isfinite(threshold):
         raise ValueError(f"`{prefix}.threshold` must be finite")
-    seed = int(getattr(cfg, "seed", LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED))
-    if seed < 0:
+    seed_raw = getattr(cfg, "seed", None)
+    seed = default_seed if seed_raw is None else int(seed_raw)
+    if seed is not None and seed < 0:
         raise ValueError(f"`{prefix}.seed` must be >= 0")
     max_failed_permutations_raw = getattr(cfg, "max_failed_permutations", None)
     max_failed_permutations = (
@@ -519,8 +526,10 @@ def _normalize_lookahead_shuffle_test_config(
     if max_failed_permutations is not None:
         if max_failed_permutations < 0:
             raise ValueError(f"`{prefix}.max_failed_permutations` must be >= 0")
-        if max_failed_permutations > permutations:
-            raise ValueError(f"`{prefix}.max_failed_permutations` must be <= `{prefix}.permutations`")
+        if permutations is not None and max_failed_permutations > permutations:
+            raise ValueError(
+                f"`{prefix}.max_failed_permutations` must be <= `{prefix}.permutations`"
+            )
     return ValidationLookaheadShuffleTestConfig(
         permutations=permutations,
         threshold=threshold,
@@ -541,22 +550,17 @@ def _merge_lookahead_shuffle_test_config(
     max_failed_permutations = _merged_field(base, override, "max_failed_permutations")
     return _normalize_lookahead_shuffle_test_config(
         ValidationLookaheadShuffleTestConfig(
-            permutations=(
-                int(permutations)
-                if permutations is not None
-                else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS
-            ),
-            threshold=(
-                float(threshold)
-                if threshold is not None
-                else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD
-            ),
-            seed=int(seed) if seed is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED,
+            permutations=int(permutations) if permutations is not None else None,
+            threshold=float(threshold) if threshold is not None else None,
+            seed=int(seed) if seed is not None else None,
             max_failed_permutations=(
                 int(max_failed_permutations) if max_failed_permutations is not None else None
             ),
         ),
         "validation.result_consistency.lookahead_shuffle_test",
+        default_permutations=LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS,
+        default_threshold=LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD,
+        default_seed=LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED,
     )
 
 
@@ -911,11 +915,9 @@ def _parse_lookahead_shuffle_test(
     )
     return _normalize_lookahead_shuffle_test_config(
         ValidationLookaheadShuffleTestConfig(
-            permutations=(
-                permutations if permutations is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS
-            ),
-            threshold=threshold if threshold is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD,
-            seed=seed if seed is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED,
+            permutations=permutations,
+            threshold=threshold,
+            seed=seed,
             max_failed_permutations=max_failed_permutations,
         ),
         prefix,
