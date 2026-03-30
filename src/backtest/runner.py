@@ -233,8 +233,8 @@ class BacktestRunner:
         self.mode_config_hash = self.evaluation_cache.hash_mode_config(self.mode_config)
         self._result_store_write_failures = 0
         self._evaluation_cache_write_failures = 0
-        self._runtime_signal_error_counts: dict[tuple[str, str, str], int] = {}
-        self._runtime_signal_error_capped: set[tuple[str, str, str]] = set()
+        self._runtime_signal_error_counts: dict[tuple[str, str, str, str], int] = {}
+        self._runtime_signal_error_capped: set[tuple[str, str, str, str]] = set()
         self.validation_metadata: dict[str, Any] = {}
         self.active_validation_gates: list[str] = []
         self.inactive_validation_gates: list[str] = []
@@ -2550,8 +2550,13 @@ class BacktestRunner:
         study.optimize(objective, n_trials=n_trials, callbacks=[_stop_on_runtime_error_threshold])
 
     @staticmethod
-    def _runtime_error_tuple_key(plan: StrategyPlan, state: JobState) -> tuple[str, str, str]:
-        return (plan.strategy.name, state.job.symbol, state.job.timeframe)
+    def _runtime_error_tuple_key(plan: StrategyPlan, state: JobState) -> tuple[str, str, str, str]:
+        return (
+            state.job.collection.name,
+            plan.strategy.name,
+            state.job.symbol,
+            state.job.timeframe,
+        )
 
     def _runtime_signal_error_limit(self, collection: CollectionConfig) -> int:
         policy = self._load_optimization_policy(collection)

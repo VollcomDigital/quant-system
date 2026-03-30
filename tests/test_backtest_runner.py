@@ -1579,6 +1579,65 @@ def test_run_all_runtime_signal_error_threshold_is_tuple_isolated(tmp_path, monk
     assert calls["count"] == 2
 
 
+def test_run_all_runtime_signal_error_threshold_isolated_per_collection(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3, 4, 5]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    collections = [
+        CollectionConfig(
+            name="strict",
+            source="custom",
+            symbols=["AAPL"],
+            validation=ValidationConfig(
+                optimization=OptimizationPolicyConfig(
+                    on_fail="baseline_only",
+                    min_bars=1,
+                    dof_multiplier=1,
+                    runtime_error_max_per_tuple=1,
+                )
+            ),
+        ),
+        CollectionConfig(
+            name="lenient",
+            source="custom",
+            symbols=["AAPL"],
+            validation=ValidationConfig(
+                optimization=OptimizationPolicyConfig(
+                    on_fail="baseline_only",
+                    min_bars=1,
+                    dof_multiplier=1,
+                    runtime_error_max_per_tuple=3,
+                )
+            ),
+        ),
+    ]
+    runner = _make_runner(tmp_path, monkeypatch, collections=collections)
+    runner.cfg.strategies = []
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.param_search = "grid"
+
+    results = runner.run_all()
+    assert results == []
+    assert calls["count"] == 4
+    assert any(
+        "runtime_error_threshold_exceeded(count=1, max_per_tuple=1)" in f.get("error", "")
+        for f in runner.failures
+    )
+    assert any(
+        "runtime_error_threshold_exceeded(count=3, max_per_tuple=3)" in f.get("error", "")
+        for f in runner.failures
+    )
+
+
 def test_run_all_runtime_signal_error_threshold_resets_between_runs(tmp_path, monkeypatch):
     calls = {"count": 0}
 
