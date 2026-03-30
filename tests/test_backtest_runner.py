@@ -1411,6 +1411,45 @@ def test_run_all_records_fetch_failures(tmp_path, monkeypatch):
     assert failure["error"] == "boom"
 
 
+def test_run_all_evaluator_failure_surfaces_as_strategy_optimization_failure(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+
+    class _BoomEvaluator:
+        def evaluate(self, *args, **kwargs):
+            raise RuntimeError("evaluator boom")
+
+    monkeypatch.setattr(BacktestRunner, "_get_evaluator", lambda self: _BoomEvaluator())
+
+    results = runner.run_all()
+
+    assert results == []
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["stage"] == "strategy_optimization"
+    assert failure["error"] == "evaluator boom"
+
+
+def test_run_all_evaluation_cache_failure_surfaces_as_strategy_optimization_failure(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+
+    def _boom_cache_get(**kwargs):
+        raise RuntimeError("cache boom")
+
+    runner.evaluation_cache.get = _boom_cache_get  # type: ignore[assignment]
+
+    results = runner.run_all()
+
+    assert results == []
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["stage"] == "strategy_optimization"
+    assert failure["error"] == "cache boom"
+
+
 def test_run_all_skips_empty_frames(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
 
@@ -2148,6 +2187,76 @@ def test_lookahead_shuffle_test_result_is_deterministic(tmp_path, monkeypatch):
     assert meta_one["is_complete"] is True
     assert meta_one["seed"] == meta_two["seed"]
     assert meta_one["median_shuffled_metric"] > 0
+    assert runner.metrics["result_cache_misses"] == 0
+    assert runner.evaluation_cache.saved == []
+    assert runner._runtime_signal_error_counts == {}
+
+
+def test_lookahead_shuffle_test_result_does_not_track_runtime_errors(
+    tmp_path, monkeypatch
+):
+    class _BoomShuffleStrategy(BaseStrategy):
+        name = "boom_shuffle"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.strategies = [
+        StrategyConfig(
+            name="boom_shuffle",
+            module=None,
+            cls=None,
+            params={},
+        )
+    ]
+    runner.external_index = {"boom_shuffle": _BoomShuffleStrategy}
+    runner.cfg.validation = ValidationConfig(
+        result_consistency=ResultConsistencyConfig(
+            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
+                permutations=5,
+                threshold=0.0,
+                seed=7,
+            )
+        ),
+    )
+    resolve_validation_overrides(runner.cfg)
+    raw_df = _make_trending_ohlcv(25)
+    state = JobState(
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        )
+    )
+    plan = runner._strategy_create_plan(state, "boom_shuffle")
+    validated_data = ValidatedData(
+        raw_df=raw_df,
+        continuity={},
+        reliability_on_fail="skip_optimization",
+        reliability_reasons=[],
+    )
+    context = ValidationContext(
+        stage="strategy_validation",
+        state=state,
+        mode="backtest",
+        job=state.job,
+        validated_data=validated_data,
+    )
+    policy = runner._load_lookahead_shuffle_test_policy(state.job.collection)
+    runner.metrics = {"result_cache_misses": 0}
+
+    reason, meta = runner._lookahead_shuffle_test_result(context, plan, policy)
+
+    assert reason is None
+    assert meta is not None
+    assert meta["is_complete"] is False
+    assert meta["reason"] == "signal boom"
+    assert runner._runtime_signal_error_counts == {}
     assert runner.metrics["result_cache_misses"] == 0
     assert runner.evaluation_cache.saved == []
 

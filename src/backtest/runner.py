@@ -2276,74 +2276,20 @@ class BacktestRunner:
         exits = exits.reindex(raw_df.index, fill_value=False)
         return entries, exits
 
-    def _evaluate_signals_with_request(
+    def _evaluate_strategy_outcome(
         self,
-        *,
-        plan: StrategyPlan,
-        state: JobState,
+        request: EvaluationRequest,
         prepared: ExecutionPreparedData,
-        full_params: dict[str, Any],
         entries: pd.Series,
         exits: pd.Series,
-        use_cache: bool,
-    ) -> tuple[EvaluationRequest, dict[str, Any] | None, EvaluationOutcome | None]:
-        request = self._build_evaluation_request(plan, state, prepared, full_params)
-        if use_cache:
-            cached = self.evaluation_cache.get(
-                collection=request.collection,
-                symbol=request.symbol,
-                timeframe=request.timeframe,
-                strategy=request.strategy,
-                params=request.params,
-                metric_name=request.metric_name,
-                data_fingerprint=request.data_fingerprint,
-                fees=request.fees,
-                slippage=request.slippage,
-                evaluation_mode=self.mode_config.mode,
-                mode_config_hash=self.mode_config_hash,
-                validation_config_hash=state.validation_config_hash,
-            )
-            if cached is not None:
-                return request, cached, None
-            self.metrics["result_cache_misses"] += 1
-        outcome = self._get_evaluator().evaluate(
+    ) -> EvaluationOutcome:
+        return self._get_evaluator().evaluate(
             request,
             prepared.data_frame,
             prepared.dates,
             entries,
             exits,
             prepared.fractional,
-        )
-        return request, None, outcome
-
-    def _evaluate_strategy_signals(
-        self,
-        *,
-        plan: StrategyPlan,
-        state: JobState,
-        validated_data: ValidatedData,
-        prepared: ExecutionPreparedData,
-        params: dict[str, Any],
-        use_cache: bool,
-        track_runtime_errors: bool,
-    ) -> tuple[EvaluationRequest, dict[str, Any] | None, EvaluationOutcome | None]:
-        full_params = {**plan.fixed_params, **params}
-        entries, exits = self._generate_aligned_signals(
-            plan.strategy,
-            validated_data.raw_df,
-            full_params,
-            plan=plan,
-            state=state,
-            track_runtime_errors=track_runtime_errors,
-        )
-        return self._evaluate_signals_with_request(
-            plan=plan,
-            state=state,
-            prepared=prepared,
-            full_params=full_params,
-            entries=entries,
-            exits=exits,
-            use_cache=use_cache,
         )
 
     def _lookahead_shuffle_test_result(
@@ -2408,20 +2354,17 @@ class BacktestRunner:
                         f"{float(shuffled_raw[close_col].astype(float).iloc[-1])}"
                     ),
                 )
-                _, _, outcome = self._evaluate_strategy_signals(
+                full_params = {**plan.fixed_params, **effective_params}
+                entries, exits = self._generate_aligned_signals(
+                    plan.strategy,
+                    shuffled_raw,
+                    full_params,
                     plan=plan,
                     state=context.state,
-                    validated_data=ValidatedData(
-                        raw_df=shuffled_raw,
-                        continuity=context.validated_data.continuity,
-                        reliability_on_fail=context.validated_data.reliability_on_fail,
-                        reliability_reasons=context.validated_data.reliability_reasons,
-                    ),
-                    prepared=prepared,
-                    params=effective_params,
-                    use_cache=False,
                     track_runtime_errors=False,
                 )
+                request = self._build_evaluation_request(plan, context.state, prepared, full_params)
+                outcome = self._evaluate_strategy_outcome(request, prepared, entries, exits)
                 if outcome.valid and np.isfinite(outcome.metric_value):
                     metric_values.append(float(outcome.metric_value))
 
@@ -2548,22 +2491,37 @@ class BacktestRunner:
         params: dict[str, Any],
     ) -> float:
         """Evaluate one parameter set, preferring mode-aware cache when available."""
+        full_params = {**plan.fixed_params, **params}
         try:
-            request, cached, outcome = self._evaluate_strategy_signals(
+            entries, exits = self._generate_aligned_signals(
+                plan.strategy,
+                validated_data.raw_df,
+                full_params,
                 plan=plan,
                 state=state,
-                validated_data=validated_data,
-                prepared=prepared,
-                params=params,
-                use_cache=True,
                 track_runtime_errors=True,
             )
         except Exception:
             return float("nan")
+        request = self._build_evaluation_request(plan, state, prepared, full_params)
+        cached = self.evaluation_cache.get(
+            collection=request.collection,
+            symbol=request.symbol,
+            timeframe=request.timeframe,
+            strategy=request.strategy,
+            params=request.params,
+            metric_name=request.metric_name,
+            data_fingerprint=request.data_fingerprint,
+            fees=request.fees,
+            slippage=request.slippage,
+            evaluation_mode=self.mode_config.mode,
+            mode_config_hash=self.mode_config_hash,
+            validation_config_hash=state.validation_config_hash,
+        )
         if cached is not None:
-            full_params = {**plan.fixed_params, **params}
             return self._apply_cached_evaluation(plan, validated_data, request, cached, full_params)
-        full_params = {**plan.fixed_params, **params}
+        self.metrics["result_cache_misses"] += 1
+        outcome = self._evaluate_strategy_outcome(request, prepared, entries, exits)
         return self._apply_fresh_evaluation(
             plan=plan,
             state=state,
