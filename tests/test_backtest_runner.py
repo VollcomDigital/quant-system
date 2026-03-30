@@ -2114,6 +2114,7 @@ def test_lookahead_shuffle_test_result_is_deterministic(tmp_path, monkeypatch):
         validated_data=validated_data,
     )
     policy = runner._load_lookahead_shuffle_test_policy(state.job.collection)
+    runner.metrics = {"result_cache_misses": 0}
     reason_one, meta_one = runner._lookahead_shuffle_test_result(context, plan, policy)
     reason_two, meta_two = runner._lookahead_shuffle_test_result(context, plan, policy)
 
@@ -2124,6 +2125,8 @@ def test_lookahead_shuffle_test_result_is_deterministic(tmp_path, monkeypatch):
     assert meta_one["is_complete"] is True
     assert meta_one["seed"] == meta_two["seed"]
     assert meta_one["median_shuffled_metric"] > 0
+    assert runner.metrics["result_cache_misses"] == 0
+    assert runner.evaluation_cache.saved == []
 
 
 def test_run_all_lookahead_shuffle_test_skip_job_blocks_optimization(tmp_path, monkeypatch):
