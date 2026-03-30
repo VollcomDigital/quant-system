@@ -353,7 +353,10 @@ validation:
     assert cfg.validation.optimization.on_fail == "skip_job"
     assert cfg.validation.optimization.min_bars == 123
     assert cfg.validation.optimization.dof_multiplier == 7
-    assert cfg.validation.optimization.runtime_error_max_per_tuple == 1
+    assert cfg.validation.optimization.runtime_error_max_per_tuple is None
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.optimization is not None
+    assert cfg.collections[0].validation.optimization.runtime_error_max_per_tuple == 1
 
 
 def test_load_config_optimization_policy_accepts_runtime_error_threshold(tmp_path: Path):

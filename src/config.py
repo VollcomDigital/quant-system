@@ -1179,10 +1179,4 @@ def load_config(path: str | Path) -> Config:
         validation=validation_cfg,
     )
     resolve_validation_overrides(cfg)
-    if (
-        cfg.validation is not None
-        and cfg.validation.optimization is not None
-        and cfg.validation.optimization.runtime_error_max_per_tuple is None
-    ):
-        cfg.validation.optimization.runtime_error_max_per_tuple = 1
     return cfg
