@@ -1240,7 +1240,9 @@ class BacktestRunner:
                     "error": "; ".join(decision.reasons) if decision.reasons else "gate_failed",
                 }
                 if context_extra:
-                    failure.update(context_extra)
+                    for key, value in context_extra.items():
+                        if key not in failure:
+                            failure[key] = value
                 self._failure_record(failure)
         return decision
 
