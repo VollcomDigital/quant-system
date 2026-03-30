@@ -38,6 +38,10 @@ validation:
         window: 20
         mean_shift_max: 1.5  # normalized adjacent-window mean shift
         vol_ratio_max: 1.75  # adjacent-window volatility ratio ceiling
+    lookahead_shuffle_test:
+      permutations: 20  # deterministic bar shuffles used for the null test
+      threshold: 0.0  # median shuffled metric above this is suspicious
+      seed: 1337  # base seed combined with collection/symbol/timeframe/strategy
     on_fail: skip_optimization  # optimization-only fallback | skip_job | skip_collection
   # Optional strategy-level optimization feasibility policy.
   optimization:

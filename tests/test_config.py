@@ -117,6 +117,31 @@ validation:
     assert cfg.validation.data_quality.is_verified is False
 
 
+def test_load_config_lookahead_shuffle_test_defaults(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    lookahead_shuffle_test: {}
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.lookahead_shuffle_test is not None
+    assert cfg.validation.data_quality.lookahead_shuffle_test.permutations == 20
+    assert cfg.validation.data_quality.lookahead_shuffle_test.threshold == pytest.approx(0.0)
+    assert cfg.validation.data_quality.lookahead_shuffle_test.seed == 1337
+
+
 def test_load_config_collection_reliability_thresholds_override(tmp_path: Path):
     config_text = """
 collections:
@@ -951,6 +976,38 @@ validation:
     assert col.validation.data_quality.stationarity.regime_shift.vol_ratio_max == pytest.approx(1.5)
 
 
+def test_load_config_collection_lookahead_shuffle_test_override(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    validation:
+      data_quality:
+        on_fail: skip_collection
+        lookahead_shuffle_test:
+          permutations: 9
+          threshold: 0.25
+          seed: 7
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.data_quality is not None
+    lookahead = cfg.collections[0].validation.data_quality.lookahead_shuffle_test
+    assert lookahead is not None
+    assert lookahead.permutations == 9
+    assert lookahead.threshold == pytest.approx(0.25)
+    assert lookahead.seed == 7
+
+
 def test_load_config_data_quality_stationarity_invalid_values(tmp_path: Path):
     config_text = """
 collections:
@@ -969,6 +1026,27 @@ validation:
     path.write_text(config_text)
 
     with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_lookahead_shuffle_test_invalid_permutations(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    lookahead_shuffle_test:
+      permutations: 4
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"validation\.data_quality\.lookahead_shuffle_test\.permutations"):
         load_config(path)
 
 

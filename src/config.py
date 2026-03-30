@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -57,6 +58,7 @@ class ValidationDataQualityConfig:
     kurtosis: float | None = None
     outlier_detection: "ValidationOutlierDetectionConfig | None" = None
     stationarity: "ValidationStationarityConfig | None" = None
+    lookahead_shuffle_test: "ValidationLookaheadShuffleTestConfig | None" = None
     is_verified: bool | None = None
     on_fail: str | None = None
 
@@ -88,6 +90,13 @@ class ValidationStationarityConfig:
     kpss_pvalue_min: float | None = None
     min_points: int | None = None
     regime_shift: ValidationStationarityRegimeShiftConfig | None = None
+
+
+@dataclass
+class ValidationLookaheadShuffleTestConfig:
+    permutations: int = 20
+    threshold: float = 0.0
+    seed: int = 1337
 
 
 @dataclass
@@ -147,6 +156,9 @@ class Config:
 
 DEFAULT_CALENDAR_KIND = "auto"
 STATIONARITY_DEFAULT_MIN_POINTS = 30
+LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS = 20
+LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD = 0.0
+LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED = 1337
 
 
 def _merge_replace(base: Any, override: Any) -> Any:
@@ -186,6 +198,10 @@ def _merge_data_quality_config(
         getattr(base, "stationarity", None),
         getattr(override, "stationarity", None),
     )
+    lookahead_shuffle_test = _merge_lookahead_shuffle_test_config(
+        getattr(base, "lookahead_shuffle_test", None),
+        getattr(override, "lookahead_shuffle_test", None),
+    )
     is_verified = _merge_replace(
         getattr(base, "is_verified", None),
         getattr(override, "is_verified", None),
@@ -200,6 +216,7 @@ def _merge_data_quality_config(
         kurtosis=kurtosis,
         outlier_detection=outlier_detection,
         stationarity=stationarity,
+        lookahead_shuffle_test=lookahead_shuffle_test,
         is_verified=is_verified,
         on_fail=str(on_fail).strip().lower(),
     )
@@ -479,6 +496,55 @@ def _merge_stationarity_config(
     )
 
 
+def _normalize_lookahead_shuffle_test_config(
+    cfg: ValidationLookaheadShuffleTestConfig | None,
+    prefix: str,
+) -> ValidationLookaheadShuffleTestConfig | None:
+    if cfg is None:
+        return None
+    permutations = int(getattr(cfg, "permutations", LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS))
+    if permutations < 5:
+        raise ValueError(f"`{prefix}.permutations` must be >= 5")
+    threshold = float(getattr(cfg, "threshold", LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD))
+    if not math.isfinite(threshold):
+        raise ValueError(f"`{prefix}.threshold` must be finite")
+    seed = int(getattr(cfg, "seed", LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED))
+    if seed < 0:
+        raise ValueError(f"`{prefix}.seed` must be >= 0")
+    return ValidationLookaheadShuffleTestConfig(
+        permutations=permutations,
+        threshold=threshold,
+        seed=seed,
+    )
+
+
+def _merge_lookahead_shuffle_test_config(
+    base: ValidationLookaheadShuffleTestConfig | None,
+    override: ValidationLookaheadShuffleTestConfig | None,
+) -> ValidationLookaheadShuffleTestConfig | None:
+    if base is None and override is None:
+        return None
+    permutations = _merged_field(base, override, "permutations")
+    threshold = _merged_field(base, override, "threshold")
+    seed = _merged_field(base, override, "seed")
+    return _normalize_lookahead_shuffle_test_config(
+        ValidationLookaheadShuffleTestConfig(
+            permutations=(
+                int(permutations)
+                if permutations is not None
+                else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS
+            ),
+            threshold=(
+                float(threshold)
+                if threshold is not None
+                else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD
+            ),
+            seed=int(seed) if seed is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED,
+        ),
+        "validation.data_quality.lookahead_shuffle_test",
+    )
+
+
 def resolve_validation_overrides(cfg: Config) -> None:
     """Resolve effective collection-level validation policies.
 
@@ -705,6 +771,10 @@ def _parse_validation_data_quality(
     stationarity_cfg = _parse_stationarity(
         parsed_raw.get("stationarity"), f"{prefix}.stationarity"
     )
+    lookahead_shuffle_test_cfg = _parse_lookahead_shuffle_test(
+        parsed_raw.get("lookahead_shuffle_test"),
+        f"{prefix}.lookahead_shuffle_test",
+    )
     is_verified = parse_optional_bool(parsed_raw, prefix, "is_verified")
 
     cfg = ValidationDataQualityConfig(
@@ -713,6 +783,7 @@ def _parse_validation_data_quality(
         kurtosis=kurtosis_cfg,
         outlier_detection=outlier_detection_cfg,
         stationarity=stationarity_cfg,
+        lookahead_shuffle_test=lookahead_shuffle_test_cfg,
         is_verified=is_verified,
         on_fail=on_fail,
     )
@@ -808,6 +879,30 @@ def _parse_stationarity(
             kpss_pvalue_min=float(kpss_pvalue_min) if kpss_pvalue_min is not None else None,
             min_points=int(min_points) if min_points is not None else None,
             regime_shift=regime_shift,
+        ),
+        prefix,
+    )
+
+
+def _parse_lookahead_shuffle_test(
+    raw: Any,
+    prefix: str,
+) -> ValidationLookaheadShuffleTestConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    permutations = parse_optional_int(parsed_raw, prefix, "permutations", min_value=5)
+    threshold = parse_optional_float(parsed_raw, prefix, "threshold")
+    if threshold is not None and not math.isfinite(threshold):
+        raise ValueError(f"`{prefix}.threshold` must be finite")
+    seed = parse_optional_int(parsed_raw, prefix, "seed", min_value=0)
+    return _normalize_lookahead_shuffle_test_config(
+        ValidationLookaheadShuffleTestConfig(
+            permutations=(
+                permutations if permutations is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS
+            ),
+            threshold=threshold if threshold is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD,
+            seed=seed if seed is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED,
         ),
         prefix,
     )
@@ -1073,4 +1168,10 @@ def load_config(path: str | Path) -> Config:
         validation=validation_cfg,
     )
     resolve_validation_overrides(cfg)
+    if (
+        cfg.validation is not None
+        and cfg.validation.optimization is not None
+        and cfg.validation.optimization.runtime_error_max_per_tuple is None
+    ):
+        cfg.validation.optimization.runtime_error_max_per_tuple = 1
     return cfg
