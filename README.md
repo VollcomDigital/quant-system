@@ -204,6 +204,8 @@ See new collection examples under `config/collections/` for FX intraday via Finn
 - `validation.data_quality` controls job-level data gates (for collection/symbol/timeframe):
   - `on_fail` is required: `skip_job | skip_collection | skip_optimization`
   - `min_data_points` is optional: minimum number of bars required
+  - `is_verified` is optional: set `false` to mark a collection as manually unverified and
+    emit `collection_not_verified`
   - `continuity` is optional:
     - `min_score` minimum continuity score (0..1)
     - `max_missing_bar_pct` maximum missing bars percentage across expected bars
@@ -218,6 +220,17 @@ See new collection examples under `config/collections/` for FX intraday via Finn
     - `max_outlier_pct` (required): maximum percentage of return bars classified as outliers
     - `method` (required): `zscore | modified_zscore`
     - `zscore_threshold` (required): threshold used by the selected method
+  - `stationarity` (optional module; active when configured):
+    - `adf_pvalue_max` (required): maximum ADF p-value allowed for the close-return series
+    - `kpss_pvalue_min` (optional): minimum KPSS p-value allowed for the close-return series
+    - `min_points` (optional, default `30`): minimum return points required before the test runs
+    - `regime_shift` (optional):
+      - `window` (required): rolling window size used to compare adjacent return regimes
+      - `mean_shift_max` (required): maximum normalized mean shift allowed
+      - `vol_ratio_max` (required): maximum adjacent-window volatility ratio allowed
+    - fixed-action: reject when ADF/KPSS/regime-shift thresholds are exceeded; too few points
+      are treated as an explicit indeterminate reliability reason. If ADF and KPSS disagree,
+      a stationarity conflict reason is emitted.
   - continuity diagnostics are always computed.
   - when `validation.data_quality` is configured, continuity precondition failures
     (for example fewer than 2 bars) fail data validation (`skip_job`).
@@ -228,6 +241,8 @@ See new collection examples under `config/collections/` for FX intraday via Finn
   - `on_fail: baseline_only | skip_job`
   - `min_bars`: minimum bars required for optimization
   - `dof_multiplier`: multiplies parameter dimensions for the DoF guard
+  - `runtime_error_max_per_tuple` (optional, default `1`): maximum
+    `generate_signals` runtime errors allowed per `(strategy, symbol, timeframe)` in one run
   - `baseline_only` runs a single baseline evaluation without parameter search.
   - collection-level overrides are supported via `collections[].validation.optimization`
     and are resolved against global `validation.optimization` during config loading.
@@ -243,13 +258,54 @@ See new collection examples under `config/collections/` for FX intraday via Finn
     - fixed-action: reject result when analyzed fill prices fall outside bar `[low, high]`
       after applying tolerance.
     - missing/truncated fill metadata is non-blocking (`continue`); diagnostics are marked incomplete.
+  - `lookahead_shuffle_test` (optional module; active when configured):
+    - `permutations` (optional, default `20`): number of deterministic OHLCV bar shuffles to evaluate
+    - `threshold` (optional, default `0.0`): median shuffled metric above this value is suspicious
+    - `seed` (optional, default `1337`): base seed combined with collection/symbol/timeframe/strategy
+    - `max_failed_permutations` (optional, default unset): max allowed failed permutation
+      evaluations before the module returns an indeterminate rejection
+    - the runner permutes whole bars and reruns the selected strategy result after backtest
+      evaluation to detect look-ahead style behavior when the median shuffled metric remains above
+      the threshold
   - action is fixed to `reject_result` (no `on_fail` override).
 
 Structured logs reflect this directly via gate actions:
 - `data_validation_gate` can emit `skip_optimization` (job-level optimization disable).
 - `strategy_optimization_gate` can emit `baseline_only` (strategy-level baseline fallback) or `skip_job`.
-- `strategy_validation_gate` can emit `reject_result` for outlier dependency
-  and execution price variance.
+- `strategy_validation_gate` can emit `reject_result` for outlier dependency,
+  execution price variance, and lookahead shuffle testing.
+
+### Optimization Only on Reliable Collections
+
+Use `validation.data_quality` to decide whether unreliable collections should only skip
+optimization or block execution entirely:
+
+- `on_fail: skip_optimization` keeps the job running, disables parameter search for that
+  collection/symbol/timeframe, and falls back to baseline evaluation where the strategy supports it.
+- `on_fail: skip_job` blocks the current collection/symbol/timeframe job.
+- `on_fail: skip_collection` blocks the rest of the jobs in that collection after the first failure.
+
+Configured data-quality reliability reasons can include:
+
+- `collection_not_verified` when `validation.data_quality.is_verified: false`
+- `max_missing_bar_pct_exceeded(...)` when `continuity.max_missing_bar_pct` is breached
+- `max_kurtosis_exceeded(...)` when `kurtosis` is breached
+- stationarity or outlier reasons when those modules are configured
+
+The sample-size / degrees-of-freedom guard is config-driven and remains under
+`validation.optimization`, not `validation.data_quality`:
+
+- `min_bars` is an absolute optimization floor
+- `dof_multiplier` multiplies the number of tunable parameter dimensions
+- optimization is skipped when available bars are below `max(min_bars, dof_multiplier * n_params)`
+
+This keeps thresholds explicit in config and lets `on_fail` decide whether the outcome is
+optimization-only fallback or a full block.
+
+Runtime signal errors are tuple-scoped and run-scoped:
+- each `generate_signals` exception increments a counter for `(strategy, symbol, timeframe)`
+- once `runtime_error_max_per_tuple` is reached, remaining parameter evaluations for that tuple are skipped
+- other tuples (different symbol/timeframe or strategy) continue normally
 
 For implementation details (continuity decision flow, weekday filtering scope, and
 vectorized gap counting), see `DEVELOPMENT.md`.

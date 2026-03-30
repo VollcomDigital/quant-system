@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
-import re
 from typing import Any, cast
 
 import yaml
@@ -56,7 +57,10 @@ class ValidationDataQualityConfig:
     continuity: "ValidationContinuityConfig | None" = None
     kurtosis: float | None = None
     outlier_detection: "ValidationOutlierDetectionConfig | None" = None
+    stationarity: "ValidationStationarityConfig | None" = None
+    is_verified: bool | None = None
     on_fail: str | None = None
+
 
 @dataclass
 class ValidationContinuityConfig:
@@ -73,6 +77,29 @@ class ValidationOutlierDetectionConfig:
 
 
 @dataclass
+class ValidationStationarityRegimeShiftConfig:
+    window: int
+    mean_shift_max: float
+    vol_ratio_max: float
+
+
+@dataclass
+class ValidationStationarityConfig:
+    adf_pvalue_max: float
+    kpss_pvalue_min: float | None = None
+    min_points: int | None = None
+    regime_shift: ValidationStationarityRegimeShiftConfig | None = None
+
+
+@dataclass
+class ValidationLookaheadShuffleTestConfig:
+    permutations: int = 20
+    threshold: float = 0.0
+    seed: int = 1337
+    max_failed_permutations: int | None = None
+
+
+@dataclass
 class ValidationConfig:
     data_quality: ValidationDataQualityConfig | None = None
     optimization: "OptimizationPolicyConfig | None" = None
@@ -84,6 +111,7 @@ class OptimizationPolicyConfig:
     on_fail: str
     min_bars: int
     dof_multiplier: int
+    runtime_error_max_per_tuple: int | None = None
 
 
 @dataclass
@@ -102,6 +130,7 @@ class ResultConsistencyExecutionPriceVarianceConfig:
 class ResultConsistencyConfig:
     outlier_dependency: ResultConsistencyOutlierDependencyConfig | None = None
     execution_price_variance: ResultConsistencyExecutionPriceVarianceConfig | None = None
+    lookahead_shuffle_test: ValidationLookaheadShuffleTestConfig | None = None
 
 
 @dataclass
@@ -127,6 +156,10 @@ class Config:
 
 
 DEFAULT_CALENDAR_KIND = "auto"
+STATIONARITY_DEFAULT_MIN_POINTS = 30
+LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS = 20
+LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD = 0.0
+LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED = 1337
 
 
 def _merge_replace(base: Any, override: Any) -> Any:
@@ -162,6 +195,14 @@ def _merge_data_quality_config(
         getattr(base, "outlier_detection", None),
         getattr(override, "outlier_detection", None),
     )
+    stationarity = _merge_stationarity_config(
+        getattr(base, "stationarity", None),
+        getattr(override, "stationarity", None),
+    )
+    is_verified = _merge_replace(
+        getattr(base, "is_verified", None),
+        getattr(override, "is_verified", None),
+    )
 
     on_fail = _merged_field(base, override, "on_fail")
     if on_fail is None:
@@ -171,6 +212,8 @@ def _merge_data_quality_config(
         continuity=continuity,
         kurtosis=kurtosis,
         outlier_detection=outlier_detection,
+        stationarity=stationarity,
+        is_verified=is_verified,
         on_fail=str(on_fail).strip().lower(),
     )
 
@@ -190,10 +233,14 @@ def _merge_optimization_config(
     dof_multiplier = _merged_field(base, override, "dof_multiplier")
     if dof_multiplier is None:
         raise ValueError("Invalid `validation.optimization`: missing required field(s): dof_multiplier")
+    runtime_error_max_per_tuple = _merged_field(base, override, "runtime_error_max_per_tuple")
+    if runtime_error_max_per_tuple is None:
+        runtime_error_max_per_tuple = 1
     return OptimizationPolicyConfig(
         on_fail=str(on_fail).strip().lower(),
         min_bars=int(min_bars),
         dof_multiplier=int(dof_multiplier),
+        runtime_error_max_per_tuple=int(runtime_error_max_per_tuple),
     )
 
 
@@ -211,11 +258,16 @@ def _merge_result_consistency_config(
         getattr(base, "execution_price_variance", None),
         getattr(override, "execution_price_variance", None),
     )
-    if outlier_dependency is None and execution_price_variance is None:
+    lookahead_shuffle_test = _merge_lookahead_shuffle_test_config(
+        getattr(base, "lookahead_shuffle_test", None),
+        getattr(override, "lookahead_shuffle_test", None),
+    )
+    if outlier_dependency is None and execution_price_variance is None and lookahead_shuffle_test is None:
         return None
     return ResultConsistencyConfig(
         outlier_dependency=outlier_dependency,
         execution_price_variance=execution_price_variance,
+        lookahead_shuffle_test=lookahead_shuffle_test,
     )
 
 
@@ -312,6 +364,203 @@ def _merge_outlier_detection_config(
             "zscore_threshold": _merged_field(base, override, "zscore_threshold"),
         },
         "validation.data_quality.outlier_detection",
+    )
+
+
+def _normalize_stationarity_regime_shift_config(
+    cfg: ValidationStationarityRegimeShiftConfig | None,
+    prefix: str,
+) -> ValidationStationarityRegimeShiftConfig | None:
+    if cfg is None:
+        return None
+    window = getattr(cfg, "window", None)
+    if window is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): window")
+    window = int(window)
+    if window < 10:
+        raise ValueError(f"`{prefix}.window` must be >= 10")
+    mean_shift_max = getattr(cfg, "mean_shift_max", None)
+    if mean_shift_max is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): mean_shift_max")
+    mean_shift_max = float(mean_shift_max)
+    if mean_shift_max < 0.0:
+        raise ValueError(f"`{prefix}.mean_shift_max` must be >= 0.0")
+    vol_ratio_max = getattr(cfg, "vol_ratio_max", None)
+    if vol_ratio_max is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): vol_ratio_max")
+    vol_ratio_max = float(vol_ratio_max)
+    if vol_ratio_max < 1.0:
+        raise ValueError(f"`{prefix}.vol_ratio_max` must be >= 1.0")
+    return ValidationStationarityRegimeShiftConfig(
+        window=window,
+        mean_shift_max=mean_shift_max,
+        vol_ratio_max=vol_ratio_max,
+    )
+
+
+def _normalize_stationarity_config(
+    cfg: ValidationStationarityConfig | None,
+    prefix: str,
+    *,
+    default_min_points: int | None = None,
+) -> ValidationStationarityConfig | None:
+    if cfg is None:
+        return None
+    adf_pvalue_max = getattr(cfg, "adf_pvalue_max", None)
+    if adf_pvalue_max is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): adf_pvalue_max")
+    adf_pvalue_max = float(adf_pvalue_max)
+    if adf_pvalue_max < 0.0 or adf_pvalue_max > 1.0:
+        raise ValueError(f"`{prefix}.adf_pvalue_max` must be between 0.0 and 1.0")
+    kpss_pvalue_min = getattr(cfg, "kpss_pvalue_min", None)
+    if kpss_pvalue_min is not None:
+        kpss_pvalue_min = float(kpss_pvalue_min)
+        if kpss_pvalue_min < 0.0 or kpss_pvalue_min > 1.0:
+            raise ValueError(f"`{prefix}.kpss_pvalue_min` must be between 0.0 and 1.0")
+    min_points = getattr(cfg, "min_points", None)
+    normalized_min_points = default_min_points if min_points is None else int(min_points)
+    if normalized_min_points is not None and normalized_min_points < 20:
+        raise ValueError(f"`{prefix}.min_points` must be >= 20")
+    regime_shift = _normalize_stationarity_regime_shift_config(
+        getattr(cfg, "regime_shift", None),
+        f"{prefix}.regime_shift",
+    )
+    return ValidationStationarityConfig(
+        adf_pvalue_max=adf_pvalue_max,
+        kpss_pvalue_min=kpss_pvalue_min,
+        min_points=normalized_min_points,
+        regime_shift=regime_shift,
+    )
+
+
+def _merge_stationarity_regime_shift_config(
+    base: ValidationStationarityRegimeShiftConfig | None,
+    override: ValidationStationarityRegimeShiftConfig | None,
+) -> ValidationStationarityRegimeShiftConfig | None:
+    if base is None and override is None:
+        return None
+    window = _merged_field(base, override, "window")
+    mean_shift_max = _merged_field(base, override, "mean_shift_max")
+    vol_ratio_max = _merged_field(base, override, "vol_ratio_max")
+    if window is None:
+        raise ValueError(
+            "Invalid `validation.data_quality.stationarity.regime_shift`: "
+            "missing required field(s): window"
+        )
+    if mean_shift_max is None:
+        raise ValueError(
+            "Invalid `validation.data_quality.stationarity.regime_shift`: "
+            "missing required field(s): mean_shift_max"
+        )
+    if vol_ratio_max is None:
+        raise ValueError(
+            "Invalid `validation.data_quality.stationarity.regime_shift`: "
+            "missing required field(s): vol_ratio_max"
+        )
+    return _normalize_stationarity_regime_shift_config(
+        ValidationStationarityRegimeShiftConfig(
+            window=int(window),
+            mean_shift_max=float(mean_shift_max),
+            vol_ratio_max=float(vol_ratio_max),
+        ),
+        "validation.data_quality.stationarity.regime_shift",
+    )
+
+
+def _merge_stationarity_config(
+    base: ValidationStationarityConfig | None,
+    override: ValidationStationarityConfig | None,
+) -> ValidationStationarityConfig | None:
+    if base is None and override is None:
+        return None
+    adf_pvalue_max = _merged_field(base, override, "adf_pvalue_max")
+    if adf_pvalue_max is None:
+        raise ValueError(
+            "Invalid `validation.data_quality.stationarity`: "
+            "missing required field(s): adf_pvalue_max"
+        )
+    kpss_pvalue_min = _merged_field(base, override, "kpss_pvalue_min")
+    min_points = _merged_field(base, override, "min_points")
+    regime_shift = _merge_stationarity_regime_shift_config(
+        getattr(base, "regime_shift", None),
+        getattr(override, "regime_shift", None),
+    )
+    return _normalize_stationarity_config(
+        ValidationStationarityConfig(
+            adf_pvalue_max=float(adf_pvalue_max),
+            kpss_pvalue_min=float(kpss_pvalue_min) if kpss_pvalue_min is not None else None,
+            min_points=int(min_points) if min_points is not None else None,
+            regime_shift=regime_shift,
+        ),
+        "validation.data_quality.stationarity",
+        default_min_points=STATIONARITY_DEFAULT_MIN_POINTS,
+    )
+
+
+def _normalize_lookahead_shuffle_test_config(
+    cfg: ValidationLookaheadShuffleTestConfig | None,
+    prefix: str,
+    *,
+    default_permutations: int | None = None,
+    default_threshold: float | None = None,
+    default_seed: int | None = None,
+) -> ValidationLookaheadShuffleTestConfig | None:
+    if cfg is None:
+        return None
+    permutations_raw = getattr(cfg, "permutations", None)
+    permutations = default_permutations if permutations_raw is None else int(permutations_raw)
+    if permutations is not None and permutations < 5:
+        raise ValueError(f"`{prefix}.permutations` must be >= 5")
+    threshold_raw = getattr(cfg, "threshold", None)
+    threshold = default_threshold if threshold_raw is None else float(threshold_raw)
+    if threshold is not None and not math.isfinite(threshold):
+        raise ValueError(f"`{prefix}.threshold` must be finite")
+    seed_raw = getattr(cfg, "seed", None)
+    seed = default_seed if seed_raw is None else int(seed_raw)
+    if seed is not None and seed < 0:
+        raise ValueError(f"`{prefix}.seed` must be >= 0")
+    max_failed_permutations_raw = getattr(cfg, "max_failed_permutations", None)
+    max_failed_permutations = (
+        int(max_failed_permutations_raw) if max_failed_permutations_raw is not None else None
+    )
+    if max_failed_permutations is not None:
+        if max_failed_permutations < 0:
+            raise ValueError(f"`{prefix}.max_failed_permutations` must be >= 0")
+        if permutations is not None and max_failed_permutations > permutations:
+            raise ValueError(
+                f"`{prefix}.max_failed_permutations` must be <= `{prefix}.permutations`"
+            )
+    return ValidationLookaheadShuffleTestConfig(
+        permutations=permutations,
+        threshold=threshold,
+        seed=seed,
+        max_failed_permutations=max_failed_permutations,
+    )
+
+
+def _merge_lookahead_shuffle_test_config(
+    base: ValidationLookaheadShuffleTestConfig | None,
+    override: ValidationLookaheadShuffleTestConfig | None,
+) -> ValidationLookaheadShuffleTestConfig | None:
+    if base is None and override is None:
+        return None
+    permutations = _merged_field(base, override, "permutations")
+    threshold = _merged_field(base, override, "threshold")
+    seed = _merged_field(base, override, "seed")
+    max_failed_permutations = _merged_field(base, override, "max_failed_permutations")
+    return _normalize_lookahead_shuffle_test_config(
+        ValidationLookaheadShuffleTestConfig(
+            permutations=int(permutations) if permutations is not None else None,
+            threshold=float(threshold) if threshold is not None else None,
+            seed=int(seed) if seed is not None else None,
+            max_failed_permutations=(
+                int(max_failed_permutations) if max_failed_permutations is not None else None
+            ),
+        ),
+        "validation.result_consistency.lookahead_shuffle_test",
+        default_permutations=LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS,
+        default_threshold=LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD,
+        default_seed=LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED,
     )
 
 
@@ -456,6 +705,23 @@ def parse_optional_str(
     return parsed.lower() if normalize else parsed
 
 
+def parse_optional_bool(
+    raw: dict[str, Any],
+    prefix: str,
+    key: str,
+) -> bool | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "false"}:
+            return normalized == "true"
+    raise ValueError(f"Invalid `{prefix}.{key}`: expected a boolean")
+
+
 def _parse_on_fail(
     raw_value: Any,
     field_path: str,
@@ -521,12 +787,18 @@ def _parse_validation_data_quality(
     outlier_detection_cfg = _parse_outlier_detection(
         parsed_raw.get("outlier_detection"), f"{prefix}.outlier_detection"
     )
+    stationarity_cfg = _parse_stationarity(
+        parsed_raw.get("stationarity"), f"{prefix}.stationarity"
+    )
+    is_verified = parse_optional_bool(parsed_raw, prefix, "is_verified")
 
     cfg = ValidationDataQualityConfig(
         min_data_points=min_data_points_cfg,
         continuity=continuity_cfg,
         kurtosis=kurtosis_cfg,
         outlier_detection=outlier_detection_cfg,
+        stationarity=stationarity_cfg,
+        is_verified=is_verified,
         on_fail=on_fail,
     )
     return cfg
@@ -572,6 +844,83 @@ def _parse_outlier_detection(
         max_outlier_pct=max_outlier_pct,
         method=method,
         zscore_threshold=zscore_threshold,
+    )
+
+
+def _parse_stationarity_regime_shift(
+    raw: Any, prefix: str
+) -> ValidationStationarityRegimeShiftConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    window = parse_required_int(parsed_raw, prefix, "window", min_value=10)
+    mean_shift_max = parse_required_float(parsed_raw, prefix, "mean_shift_max", min_value=0.0)
+    vol_ratio_max = parse_required_float(parsed_raw, prefix, "vol_ratio_max", min_value=1.0)
+    return _normalize_stationarity_regime_shift_config(
+        ValidationStationarityRegimeShiftConfig(
+            window=window,
+            mean_shift_max=float(mean_shift_max),
+            vol_ratio_max=float(vol_ratio_max),
+        ),
+        prefix,
+    )
+
+
+def _parse_stationarity(
+    raw: Any, prefix: str
+) -> ValidationStationarityConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    adf_pvalue_max = parse_required_float(
+        parsed_raw, prefix, "adf_pvalue_max", min_value=0.0, max_value=1.0
+    )
+    kpss_pvalue_min = parse_optional_float(
+        parsed_raw, prefix, "kpss_pvalue_min", min_value=0.0, max_value=1.0
+    )
+    min_points = parse_optional_int(parsed_raw, prefix, "min_points", min_value=20)
+    regime_shift_raw = parsed_raw.get("regime_shift")
+    if regime_shift_raw is not None and not isinstance(regime_shift_raw, dict):
+        raise ValueError(f"Invalid `{prefix}.regime_shift`: expected a mapping")
+    regime_shift = None
+    if regime_shift_raw is not None:
+        regime_shift = _parse_stationarity_regime_shift(
+            regime_shift_raw, f"{prefix}.regime_shift"
+        )
+    return _normalize_stationarity_config(
+        ValidationStationarityConfig(
+            adf_pvalue_max=float(adf_pvalue_max),
+            kpss_pvalue_min=float(kpss_pvalue_min) if kpss_pvalue_min is not None else None,
+            min_points=int(min_points) if min_points is not None else None,
+            regime_shift=regime_shift,
+        ),
+        prefix,
+    )
+
+
+def _parse_lookahead_shuffle_test(
+    raw: Any,
+    prefix: str,
+) -> ValidationLookaheadShuffleTestConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    permutations = parse_optional_int(parsed_raw, prefix, "permutations", min_value=5)
+    threshold = parse_optional_float(parsed_raw, prefix, "threshold")
+    if threshold is not None and not math.isfinite(threshold):
+        raise ValueError(f"`{prefix}.threshold` must be finite")
+    seed = parse_optional_int(parsed_raw, prefix, "seed", min_value=0)
+    max_failed_permutations = parse_optional_int(
+        parsed_raw, prefix, "max_failed_permutations", min_value=0
+    )
+    return _normalize_lookahead_shuffle_test_config(
+        ValidationLookaheadShuffleTestConfig(
+            permutations=permutations,
+            threshold=threshold,
+            seed=seed,
+            max_failed_permutations=max_failed_permutations,
+        ),
+        prefix,
     )
 
 
@@ -623,7 +972,6 @@ def _parse_validation(raw: Any, prefix: str) -> ValidationConfig | None:
         if isinstance(result_consistency_raw, dict)
         else None
     )
-
     if data_quality_cfg is None and optimization_cfg is None and result_consistency_cfg is None:
         # Keep validation fully optional; no synthetic policy object when both modules are absent.
         return None
@@ -646,11 +994,15 @@ def _parse_optimization_policy(raw: Any, prefix: str) -> OptimizationPolicyConfi
 
     min_bars = parse_required_int(parsed_raw, prefix, "min_bars", min_value=0)
     dof_multiplier = parse_required_int(parsed_raw, prefix, "dof_multiplier", min_value=0)
+    runtime_error_max_per_tuple = parse_optional_int(
+        parsed_raw, prefix, "runtime_error_max_per_tuple", min_value=1
+    )
 
     return OptimizationPolicyConfig(
         on_fail=on_fail,
         min_bars=min_bars,
         dof_multiplier=dof_multiplier,
+        runtime_error_max_per_tuple=runtime_error_max_per_tuple,
     )
 
 
@@ -682,16 +1034,28 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
         if isinstance(execution_price_variance_raw, dict)
         else None
     )
+    lookahead_shuffle_test_raw = parsed_raw.get("lookahead_shuffle_test")
+    if lookahead_shuffle_test_raw is not None and not isinstance(lookahead_shuffle_test_raw, dict):
+        raise ValueError(f"Invalid `{prefix}.lookahead_shuffle_test`: expected a mapping")
+    lookahead_shuffle_test = (
+        _parse_lookahead_shuffle_test(
+            lookahead_shuffle_test_raw,
+            f"{prefix}.lookahead_shuffle_test",
+        )
+        if isinstance(lookahead_shuffle_test_raw, dict)
+        else None
+    )
 
-    if outlier_dependency is None and execution_price_variance is None:
+    if outlier_dependency is None and execution_price_variance is None and lookahead_shuffle_test is None:
         raise ValueError(
             f"Invalid `{prefix}`: expected at least one configured module "
-            "(`outlier_dependency` or `execution_price_variance`)"
+            "(`outlier_dependency`, `execution_price_variance`, or `lookahead_shuffle_test`)"
         )
 
     return ResultConsistencyConfig(
         outlier_dependency=outlier_dependency,
         execution_price_variance=execution_price_variance,
+        lookahead_shuffle_test=lookahead_shuffle_test,
     )
 
 

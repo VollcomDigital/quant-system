@@ -4,7 +4,19 @@ from pathlib import Path
 
 import pytest
 
-from src.config import ValidationOutlierDetectionConfig, load_config, resolve_validation_overrides
+from src.config import (
+    CollectionConfig,
+    Config,
+    ResultConsistencyConfig,
+    ValidationConfig,
+    ValidationDataQualityConfig,
+    ValidationLookaheadShuffleTestConfig,
+    ValidationOutlierDetectionConfig,
+    ValidationStationarityConfig,
+    ValidationStationarityRegimeShiftConfig,
+    load_config,
+    resolve_validation_overrides,
+)
 
 
 def test_load_config_allows_missing_strategies(tmp_path: Path):
@@ -85,6 +97,71 @@ validation:
     assert cfg.validation.data_quality.on_fail == "skip_job"
 
 
+def test_load_config_reliability_thresholds_accepts_is_verified(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    is_verified: false
+    on_fail: skip_job
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.is_verified is False
+
+
+def test_load_config_lookahead_shuffle_test_defaults(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    lookahead_shuffle_test: {}
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.result_consistency is not None
+    assert cfg.validation.result_consistency.lookahead_shuffle_test is not None
+    # Global parse preserves explicit user input shape; defaults are resolved on
+    # effective collection-level policy during override resolution.
+    assert cfg.validation.result_consistency.lookahead_shuffle_test.permutations is None
+    assert cfg.validation.result_consistency.lookahead_shuffle_test.threshold is None
+    assert cfg.validation.result_consistency.lookahead_shuffle_test.seed is None
+    assert cfg.validation.result_consistency.lookahead_shuffle_test.max_failed_permutations is None
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.result_consistency is not None
+    assert cfg.collections[0].validation.result_consistency.lookahead_shuffle_test is not None
+    assert (
+        cfg.collections[0].validation.result_consistency.lookahead_shuffle_test.permutations == 20
+    )
+    assert cfg.collections[
+        0
+    ].validation.result_consistency.lookahead_shuffle_test.threshold == pytest.approx(0.0)
+    assert cfg.collections[0].validation.result_consistency.lookahead_shuffle_test.seed == 1337
+    assert (
+        cfg.collections[
+            0
+        ].validation.result_consistency.lookahead_shuffle_test.max_failed_permutations
+        is None
+    )
+
+
 def test_load_config_collection_reliability_thresholds_override(tmp_path: Path):
     config_text = """
 collections:
@@ -119,6 +196,65 @@ validation:
     assert col.validation.data_quality.continuity is not None
     assert col.validation.data_quality.continuity.min_score == pytest.approx(0.95)
     assert col.validation.data_quality.on_fail == "skip_optimization"
+
+
+def test_load_config_collection_reliability_thresholds_override_is_verified(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    validation:
+      data_quality:
+        is_verified: true
+        on_fail: skip_optimization
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    is_verified: false
+    on_fail: skip_job
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.is_verified is False
+    col = cfg.collections[0]
+    assert col.validation is not None
+    assert col.validation.data_quality is not None
+    assert col.validation.data_quality.is_verified is True
+    assert col.validation.data_quality.on_fail == "skip_optimization"
+
+
+def test_load_config_lookahead_shuffle_test_legacy_data_quality_location_is_ignored(
+    tmp_path: Path,
+):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    lookahead_shuffle_test:
+      permutations: 7
+      threshold: 0.25
+      seed: 11
+    on_fail: skip_job
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.on_fail == "skip_job"
+    assert cfg.validation.result_consistency is None
 
 
 @pytest.mark.parametrize(
@@ -239,6 +375,34 @@ validation:
     assert cfg.validation.optimization.on_fail == "skip_job"
     assert cfg.validation.optimization.min_bars == 123
     assert cfg.validation.optimization.dof_multiplier == 7
+    assert cfg.validation.optimization.runtime_error_max_per_tuple is None
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.optimization is not None
+    assert cfg.collections[0].validation.optimization.runtime_error_max_per_tuple == 1
+
+
+def test_load_config_optimization_policy_accepts_runtime_error_threshold(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  optimization:
+    on_fail: skip_job
+    min_bars: 123
+    dof_multiplier: 7
+    runtime_error_max_per_tuple: 4
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.optimization is not None
+    assert cfg.validation.optimization.runtime_error_max_per_tuple == 4
 
 
 def test_load_config_optimization_policy_invalid_on_fail(tmp_path: Path):
@@ -257,6 +421,28 @@ validation:
     path.write_text(config_text)
 
     with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_optimization_policy_invalid_runtime_error_threshold(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  optimization:
+    on_fail: skip_job
+    min_bars: 123
+    dof_multiplier: 7
+    runtime_error_max_per_tuple: 0
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"validation\.optimization\.runtime_error_max_per_tuple"):
         load_config(path)
 
 
@@ -296,6 +482,7 @@ validation:
     on_fail: baseline_only
     min_bars: 321
     dof_multiplier: 11
+    runtime_error_max_per_tuple: 2
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -307,9 +494,47 @@ validation:
         assert col.validation.optimization.on_fail == "baseline_only"
         assert col.validation.optimization.min_bars == 321
         assert col.validation.optimization.dof_multiplier == 11
+        assert col.validation.optimization.runtime_error_max_per_tuple == 2
 
 
 def test_load_config_optimization_policy_collection_override_merges_with_global(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    validation:
+      optimization:
+        on_fail: baseline_only
+        min_bars: 200
+        dof_multiplier: 9
+        runtime_error_max_per_tuple: 3
+timeframes: ['1d']
+metric: sharpe
+validation:
+  optimization:
+    on_fail: skip_job
+    min_bars: 123
+    dof_multiplier: 7
+    runtime_error_max_per_tuple: 2
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    col = cfg.collections[0]
+    assert col.validation is not None
+    assert col.validation.optimization is not None
+    # Collection-level optimization policy takes precedence over global values.
+    assert col.validation.optimization.on_fail == "baseline_only"
+    assert col.validation.optimization.min_bars == 200
+    assert col.validation.optimization.dof_multiplier == 9
+    assert col.validation.optimization.runtime_error_max_per_tuple == 3
+
+
+def test_load_config_optimization_policy_collection_override_inherits_runtime_error_threshold(
+    tmp_path: Path,
+):
     config_text = """
 collections:
   - name: test
@@ -327,6 +552,7 @@ validation:
     on_fail: skip_job
     min_bars: 123
     dof_multiplier: 7
+    runtime_error_max_per_tuple: 2
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -335,10 +561,10 @@ validation:
     col = cfg.collections[0]
     assert col.validation is not None
     assert col.validation.optimization is not None
-    # Collection-level optimization policy takes precedence over global values.
     assert col.validation.optimization.on_fail == "baseline_only"
     assert col.validation.optimization.min_bars == 200
     assert col.validation.optimization.dof_multiplier == 9
+    assert col.validation.optimization.runtime_error_max_per_tuple == 2
 
 
 def test_load_config_result_consistency_policy(tmp_path: Path):
@@ -686,6 +912,377 @@ validation:
     assert cfg.validation.data_quality.outlier_detection.max_outlier_pct == pytest.approx(1.5)
     assert cfg.validation.data_quality.outlier_detection.method == "modified_zscore"
     assert cfg.validation.data_quality.outlier_detection.zscore_threshold == pytest.approx(3.5)
+
+
+def test_load_config_data_quality_stationarity_settings(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    stationarity:
+      adf_pvalue_max: 0.05
+      kpss_pvalue_min: 0.05
+      min_points: 40
+      regime_shift:
+        window: 20
+        mean_shift_max: 1.5
+        vol_ratio_max: 1.75
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.stationarity is not None
+    assert cfg.validation.data_quality.stationarity.adf_pvalue_max == pytest.approx(0.05)
+    assert cfg.validation.data_quality.stationarity.kpss_pvalue_min == pytest.approx(0.05)
+    assert cfg.validation.data_quality.stationarity.min_points == 40
+    assert cfg.validation.data_quality.stationarity.regime_shift is not None
+    assert cfg.validation.data_quality.stationarity.regime_shift.window == 20
+    assert cfg.validation.data_quality.stationarity.regime_shift.mean_shift_max == pytest.approx(1.5)
+    assert cfg.validation.data_quality.stationarity.regime_shift.vol_ratio_max == pytest.approx(1.75)
+
+
+def test_load_config_data_quality_stationarity_defaults_min_points(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    stationarity:
+      adf_pvalue_max: 0.05
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.stationarity is not None
+    # Global parse preserves explicit user input shape; default is resolved on
+    # effective collection-level policy during override resolution.
+    assert cfg.validation.data_quality.stationarity.min_points is None
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.data_quality is not None
+    assert cfg.collections[0].validation.data_quality.stationarity is not None
+    assert cfg.collections[0].validation.data_quality.stationarity.min_points == 30
+
+
+def test_load_config_collection_data_quality_stationarity_override(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    validation:
+      data_quality:
+        on_fail: skip_collection
+        stationarity:
+          adf_pvalue_max: 0.1
+          regime_shift:
+            window: 25
+            mean_shift_max: 1.2
+            vol_ratio_max: 1.5
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    stationarity:
+      adf_pvalue_max: 0.05
+      min_points: 50
+      regime_shift:
+        window: 20
+        mean_shift_max: 1.5
+        vol_ratio_max: 2.0
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert len(cfg.collections) == 1
+    col = cfg.collections[0]
+    assert col.validation is not None
+    assert col.validation.data_quality is not None
+    assert col.validation.data_quality.on_fail == "skip_collection"
+    assert col.validation.data_quality.stationarity is not None
+    assert col.validation.data_quality.stationarity.adf_pvalue_max == pytest.approx(0.1)
+    assert col.validation.data_quality.stationarity.min_points == 50
+    assert col.validation.data_quality.stationarity.regime_shift is not None
+    assert col.validation.data_quality.stationarity.regime_shift.window == 25
+    assert col.validation.data_quality.stationarity.regime_shift.mean_shift_max == pytest.approx(1.2)
+    assert col.validation.data_quality.stationarity.regime_shift.vol_ratio_max == pytest.approx(1.5)
+
+
+def test_load_config_collection_lookahead_shuffle_test_override(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    validation:
+      result_consistency:
+        lookahead_shuffle_test:
+          permutations: 9
+          threshold: 0.25
+          seed: 7
+          max_failed_permutations: 2
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    lookahead_shuffle_test:
+      permutations: 20
+      threshold: 0.0
+      seed: 1337
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.result_consistency is not None
+    lookahead = cfg.collections[0].validation.result_consistency.lookahead_shuffle_test
+    assert lookahead is not None
+    assert lookahead.permutations == 9
+    assert lookahead.threshold == pytest.approx(0.25)
+    assert lookahead.seed == 7
+    assert lookahead.max_failed_permutations == 2
+
+
+def test_load_config_collection_lookahead_shuffle_test_partial_override_inherits_base(
+    tmp_path: Path,
+):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+    validation:
+      result_consistency:
+        lookahead_shuffle_test:
+          permutations: 9
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    lookahead_shuffle_test:
+      permutations: 20
+      threshold: 0.5
+      seed: 17
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.result_consistency is not None
+    lookahead = cfg.collections[0].validation.result_consistency.lookahead_shuffle_test
+    assert lookahead is not None
+    assert lookahead.permutations == 9
+    assert lookahead.threshold == pytest.approx(0.5)
+    assert lookahead.seed == 17
+
+
+def test_load_config_data_quality_stationarity_invalid_values(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    stationarity:
+      adf_pvalue_max: 1.2
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_lookahead_shuffle_test_invalid_permutations(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    lookahead_shuffle_test:
+      permutations: 4
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"validation\.result_consistency\.lookahead_shuffle_test\.permutations"):
+        load_config(path)
+
+
+def test_load_config_lookahead_shuffle_test_invalid_max_failed_permutations(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    lookahead_shuffle_test:
+      permutations: 5
+      max_failed_permutations: 6
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(
+        ValueError,
+        match=r"validation\.result_consistency\.lookahead_shuffle_test\.max_failed_permutations",
+    ):
+        load_config(path)
+
+
+def test_load_config_data_quality_stationarity_invalid_kpss_pvalue(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    stationarity:
+      adf_pvalue_max: 0.05
+      kpss_pvalue_min: 1.2
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_data_quality_stationarity_missing_required_field(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    stationarity: {}
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_resolve_validation_overrides_revalidates_stationarity_mutations():
+    stationarity = ValidationStationarityConfig(
+        adf_pvalue_max=0.05,
+        min_points=40,
+        regime_shift=ValidationStationarityRegimeShiftConfig(
+            window=20,
+            mean_shift_max=1.5,
+            vol_ratio_max=1.75,
+        ),
+    )
+    cfg = Config(
+        collections=[
+            CollectionConfig(
+                name="test",
+                source="yfinance",
+                symbols=["AAPL"],
+            )
+        ],
+        timeframes=["1d"],
+        metric="sharpe",
+        strategies=[],
+        validation=ValidationConfig(
+            data_quality=ValidationDataQualityConfig(
+                on_fail="skip_job",
+                stationarity=stationarity,
+            )
+        ),
+    )
+
+    stationarity.min_points = None
+    resolve_validation_overrides(cfg)
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.data_quality is not None
+    assert cfg.collections[0].validation.data_quality.stationarity is not None
+    assert cfg.collections[0].validation.data_quality.stationarity.min_points == 30
+
+    cfg.collections[0].validation.data_quality.stationarity.regime_shift = (
+        ValidationStationarityRegimeShiftConfig(
+            window=5,
+            mean_shift_max=1.5,
+            vol_ratio_max=1.75,
+        )
+    )
+    with pytest.raises(ValueError):
+        resolve_validation_overrides(cfg)
+
+
+def test_resolve_validation_overrides_rejects_mutated_stationarity_missing_field():
+    stationarity = ValidationStationarityConfig(
+        adf_pvalue_max=0.05,
+        min_points=40,
+        regime_shift=ValidationStationarityRegimeShiftConfig(
+            window=20,
+            mean_shift_max=1.5,
+            vol_ratio_max=1.75,
+        ),
+    )
+    cfg = Config(
+        collections=[
+            CollectionConfig(
+                name="test",
+                source="yfinance",
+                symbols=["AAPL"],
+            )
+        ],
+        timeframes=["1d"],
+        metric="sharpe",
+        strategies=[],
+        validation=ValidationConfig(
+            data_quality=ValidationDataQualityConfig(
+                on_fail="skip_job",
+                stationarity=stationarity,
+            )
+        ),
+    )
+
+    stationarity.adf_pvalue_max = None
+    with pytest.raises(ValueError, match="adf_pvalue_max"):
+        resolve_validation_overrides(cfg)
 
 
 def test_load_config_data_quality_outlier_collection_requires_method_and_threshold(

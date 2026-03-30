@@ -15,24 +15,36 @@ validation:
   # You can keep only `data_quality`, only `optimization`, or both.
   data_quality:
     min_data_points: 1000
+    is_verified: true  # set false to force `collection_not_verified`
     continuity:
       min_score: 0.98
-      max_missing_bar_pct: 5.0  # max percent of missing bars vs expected timeline
+      max_missing_bar_pct: 0.1  # config-driven gap threshold for reliable collections
       calendar:
         kind: auto  # auto | crypto_24_7 | weekday | exchange
         # exchange: XNYS
         # timezone: UTC-05:00
-    kurtosis: 10.0  # max allowed kurtosis of close-to-close returns
+    kurtosis: 10.0  # config-driven max kurtosis of close-to-close returns
     outlier_detection:
       max_outlier_pct: 2.0  # max percent of return bars flagged as outliers
       method: modified_zscore  # zscore | modified_zscore
       zscore_threshold: 3.5  # required threshold for selected method
-    on_fail: skip_job  # skip_optimization | skip_job | skip_collection
+    stationarity:
+      adf_pvalue_max: 0.05  # reject when the ADF p-value is above this
+      # Optional KPSS companion check (KPSS null hypothesis is stationarity).
+      # Reject when KPSS p-value drops below this threshold.
+      # kpss_pvalue_min: 0.05
+      min_points: 30  # optional; safe minimum for the return series
+      regime_shift:
+        window: 20
+        mean_shift_max: 1.5  # normalized adjacent-window mean shift
+        vol_ratio_max: 1.75  # adjacent-window volatility ratio ceiling
+    on_fail: skip_optimization  # optimization-only fallback | skip_job | skip_collection
   # Optional strategy-level optimization feasibility policy.
   optimization:
     on_fail: baseline_only  # baseline_only | skip_job
-    min_bars: 2000
-    dof_multiplier: 100
+    min_bars: 2000  # absolute floor before optimization can run
+    dof_multiplier: 20  # config-driven DoF guard: max(min_bars, tunable_params * 20)
+    runtime_error_max_per_tuple: 1  # stop re-evaluating tuple after N generate_signals runtime errors
   # Optional result-level robustness check.
   result_consistency:
     outlier_dependency:
@@ -41,6 +53,11 @@ validation:
       trade_share_threshold: 0.05
     execution_price_variance:
       price_tolerance_bps: 1.0  # tiny tolerance for float/tick rounding
+    lookahead_shuffle_test:
+      permutations: 20  # deterministic bar shuffles used for the null test
+      threshold: 0.0  # median shuffled metric above this is suspicious
+      seed: 1337  # base seed combined with collection/symbol/timeframe/strategy
+      max_failed_permutations: 2  # optional cap; reject as indeterminate if exceeded
 
 collections:
   # Stocks (large-cap growth)
@@ -76,9 +93,10 @@ collections:
     # validation:
     #   data_quality:
     #     min_data_points: 1500
+    #     is_verified: true
     #     continuity:
     #       min_score: 0.99
-    #       max_missing_bar_pct: 2.0
+    #       max_missing_bar_pct: 0.1
     #     kurtosis: 8.0
     #     outlier_detection:
     #       max_outlier_pct: 1.0
@@ -89,6 +107,7 @@ collections:
     #     on_fail: baseline_only
     #     min_bars: 1500
     #     dof_multiplier: 50
+    #     runtime_error_max_per_tuple: 2
 
 # Choose timeframes compatible across sources for full history
 timeframes: ["1d"]
