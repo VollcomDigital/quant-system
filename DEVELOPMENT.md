@@ -154,27 +154,64 @@ Use this lifecycle for each policy module:
      - value range checks
      - string normalization
      - nested block normalization
-   - Optional parameter: default value injection (only for effective-policy stage).
-   - Note: normalization is used both pre-merge (parser output hygiene) and post-merge
-     (final effective-policy normalization/defaulting).
+   - Rule: do not inject defaults in normalize.
 
-3. `_merge_*_config`
+3. `_apply_*_defaults`
+   - Input: normalized effective config dataclass.
+   - Output: normalized dataclass with all effective defaults materialized.
+   - Job:
+     - fill inheritance-sensitive defaults after merge.
+   - Rule: defaults must have a single owner function per module.
+
+4. `_merge_*_config`
    - Input: `base` (global), `override` (collection).
    - Output: effective module config or `None`.
    - Job:
      - resolve fields via `_merged_field` (override wins only when non-`None`)
      - enforce required merged fields
-     - call `_normalize_*` for final validation/defaults
-   - Rule: merge is the canonical place for effective defaults.
+     - call `_normalize_*` then `_apply_*_defaults`
+   - Rule: merge is where effective defaults are materialized.
 
-4. `resolve_validation_overrides`
+5. `resolve_validation_overrides`
    - Build normalized global runtime policy snapshots.
    - Merge each collection override onto global.
    - Write final effective policy to `collection.validation`.
 
-5. Runner consumption
+6. Runner consumption
    - Runner reads effective collection policy only.
    - Runner does not perform global/collection merge logic.
+
+### Style Contract (Strict)
+
+All validation modules must use the same implementation style.
+
+Canonical merge shape:
+
+```python
+def _merge_<module>_config(base, override):
+    if base is None and override is None:
+        return None
+    normalized = _normalize_<module>_config(
+        <ModuleConfig>(
+            field_a=_merged_field(base, override, "field_a"),
+            field_b=_merged_field(base, override, "field_b"),
+            nested=_merge_<nested>_config(...),
+        ),
+        "validation.<module_path>",
+    )
+    assert normalized is not None
+    return _apply_<module>_defaults(normalized)
+```
+
+Required conventions:
+
+- `_merge_*_config` contains no inline validation branches beyond the `None/None` short-circuit.
+- `_merge_*_config` does not call `_parse_*`.
+- `_normalize_*` is the only place for validation/canonicalization rules.
+- `_apply_*_defaults` is the only place where module defaults are injected.
+- Even when a module currently has no defaults, keep `_apply_*_defaults` as an identity function for consistency.
+- `_parse_*` returns normalized parsed objects and never injects inheritance-sensitive defaults.
+- Error prefixes must match full config paths (for example `validation.result_consistency...`) for stable tests and UX.
 
 ### Defaulting rules (strict)
 
@@ -184,9 +221,10 @@ Use this lifecycle for each policy module:
 
 - Merge-stage defaults:
   - preferred for policy fields that participate in global+collection inheritance.
+  - implemented in `_apply_*_defaults` (called from merge path).
   - example: `stationarity.min_points`
     - parse: may remain `None`
-    - merge effective config: default to `30` when still `None`
+    - merge effective config: `_apply_stationarity_defaults` sets `30` when still `None`
     - collection `null`/omission inherits global value if global is set.
 
 ### Practical implementation template for new policy module
@@ -195,30 +233,33 @@ When adding a new module under `validation.*`:
 
 1. Add dataclass fields (global + collection paths).
 2. Add `_parse_new_module(...)` with strict shape/key/range validation.
-3. Add `_normalize_new_module(...)` for final normalization rules.
-4. Add `_merge_new_module_config(base, override)` and call normalize there.
-5. Wire module into:
+3. Add `_normalize_new_module(...)` for validation/normalization only.
+4. Add `_apply_new_module_defaults(...)` for effective default injection only.
+5. Add `_merge_new_module_config(base, override)` and call normalize + apply-defaults there.
+6. Wire module into:
    - `_parse_validation_*` tree
    - `_merge_data_quality_config` / relevant parent merge
    - `resolve_validation_overrides`
-6. Update runner to read only `collection.validation...` effective values.
-7. Add tests for:
+7. Update runner to read only `collection.validation...` effective values.
+8. Add tests for:
    - parse happy path
    - missing required keys
    - range/type errors
    - global-only, collection-only, global+override merge behavior
    - explicit `None` inheritance behavior
+   - parse-stage object keeps inheritance-sensitive fields as `None`
+   - effective collection policy has defaults materialized
 
 ### Existing examples in codebase
 
-- Outlier detection:
-  - merge path reuses parse validation to keep strict behavior aligned.
+- Data quality / optimization / result consistency:
+  - all follow the same `merge -> normalize -> apply_defaults` style.
 - Stationarity:
-  - final `min_points` default injected at merge normalization.
+  - final `min_points` default injected in `_apply_stationarity_defaults`.
 - Result consistency:
   - nested modules merged and enabled independently; module disabled when `None`.
 
 ### Responsibility split
 
-- `config.py`: parse, normalize, merge, and materialize effective policies.
+- `config.py`: parse, normalize, apply defaults, merge, and materialize effective policies.
 - `runner.py`: gate enforcement and diagnostics only.

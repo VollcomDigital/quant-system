@@ -886,6 +886,36 @@ validation:
     assert cfg.validation.data_quality.continuity.calendar is None
 
 
+def test_load_config_data_quality_calendar_defaults_are_applied_at_effective_stage(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    continuity:
+      calendar: {}
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.continuity is not None
+    assert cfg.validation.data_quality.continuity.calendar is not None
+    assert cfg.validation.data_quality.continuity.calendar.kind is None
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.data_quality is not None
+    assert cfg.collections[0].validation.data_quality.continuity is not None
+    assert cfg.collections[0].validation.data_quality.continuity.calendar is not None
+    assert cfg.collections[0].validation.data_quality.continuity.calendar.kind == "auto"
+
+
 def test_load_config_data_quality_outlier_settings(tmp_path: Path):
     config_text = """
 collections:

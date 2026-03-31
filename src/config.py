@@ -46,7 +46,7 @@ class NotificationsConfig:
 
 @dataclass
 class ValidationCalendarConfig:
-    kind: str = "auto"
+    kind: str | None = None
     exchange: str | None = None
     timezone: str | None = None
 
@@ -93,9 +93,9 @@ class ValidationStationarityConfig:
 
 @dataclass
 class ValidationLookaheadShuffleTestConfig:
-    permutations: int = 20
-    threshold: float = 0.0
-    seed: int = 1337
+    permutations: int | None = None
+    threshold: float | None = None
+    seed: int | None = None
     max_failed_permutations: int | None = None
 
 
@@ -162,15 +162,340 @@ LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD = 0.0
 LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED = 1337
 
 
-def _merge_replace(base: Any, override: Any) -> Any:
-    return override if override is not None else base
-
-
 def _merged_field(base: Any, override: Any, field: str) -> Any:
     override_value = getattr(override, field, None)
     if override_value is not None:
         return override_value
     return getattr(base, field, None)
+
+
+def _apply_calendar_defaults(cfg: ValidationCalendarConfig) -> ValidationCalendarConfig:
+    kind = cfg.kind if cfg.kind is not None else DEFAULT_CALENDAR_KIND
+    return ValidationCalendarConfig(
+        kind=kind,
+        exchange=cfg.exchange,
+        timezone=cfg.timezone,
+    )
+
+
+def _normalize_calendar_config(
+    cfg: ValidationCalendarConfig | None,
+    prefix: str,
+) -> ValidationCalendarConfig | None:
+    if cfg is None:
+        return None
+    kind_raw = getattr(cfg, "kind", None)
+    kind = str(kind_raw).strip().lower() if kind_raw is not None else None
+    allowed_kinds = {"auto", "crypto_24_7", "weekday", "exchange"}
+    if kind is not None and kind not in allowed_kinds:
+        raise ValueError(
+            f"Invalid `{prefix}.kind`: expected one of {sorted(allowed_kinds)}, got '{kind}'"
+        )
+    exchange_raw = getattr(cfg, "exchange", None)
+    exchange = str(exchange_raw).strip() if exchange_raw is not None else None
+    timezone = _parse_utc_timezone(getattr(cfg, "timezone", None), f"{prefix}.timezone")
+    return ValidationCalendarConfig(
+        kind=kind,
+        exchange=exchange,
+        timezone=timezone,
+    )
+
+
+def _normalize_optimization_config(
+    cfg: OptimizationPolicyConfig | None,
+    prefix: str,
+) -> OptimizationPolicyConfig | None:
+    if cfg is None:
+        return None
+    on_fail = _parse_on_fail(getattr(cfg, "on_fail", None), f"{prefix}.on_fail", {"baseline_only", "skip_job"})
+    if on_fail is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): on_fail")
+    min_bars = getattr(cfg, "min_bars", None)
+    if min_bars is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): min_bars")
+    min_bars = int(min_bars)
+    if min_bars < 0:
+        raise ValueError(f"`{prefix}.min_bars` must be >= 0")
+    dof_multiplier = getattr(cfg, "dof_multiplier", None)
+    if dof_multiplier is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): dof_multiplier")
+    dof_multiplier = int(dof_multiplier)
+    if dof_multiplier < 0:
+        raise ValueError(f"`{prefix}.dof_multiplier` must be >= 0")
+    runtime_error_max_per_tuple = getattr(cfg, "runtime_error_max_per_tuple", None)
+    if runtime_error_max_per_tuple is not None:
+        runtime_error_max_per_tuple = int(runtime_error_max_per_tuple)
+        if runtime_error_max_per_tuple < 1:
+            raise ValueError(f"`{prefix}.runtime_error_max_per_tuple` must be >= 1")
+    return OptimizationPolicyConfig(
+        on_fail=on_fail,
+        min_bars=min_bars,
+        dof_multiplier=dof_multiplier,
+        runtime_error_max_per_tuple=runtime_error_max_per_tuple,
+    )
+
+
+def _apply_optimization_defaults(cfg: OptimizationPolicyConfig) -> OptimizationPolicyConfig:
+    runtime_error_max_per_tuple = getattr(cfg, "runtime_error_max_per_tuple", None)
+    if runtime_error_max_per_tuple is None:
+        runtime_error_max_per_tuple = 1
+    return OptimizationPolicyConfig(
+        on_fail=cfg.on_fail,
+        min_bars=cfg.min_bars,
+        dof_multiplier=cfg.dof_multiplier,
+        runtime_error_max_per_tuple=int(runtime_error_max_per_tuple),
+    )
+
+
+def _normalize_data_quality_config(
+    cfg: ValidationDataQualityConfig | None,
+    prefix: str,
+) -> ValidationDataQualityConfig | None:
+    if cfg is None:
+        return None
+    on_fail = _parse_on_fail(
+        getattr(cfg, "on_fail", None),
+        f"{prefix}.on_fail",
+        {"skip_optimization", "skip_job", "skip_collection"},
+    )
+    if on_fail is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): on_fail")
+    min_data_points = getattr(cfg, "min_data_points", None)
+    if min_data_points is not None:
+        min_data_points = int(min_data_points)
+        if min_data_points < 0:
+            raise ValueError(f"`{prefix}.min_data_points` must be >= 0")
+    kurtosis = getattr(cfg, "kurtosis", None)
+    if kurtosis is not None:
+        kurtosis = float(kurtosis)
+        if kurtosis < 0:
+            raise ValueError(f"`{prefix}.kurtosis` must be >= 0")
+    return ValidationDataQualityConfig(
+        min_data_points=min_data_points,
+        continuity=_normalize_continuity_config(
+            getattr(cfg, "continuity", None),
+            f"{prefix}.continuity",
+        ),
+        kurtosis=kurtosis,
+        outlier_detection=_normalize_outlier_detection_config(
+            getattr(cfg, "outlier_detection", None),
+            f"{prefix}.outlier_detection",
+        ),
+        stationarity=_normalize_stationarity_config(
+            getattr(cfg, "stationarity", None),
+            f"{prefix}.stationarity",
+        ),
+        is_verified=getattr(cfg, "is_verified", None),
+        on_fail=on_fail,
+    )
+
+
+def _apply_data_quality_defaults(cfg: ValidationDataQualityConfig) -> ValidationDataQualityConfig:
+    return ValidationDataQualityConfig(
+        min_data_points=cfg.min_data_points,
+        continuity=_apply_continuity_defaults(cfg.continuity) if cfg.continuity is not None else None,
+        kurtosis=cfg.kurtosis,
+        outlier_detection=(
+            _apply_outlier_detection_defaults(cfg.outlier_detection)
+            if cfg.outlier_detection is not None
+            else None
+        ),
+        stationarity=(
+            _apply_stationarity_defaults(cfg.stationarity) if cfg.stationarity is not None else None
+        ),
+        is_verified=cfg.is_verified,
+        on_fail=cfg.on_fail,
+    )
+
+
+def _normalize_continuity_config(
+    cfg: ValidationContinuityConfig | None,
+    prefix: str,
+) -> ValidationContinuityConfig | None:
+    if cfg is None:
+        return None
+    min_score = getattr(cfg, "min_score", None)
+    if min_score is not None:
+        min_score = float(min_score)
+        if min_score < 0 or min_score > 1:
+            raise ValueError(f"`{prefix}.min_score` must be <= 1")
+    max_missing_bar_pct = getattr(cfg, "max_missing_bar_pct", None)
+    if max_missing_bar_pct is not None:
+        max_missing_bar_pct = float(max_missing_bar_pct)
+        if max_missing_bar_pct < 0 or max_missing_bar_pct > 100:
+            raise ValueError(f"`{prefix}.max_missing_bar_pct` must be <= 100")
+    return ValidationContinuityConfig(
+        min_score=min_score,
+        max_missing_bar_pct=max_missing_bar_pct,
+        calendar=_normalize_calendar_config(getattr(cfg, "calendar", None), f"{prefix}.calendar"),
+    )
+
+
+def _apply_continuity_defaults(cfg: ValidationContinuityConfig) -> ValidationContinuityConfig:
+    return ValidationContinuityConfig(
+        min_score=cfg.min_score,
+        max_missing_bar_pct=cfg.max_missing_bar_pct,
+        calendar=_apply_calendar_defaults(cfg.calendar) if cfg.calendar is not None else None,
+    )
+
+
+def _normalize_outlier_detection_config(
+    cfg: ValidationOutlierDetectionConfig | None,
+    prefix: str,
+) -> ValidationOutlierDetectionConfig | None:
+    if cfg is None:
+        return None
+    max_outlier_pct = getattr(cfg, "max_outlier_pct", None)
+    if max_outlier_pct is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): max_outlier_pct")
+    max_outlier_pct = float(max_outlier_pct)
+    if max_outlier_pct < 0 or max_outlier_pct > 100:
+        raise ValueError(f"`{prefix}.max_outlier_pct` must be <= 100")
+    method_raw = getattr(cfg, "method", None)
+    method = str(method_raw).strip().lower() if method_raw is not None else None
+    if method is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): method")
+    if method not in {"zscore", "modified_zscore"}:
+        raise ValueError(
+            f"Invalid `{prefix}.method`: expected one of ['modified_zscore', 'zscore']"
+        )
+    zscore_threshold = getattr(cfg, "zscore_threshold", None)
+    if zscore_threshold is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): zscore_threshold")
+    zscore_threshold = float(zscore_threshold)
+    if zscore_threshold <= 0:
+        raise ValueError(f"`{prefix}.zscore_threshold` must be > 0")
+    return ValidationOutlierDetectionConfig(
+        max_outlier_pct=max_outlier_pct,
+        method=method,
+        zscore_threshold=zscore_threshold,
+    )
+
+
+def _apply_outlier_detection_defaults(
+    cfg: ValidationOutlierDetectionConfig,
+) -> ValidationOutlierDetectionConfig:
+    return ValidationOutlierDetectionConfig(
+        max_outlier_pct=cfg.max_outlier_pct,
+        method=cfg.method,
+        zscore_threshold=cfg.zscore_threshold,
+    )
+
+
+def _normalize_result_consistency_outlier_dependency_config(
+    cfg: ResultConsistencyOutlierDependencyConfig | None,
+    prefix: str,
+) -> ResultConsistencyOutlierDependencyConfig | None:
+    if cfg is None:
+        return None
+    slices = getattr(cfg, "slices", None)
+    if slices is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): slices")
+    slices = int(slices)
+    if slices < 2:
+        raise ValueError(f"`{prefix}.slices` must be >= 2")
+    profit_share_threshold = getattr(cfg, "profit_share_threshold", None)
+    if profit_share_threshold is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): profit_share_threshold")
+    profit_share_threshold = float(profit_share_threshold)
+    if profit_share_threshold < 0.0 or profit_share_threshold > 1.0:
+        raise ValueError(f"`{prefix}.profit_share_threshold` must be <= 1.0")
+    trade_share_threshold = getattr(cfg, "trade_share_threshold", None)
+    if trade_share_threshold is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): trade_share_threshold")
+    trade_share_threshold = float(trade_share_threshold)
+    if trade_share_threshold < 0.0 or trade_share_threshold > 1.0:
+        raise ValueError(f"`{prefix}.trade_share_threshold` must be <= 1.0")
+    return ResultConsistencyOutlierDependencyConfig(
+        slices=slices,
+        profit_share_threshold=profit_share_threshold,
+        trade_share_threshold=trade_share_threshold,
+    )
+
+
+def _apply_result_consistency_outlier_dependency_defaults(
+    cfg: ResultConsistencyOutlierDependencyConfig,
+) -> ResultConsistencyOutlierDependencyConfig:
+    return ResultConsistencyOutlierDependencyConfig(
+        slices=cfg.slices,
+        profit_share_threshold=cfg.profit_share_threshold,
+        trade_share_threshold=cfg.trade_share_threshold,
+    )
+
+
+def _normalize_result_consistency_execution_price_variance_config(
+    cfg: ResultConsistencyExecutionPriceVarianceConfig | None,
+    prefix: str,
+) -> ResultConsistencyExecutionPriceVarianceConfig | None:
+    if cfg is None:
+        return None
+    price_tolerance_bps = getattr(cfg, "price_tolerance_bps", None)
+    if price_tolerance_bps is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): price_tolerance_bps")
+    price_tolerance_bps = float(price_tolerance_bps)
+    if price_tolerance_bps < 0:
+        raise ValueError(f"`{prefix}.price_tolerance_bps` must be >= 0.0")
+    return ResultConsistencyExecutionPriceVarianceConfig(
+        price_tolerance_bps=price_tolerance_bps,
+    )
+
+
+def _apply_result_consistency_execution_price_variance_defaults(
+    cfg: ResultConsistencyExecutionPriceVarianceConfig,
+) -> ResultConsistencyExecutionPriceVarianceConfig:
+    return ResultConsistencyExecutionPriceVarianceConfig(
+        price_tolerance_bps=cfg.price_tolerance_bps,
+    )
+
+
+def _normalize_result_consistency_config(
+    cfg: ResultConsistencyConfig | None,
+    prefix: str,
+) -> ResultConsistencyConfig | None:
+    if cfg is None:
+        return None
+    outlier_dependency = _normalize_result_consistency_outlier_dependency_config(
+        getattr(cfg, "outlier_dependency", None),
+        f"{prefix}.outlier_dependency",
+    )
+    execution_price_variance = _normalize_result_consistency_execution_price_variance_config(
+        getattr(cfg, "execution_price_variance", None),
+        f"{prefix}.execution_price_variance",
+    )
+    lookahead_shuffle_test = _normalize_lookahead_shuffle_test_config(
+        getattr(cfg, "lookahead_shuffle_test", None),
+        f"{prefix}.lookahead_shuffle_test",
+    )
+    if outlier_dependency is None and execution_price_variance is None and lookahead_shuffle_test is None:
+        raise ValueError(
+            f"Invalid `{prefix}`: expected at least one configured module "
+            "(`outlier_dependency`, `execution_price_variance`, or `lookahead_shuffle_test`)"
+        )
+    return ResultConsistencyConfig(
+        outlier_dependency=outlier_dependency,
+        execution_price_variance=execution_price_variance,
+        lookahead_shuffle_test=lookahead_shuffle_test,
+    )
+
+
+def _apply_result_consistency_defaults(cfg: ResultConsistencyConfig) -> ResultConsistencyConfig:
+    return ResultConsistencyConfig(
+        outlier_dependency=(
+            _apply_result_consistency_outlier_dependency_defaults(cfg.outlier_dependency)
+            if cfg.outlier_dependency is not None
+            else None
+        ),
+        execution_price_variance=(
+            _apply_result_consistency_execution_price_variance_defaults(cfg.execution_price_variance)
+            if cfg.execution_price_variance is not None
+            else None
+        ),
+        lookahead_shuffle_test=(
+            _apply_lookahead_shuffle_test_defaults(cfg.lookahead_shuffle_test)
+            if cfg.lookahead_shuffle_test is not None
+            else None
+        ),
+    )
 
 
 def _merge_data_quality_config(
@@ -179,43 +504,29 @@ def _merge_data_quality_config(
 ) -> ValidationDataQualityConfig | None:
     if base is None and override is None:
         return None
-    min_data_points = _merge_replace(
-        getattr(base, "min_data_points", None),
-        getattr(override, "min_data_points", None),
+    normalized = _normalize_data_quality_config(
+        ValidationDataQualityConfig(
+            min_data_points=_merged_field(base, override, "min_data_points"),
+            continuity=_merge_continuity_config(
+                getattr(base, "continuity", None),
+                getattr(override, "continuity", None),
+            ),
+            kurtosis=_merged_field(base, override, "kurtosis"),
+            outlier_detection=_merge_outlier_detection_config(
+                getattr(base, "outlier_detection", None),
+                getattr(override, "outlier_detection", None),
+            ),
+            stationarity=_merge_stationarity_config(
+                getattr(base, "stationarity", None),
+                getattr(override, "stationarity", None),
+            ),
+            is_verified=_merged_field(base, override, "is_verified"),
+            on_fail=_merged_field(base, override, "on_fail"),
+        ),
+        "validation.data_quality",
     )
-    continuity = _merge_continuity_config(
-        getattr(base, "continuity", None),
-        getattr(override, "continuity", None),
-    )
-    kurtosis = _merge_replace(
-        getattr(base, "kurtosis", None),
-        getattr(override, "kurtosis", None),
-    )
-    outlier_detection = _merge_outlier_detection_config(
-        getattr(base, "outlier_detection", None),
-        getattr(override, "outlier_detection", None),
-    )
-    stationarity = _merge_stationarity_config(
-        getattr(base, "stationarity", None),
-        getattr(override, "stationarity", None),
-    )
-    is_verified = _merge_replace(
-        getattr(base, "is_verified", None),
-        getattr(override, "is_verified", None),
-    )
-
-    on_fail = _merged_field(base, override, "on_fail")
-    if on_fail is None:
-        raise ValueError("Invalid `validation.data_quality`: missing required field(s): on_fail")
-    return ValidationDataQualityConfig(
-        min_data_points=min_data_points,
-        continuity=continuity,
-        kurtosis=kurtosis,
-        outlier_detection=outlier_detection,
-        stationarity=stationarity,
-        is_verified=is_verified,
-        on_fail=str(on_fail).strip().lower(),
-    )
+    assert normalized is not None
+    return _apply_data_quality_defaults(normalized)
 
 
 def _merge_optimization_config(
@@ -224,24 +535,17 @@ def _merge_optimization_config(
 ) -> OptimizationPolicyConfig | None:
     if base is None and override is None:
         return None
-    on_fail = _merged_field(base, override, "on_fail")
-    if on_fail is None:
-        raise ValueError("Invalid `validation.optimization`: missing required field(s): on_fail")
-    min_bars = _merged_field(base, override, "min_bars")
-    if min_bars is None:
-        raise ValueError("Invalid `validation.optimization`: missing required field(s): min_bars")
-    dof_multiplier = _merged_field(base, override, "dof_multiplier")
-    if dof_multiplier is None:
-        raise ValueError("Invalid `validation.optimization`: missing required field(s): dof_multiplier")
-    runtime_error_max_per_tuple = _merged_field(base, override, "runtime_error_max_per_tuple")
-    if runtime_error_max_per_tuple is None:
-        runtime_error_max_per_tuple = 1
-    return OptimizationPolicyConfig(
-        on_fail=str(on_fail).strip().lower(),
-        min_bars=int(min_bars),
-        dof_multiplier=int(dof_multiplier),
-        runtime_error_max_per_tuple=int(runtime_error_max_per_tuple),
+    normalized = _normalize_optimization_config(
+        OptimizationPolicyConfig(
+            on_fail=_merged_field(base, override, "on_fail"),
+            min_bars=_merged_field(base, override, "min_bars"),
+            dof_multiplier=_merged_field(base, override, "dof_multiplier"),
+            runtime_error_max_per_tuple=_merged_field(base, override, "runtime_error_max_per_tuple"),
+        ),
+        "validation.optimization",
     )
+    assert normalized is not None
+    return _apply_optimization_defaults(normalized)
 
 
 def _merge_result_consistency_config(
@@ -250,25 +554,29 @@ def _merge_result_consistency_config(
 ) -> ResultConsistencyConfig | None:
     if base is None and override is None:
         return None
-    outlier_dependency = _merge_result_consistency_outlier_dependency_config(
-        getattr(base, "outlier_dependency", None),
-        getattr(override, "outlier_dependency", None),
+    merged = ResultConsistencyConfig(
+        outlier_dependency=_merge_result_consistency_outlier_dependency_config(
+            getattr(base, "outlier_dependency", None),
+            getattr(override, "outlier_dependency", None),
+        ),
+        execution_price_variance=_merge_result_consistency_execution_price_variance_config(
+            getattr(base, "execution_price_variance", None),
+            getattr(override, "execution_price_variance", None),
+        ),
+        lookahead_shuffle_test=_merge_lookahead_shuffle_test_config(
+            getattr(base, "lookahead_shuffle_test", None),
+            getattr(override, "lookahead_shuffle_test", None),
+        ),
     )
-    execution_price_variance = _merge_result_consistency_execution_price_variance_config(
-        getattr(base, "execution_price_variance", None),
-        getattr(override, "execution_price_variance", None),
-    )
-    lookahead_shuffle_test = _merge_lookahead_shuffle_test_config(
-        getattr(base, "lookahead_shuffle_test", None),
-        getattr(override, "lookahead_shuffle_test", None),
-    )
-    if outlier_dependency is None and execution_price_variance is None and lookahead_shuffle_test is None:
+    if (
+        merged.outlier_dependency is None
+        and merged.execution_price_variance is None
+        and merged.lookahead_shuffle_test is None
+    ):
         return None
-    return ResultConsistencyConfig(
-        outlier_dependency=outlier_dependency,
-        execution_price_variance=execution_price_variance,
-        lookahead_shuffle_test=lookahead_shuffle_test,
-    )
+    normalized = _normalize_result_consistency_config(merged, "validation.result_consistency")
+    assert normalized is not None
+    return _apply_result_consistency_defaults(normalized)
 
 
 def _merge_result_consistency_outlier_dependency_config(
@@ -277,29 +585,16 @@ def _merge_result_consistency_outlier_dependency_config(
 ) -> ResultConsistencyOutlierDependencyConfig | None:
     if base is None and override is None:
         return None
-    slices = _merged_field(base, override, "slices")
-    if slices is None:
-        raise ValueError(
-            "Invalid `validation.result_consistency.outlier_dependency`: "
-            "missing required field(s): slices"
-        )
-    profit_share_threshold = _merged_field(base, override, "profit_share_threshold")
-    if profit_share_threshold is None:
-        raise ValueError(
-            "Invalid `validation.result_consistency.outlier_dependency`: "
-            "missing required field(s): profit_share_threshold"
-        )
-    trade_share_threshold = _merged_field(base, override, "trade_share_threshold")
-    if trade_share_threshold is None:
-        raise ValueError(
-            "Invalid `validation.result_consistency.outlier_dependency`: "
-            "missing required field(s): trade_share_threshold"
-        )
-    return ResultConsistencyOutlierDependencyConfig(
-        slices=int(slices),
-        profit_share_threshold=float(profit_share_threshold),
-        trade_share_threshold=float(trade_share_threshold),
+    normalized = _normalize_result_consistency_outlier_dependency_config(
+        ResultConsistencyOutlierDependencyConfig(
+            slices=_merged_field(base, override, "slices"),
+            profit_share_threshold=_merged_field(base, override, "profit_share_threshold"),
+            trade_share_threshold=_merged_field(base, override, "trade_share_threshold"),
+        ),
+        "validation.result_consistency.outlier_dependency",
     )
+    assert normalized is not None
+    return _apply_result_consistency_outlier_dependency_defaults(normalized)
 
 
 def _merge_result_consistency_execution_price_variance_config(
@@ -308,15 +603,14 @@ def _merge_result_consistency_execution_price_variance_config(
 ) -> ResultConsistencyExecutionPriceVarianceConfig | None:
     if base is None and override is None:
         return None
-    price_tolerance_bps = _merged_field(base, override, "price_tolerance_bps")
-    if price_tolerance_bps is None:
-        raise ValueError(
-            "Invalid `validation.result_consistency.execution_price_variance`: "
-            "missing required field(s): price_tolerance_bps"
-        )
-    return ResultConsistencyExecutionPriceVarianceConfig(
-        price_tolerance_bps=float(price_tolerance_bps),
+    normalized = _normalize_result_consistency_execution_price_variance_config(
+        ResultConsistencyExecutionPriceVarianceConfig(
+            price_tolerance_bps=_merged_field(base, override, "price_tolerance_bps"),
+        ),
+        "validation.result_consistency.execution_price_variance",
     )
+    assert normalized is not None
+    return _apply_result_consistency_execution_price_variance_defaults(normalized)
 
 def _merge_continuity_config(
     base: ValidationContinuityConfig | None,
@@ -324,17 +618,19 @@ def _merge_continuity_config(
 ) -> ValidationContinuityConfig | None:
     if base is None and override is None:
         return None
-    min_score = _merged_field(base, override, "min_score")
-    max_missing_bar_pct = _merged_field(base, override, "max_missing_bar_pct")
-    calendar = _merge_calendar_config(
-        getattr(base, "calendar", None),
-        getattr(override, "calendar", None),
+    normalized = _normalize_continuity_config(
+        ValidationContinuityConfig(
+            min_score=_merged_field(base, override, "min_score"),
+            max_missing_bar_pct=_merged_field(base, override, "max_missing_bar_pct"),
+            calendar=_merge_calendar_config(
+                getattr(base, "calendar", None),
+                getattr(override, "calendar", None),
+            ),
+        ),
+        "validation.data_quality.continuity",
     )
-    return ValidationContinuityConfig(
-        min_score=min_score,
-        max_missing_bar_pct=max_missing_bar_pct,
-        calendar=calendar,
-    )
+    assert normalized is not None
+    return _apply_continuity_defaults(normalized)
 
 
 def _merge_calendar_config(
@@ -343,10 +639,16 @@ def _merge_calendar_config(
 ) -> ValidationCalendarConfig | None:
     if base is None and override is None:
         return None
-    kind = str(_merged_field(base, override, "kind") or DEFAULT_CALENDAR_KIND).strip().lower()
-    exchange = _merged_field(base, override, "exchange")
-    timezone = _merged_field(base, override, "timezone")
-    return ValidationCalendarConfig(kind=kind, exchange=exchange, timezone=timezone)
+    normalized = _normalize_calendar_config(
+        ValidationCalendarConfig(
+            kind=_merged_field(base, override, "kind"),
+            exchange=_merged_field(base, override, "exchange"),
+            timezone=_merged_field(base, override, "timezone"),
+        ),
+        "validation.data_quality.continuity.calendar",
+    )
+    assert normalized is not None
+    return _apply_calendar_defaults(normalized)
 
 
 def _merge_outlier_detection_config(
@@ -356,15 +658,16 @@ def _merge_outlier_detection_config(
     if base is None and override is None:
         return None
 
-    # Reuse parse-path normalization/validation so merge-path behavior stays strict and identical.
-    return _parse_outlier_detection(
-        {
-            "max_outlier_pct": _merged_field(base, override, "max_outlier_pct"),
-            "method": _merged_field(base, override, "method"),
-            "zscore_threshold": _merged_field(base, override, "zscore_threshold"),
-        },
+    normalized = _normalize_outlier_detection_config(
+        ValidationOutlierDetectionConfig(
+            max_outlier_pct=_merged_field(base, override, "max_outlier_pct"),
+            method=_merged_field(base, override, "method"),
+            zscore_threshold=_merged_field(base, override, "zscore_threshold"),
+        ),
         "validation.data_quality.outlier_detection",
     )
+    assert normalized is not None
+    return _apply_outlier_detection_defaults(normalized)
 
 
 def _normalize_stationarity_regime_shift_config(
@@ -401,8 +704,6 @@ def _normalize_stationarity_regime_shift_config(
 def _normalize_stationarity_config(
     cfg: ValidationStationarityConfig | None,
     prefix: str,
-    *,
-    default_min_points: int | None = None,
 ) -> ValidationStationarityConfig | None:
     if cfg is None:
         return None
@@ -418,7 +719,7 @@ def _normalize_stationarity_config(
         if kpss_pvalue_min < 0.0 or kpss_pvalue_min > 1.0:
             raise ValueError(f"`{prefix}.kpss_pvalue_min` must be between 0.0 and 1.0")
     min_points = getattr(cfg, "min_points", None)
-    normalized_min_points = default_min_points if min_points is None else int(min_points)
+    normalized_min_points = int(min_points) if min_points is not None else None
     if normalized_min_points is not None and normalized_min_points < 20:
         raise ValueError(f"`{prefix}.min_points` must be >= 20")
     regime_shift = _normalize_stationarity_regime_shift_config(
@@ -430,6 +731,16 @@ def _normalize_stationarity_config(
         kpss_pvalue_min=kpss_pvalue_min,
         min_points=normalized_min_points,
         regime_shift=regime_shift,
+    )
+
+
+def _apply_stationarity_defaults(cfg: ValidationStationarityConfig) -> ValidationStationarityConfig:
+    min_points = cfg.min_points if cfg.min_points is not None else STATIONARITY_DEFAULT_MIN_POINTS
+    return ValidationStationarityConfig(
+        adf_pvalue_max=cfg.adf_pvalue_max,
+        kpss_pvalue_min=cfg.kpss_pvalue_min,
+        min_points=min_points,
+        regime_shift=cfg.regime_shift,
     )
 
 
@@ -485,7 +796,7 @@ def _merge_stationarity_config(
         getattr(base, "regime_shift", None),
         getattr(override, "regime_shift", None),
     )
-    return _normalize_stationarity_config(
+    normalized = _normalize_stationarity_config(
         ValidationStationarityConfig(
             adf_pvalue_max=float(adf_pvalue_max),
             kpss_pvalue_min=float(kpss_pvalue_min) if kpss_pvalue_min is not None else None,
@@ -493,30 +804,27 @@ def _merge_stationarity_config(
             regime_shift=regime_shift,
         ),
         "validation.data_quality.stationarity",
-        default_min_points=STATIONARITY_DEFAULT_MIN_POINTS,
     )
+    assert normalized is not None
+    return _apply_stationarity_defaults(normalized)
 
 
 def _normalize_lookahead_shuffle_test_config(
     cfg: ValidationLookaheadShuffleTestConfig | None,
     prefix: str,
-    *,
-    default_permutations: int | None = None,
-    default_threshold: float | None = None,
-    default_seed: int | None = None,
 ) -> ValidationLookaheadShuffleTestConfig | None:
     if cfg is None:
         return None
     permutations_raw = getattr(cfg, "permutations", None)
-    permutations = default_permutations if permutations_raw is None else int(permutations_raw)
+    permutations = int(permutations_raw) if permutations_raw is not None else None
     if permutations is not None and permutations < 5:
         raise ValueError(f"`{prefix}.permutations` must be >= 5")
     threshold_raw = getattr(cfg, "threshold", None)
-    threshold = default_threshold if threshold_raw is None else float(threshold_raw)
+    threshold = float(threshold_raw) if threshold_raw is not None else None
     if threshold is not None and not math.isfinite(threshold):
         raise ValueError(f"`{prefix}.threshold` must be finite")
     seed_raw = getattr(cfg, "seed", None)
-    seed = default_seed if seed_raw is None else int(seed_raw)
+    seed = int(seed_raw) if seed_raw is not None else None
     if seed is not None and seed < 0:
         raise ValueError(f"`{prefix}.seed` must be >= 0")
     max_failed_permutations_raw = getattr(cfg, "max_failed_permutations", None)
@@ -538,6 +846,23 @@ def _normalize_lookahead_shuffle_test_config(
     )
 
 
+def _apply_lookahead_shuffle_test_defaults(
+    cfg: ValidationLookaheadShuffleTestConfig,
+) -> ValidationLookaheadShuffleTestConfig:
+    return ValidationLookaheadShuffleTestConfig(
+        permutations=(
+            cfg.permutations
+            if cfg.permutations is not None
+            else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS
+        ),
+        threshold=(
+            cfg.threshold if cfg.threshold is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD
+        ),
+        seed=cfg.seed if cfg.seed is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED,
+        max_failed_permutations=cfg.max_failed_permutations,
+    )
+
+
 def _merge_lookahead_shuffle_test_config(
     base: ValidationLookaheadShuffleTestConfig | None,
     override: ValidationLookaheadShuffleTestConfig | None,
@@ -548,7 +873,7 @@ def _merge_lookahead_shuffle_test_config(
     threshold = _merged_field(base, override, "threshold")
     seed = _merged_field(base, override, "seed")
     max_failed_permutations = _merged_field(base, override, "max_failed_permutations")
-    return _normalize_lookahead_shuffle_test_config(
+    normalized = _normalize_lookahead_shuffle_test_config(
         ValidationLookaheadShuffleTestConfig(
             permutations=int(permutations) if permutations is not None else None,
             threshold=float(threshold) if threshold is not None else None,
@@ -558,10 +883,9 @@ def _merge_lookahead_shuffle_test_config(
             ),
         ),
         "validation.result_consistency.lookahead_shuffle_test",
-        default_permutations=LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS,
-        default_threshold=LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD,
-        default_seed=LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED,
     )
+    assert normalized is not None
+    return _apply_lookahead_shuffle_test_defaults(normalized)
 
 
 def resolve_validation_overrides(cfg: Config) -> None:
@@ -792,16 +1116,18 @@ def _parse_validation_data_quality(
     )
     is_verified = parse_optional_bool(parsed_raw, prefix, "is_verified")
 
-    cfg = ValidationDataQualityConfig(
-        min_data_points=min_data_points_cfg,
-        continuity=continuity_cfg,
-        kurtosis=kurtosis_cfg,
-        outlier_detection=outlier_detection_cfg,
-        stationarity=stationarity_cfg,
-        is_verified=is_verified,
-        on_fail=on_fail,
+    return _normalize_data_quality_config(
+        ValidationDataQualityConfig(
+            min_data_points=min_data_points_cfg,
+            continuity=continuity_cfg,
+            kurtosis=kurtosis_cfg,
+            outlier_detection=outlier_detection_cfg,
+            stationarity=stationarity_cfg,
+            is_verified=is_verified,
+            on_fail=on_fail,
+        ),
+        prefix,
     )
-    return cfg
 
 def _parse_continuity(
     raw: Any,
@@ -815,10 +1141,13 @@ def _parse_continuity(
         parsed_raw, prefix, "max_missing_bar_pct", min_value=0, max_value=100
     )
     calendar_cfg = _parse_validation_calendar(parsed_raw.get("calendar"), f"{prefix}.calendar")
-    return ValidationContinuityConfig(
-        min_score=min_score,
-        max_missing_bar_pct=max_missing,
-        calendar=calendar_cfg,
+    return _normalize_continuity_config(
+        ValidationContinuityConfig(
+            min_score=min_score,
+            max_missing_bar_pct=max_missing,
+            calendar=calendar_cfg,
+        ),
+        prefix,
     )
 
 def _parse_outlier_detection(
@@ -831,19 +1160,14 @@ def _parse_outlier_detection(
         parsed_raw, prefix, "max_outlier_pct", min_value=0, max_value=100
     )
     method = parse_optional_str(parsed_raw, "method")
-    if method is None:
-        raise ValueError(f"Invalid `{prefix}`: missing required field(s): method")
-    if method not in {"zscore", "modified_zscore"}:
-        raise ValueError(
-            f"Invalid `{prefix}.method`: expected one of ['modified_zscore', 'zscore']"
-        )
     zscore_threshold = parse_required_float(parsed_raw, prefix, "zscore_threshold")
-    if zscore_threshold <= 0:
-        raise ValueError(f"`{prefix}.zscore_threshold` must be > 0")
-    return ValidationOutlierDetectionConfig(
-        max_outlier_pct=max_outlier_pct,
-        method=method,
-        zscore_threshold=zscore_threshold,
+    return _normalize_outlier_detection_config(
+        ValidationOutlierDetectionConfig(
+            max_outlier_pct=max_outlier_pct,
+            method=method,
+            zscore_threshold=zscore_threshold,
+        ),
+        prefix,
     )
 
 
@@ -928,17 +1252,15 @@ def _parse_validation_calendar(raw: Any, prefix: str) -> ValidationCalendarConfi
     if raw is None:
         return None
     parsed_raw = require_mapping(raw, prefix)
-    kind = str(parsed_raw.get("kind", "auto")).strip().lower()
-    allowed_kinds = {"auto", "crypto_24_7", "weekday", "exchange"}
-    if kind not in allowed_kinds:
-        raise ValueError(
-            f"Invalid `{prefix}.kind`: expected one of {sorted(allowed_kinds)}, got '{kind}'"
-        )
+    kind_raw = parse_optional_str(parsed_raw, "kind")
     exchange = parsed_raw.get("exchange")
-    return ValidationCalendarConfig(
-        kind=kind,
-        exchange=str(exchange).strip() if exchange is not None else None,
-        timezone=_parse_utc_timezone(parsed_raw.get("timezone"), f"{prefix}.timezone"),
+    return _normalize_calendar_config(
+        ValidationCalendarConfig(
+            kind=kind_raw,
+            exchange=str(exchange).strip() if exchange is not None else None,
+            timezone=parsed_raw.get("timezone"),
+        ),
+        prefix,
     )
 
 
@@ -998,11 +1320,14 @@ def _parse_optimization_policy(raw: Any, prefix: str) -> OptimizationPolicyConfi
         parsed_raw, prefix, "runtime_error_max_per_tuple", min_value=1
     )
 
-    return OptimizationPolicyConfig(
-        on_fail=on_fail,
-        min_bars=min_bars,
-        dof_multiplier=dof_multiplier,
-        runtime_error_max_per_tuple=runtime_error_max_per_tuple,
+    return _normalize_optimization_config(
+        OptimizationPolicyConfig(
+            on_fail=on_fail,
+            min_bars=min_bars,
+            dof_multiplier=dof_multiplier,
+            runtime_error_max_per_tuple=runtime_error_max_per_tuple,
+        ),
+        prefix,
     )
 
 
@@ -1046,16 +1371,13 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
         else None
     )
 
-    if outlier_dependency is None and execution_price_variance is None and lookahead_shuffle_test is None:
-        raise ValueError(
-            f"Invalid `{prefix}`: expected at least one configured module "
-            "(`outlier_dependency`, `execution_price_variance`, or `lookahead_shuffle_test`)"
-        )
-
-    return ResultConsistencyConfig(
-        outlier_dependency=outlier_dependency,
-        execution_price_variance=execution_price_variance,
-        lookahead_shuffle_test=lookahead_shuffle_test,
+    return _normalize_result_consistency_config(
+        ResultConsistencyConfig(
+            outlier_dependency=outlier_dependency,
+            execution_price_variance=execution_price_variance,
+            lookahead_shuffle_test=lookahead_shuffle_test,
+        ),
+        prefix,
     )
 
 
@@ -1080,10 +1402,13 @@ def _parse_result_consistency_outlier_dependency(
         min_value=0.0,
         max_value=1.0,
     )
-    return ResultConsistencyOutlierDependencyConfig(
-        slices=slices,
-        profit_share_threshold=float(profit_share_threshold),
-        trade_share_threshold=float(trade_share_threshold),
+    return _normalize_result_consistency_outlier_dependency_config(
+        ResultConsistencyOutlierDependencyConfig(
+            slices=slices,
+            profit_share_threshold=float(profit_share_threshold),
+            trade_share_threshold=float(trade_share_threshold),
+        ),
+        prefix,
     )
 
 
@@ -1099,8 +1424,11 @@ def _parse_result_consistency_execution_price_variance(
         "price_tolerance_bps",
         min_value=0.0,
     )
-    return ResultConsistencyExecutionPriceVarianceConfig(
-        price_tolerance_bps=float(price_tolerance_bps),
+    return _normalize_result_consistency_execution_price_variance_config(
+        ResultConsistencyExecutionPriceVarianceConfig(
+            price_tolerance_bps=float(price_tolerance_bps),
+        ),
+        prefix,
     )
 
 
