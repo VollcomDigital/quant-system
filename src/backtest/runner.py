@@ -2833,6 +2833,9 @@ class BacktestRunner:
     ) -> StrategyEvalOutcome | None:
         """Run optimization/baseline evaluation and return the best strategy outcome."""
         try:
+            if self._is_runtime_error_tuple_capped(plan, state):
+                self._plan_add_skip_reason(plan, "runtime_error_threshold_exceeded")
+                return self._build_strategy_eval_outcome(plan, state)
             if not plan.search_space or plan.skip_optimization:
                 self._strategy_evaluation(plan, state, validated_data, prepared, {})
             else:
@@ -3277,8 +3280,6 @@ class BacktestRunner:
                 self.metrics["symbols_tested"] += 1
                 # Strategy stage: create plan -> validate plan -> run -> validate results.
                 plan = self._strategy_create_plan(state, strat_name)
-                if self._is_runtime_error_tuple_capped(plan, state):
-                    continue
                 self._apply_policy_constraints_to_plan(state, validated_data, plan)
                 plan_decision = self._strategy_validate_plan(state, validated_data, plan)
                 plan_decision = self._handle_gate_decision(

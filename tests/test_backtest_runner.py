@@ -1742,6 +1742,55 @@ def test_run_all_runtime_signal_error_threshold_is_tuple_isolated(tmp_path, monk
     assert calls["count"] == 2
 
 
+def test_run_all_runtime_tuple_cap_still_records_strategy_validation_for_repeated_tuple(
+    tmp_path, monkeypatch
+):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    collections = [
+        CollectionConfig(
+            name="demo",
+            source="custom",
+            symbols=["AAPL", "AAPL"],
+            fees=0.0004,
+            slippage=0.0003,
+        )
+    ]
+    runner = _make_runner(tmp_path, monkeypatch, collections=collections)
+    runner.cfg.strategies = []
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+            runtime_error_max_per_tuple=1,
+        )
+    )
+    runner.cfg.param_search = "grid"
+
+    results = runner.run_all()
+    assert results == []
+    assert calls["count"] == 1
+    strategy_validation_failures = [
+        failure
+        for failure in runner.failures
+        if failure.get("stage") == "strategy_validation" and failure.get("error") == "no_valid_candidate"
+    ]
+    assert len(strategy_validation_failures) == 2
+    assert runner.metrics["symbols_tested"] == 2
+
+
 def test_run_all_runtime_signal_error_threshold_isolated_per_collection(tmp_path, monkeypatch):
     calls = {"count": 0}
 
@@ -1903,6 +1952,57 @@ def test_run_all_runtime_signal_error_threshold_stops_optuna_search(tmp_path, mo
     results = runner.run_all()
     assert results == []
     assert calls["count"] == 1
+
+
+def test_strategy_run_baseline_skips_evaluation_when_runtime_tuple_is_capped(tmp_path, monkeypatch):
+    eval_calls = {"count": 0}
+
+    class _BaselineStrategy(BaseStrategy):
+        name = "baseline_only"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.external_index = {"baseline_only": _BaselineStrategy}
+    state = JobState(
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        )
+    )
+    plan = runner._strategy_create_plan(state, "baseline_only")
+    validated_data = ValidatedData(
+        raw_df=_make_ohlcv(10),
+        continuity={},
+        reliability_on_fail="skip_optimization",
+        reliability_reasons=[],
+    )
+    prep_decision, prepared = runner._execution_context_prepare(state, validated_data)
+    assert prep_decision.passed is True
+    assert prepared is not None
+
+    def _track_eval(*args, **kwargs):
+        eval_calls["count"] += 1
+        return 0.0
+
+    monkeypatch.setattr(BacktestRunner, "_strategy_evaluation", _track_eval)
+    runner._runtime_signal_error_capped.add(runner._runtime_error_tuple_key(plan, state))
+
+    outcome = runner._strategy_run(plan, state, validated_data, prepared)
+
+    assert outcome is not None
+    assert outcome.has_valid_candidate is False
+    assert plan.optimization_skip_reason == "runtime_error_threshold_exceeded"
+    assert eval_calls["count"] == 0
 
 
 def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkeypatch):
