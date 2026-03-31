@@ -834,7 +834,12 @@ def _normalize_lookahead_shuffle_test_config(
     if max_failed_permutations is not None:
         if max_failed_permutations < 0:
             raise ValueError(f"`{prefix}.max_failed_permutations` must be >= 0")
-        if permutations is not None and max_failed_permutations > permutations:
+        effective_permutations = (
+            permutations
+            if permutations is not None
+            else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS
+        )
+        if max_failed_permutations > effective_permutations:
             raise ValueError(
                 f"`{prefix}.max_failed_permutations` must be <= `{prefix}.permutations`"
             )

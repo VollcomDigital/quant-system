@@ -1192,6 +1192,31 @@ validation:
         load_config(path)
 
 
+def test_load_config_lookahead_shuffle_test_invalid_max_failed_permutations_default_permutations(
+    tmp_path: Path,
+):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    lookahead_shuffle_test:
+      max_failed_permutations: 21
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(
+        ValueError,
+        match=r"validation\.result_consistency\.lookahead_shuffle_test\.max_failed_permutations",
+    ):
+        load_config(path)
+
+
 def test_load_config_data_quality_stationarity_invalid_kpss_pvalue(tmp_path: Path):
     config_text = """
 collections:
