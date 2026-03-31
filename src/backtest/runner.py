@@ -2913,10 +2913,10 @@ class BacktestRunner:
             state.job.timeframe,
         )
 
-    def _runtime_signal_error_limit(self, collection: CollectionConfig) -> int:
+    def _runtime_signal_error_limit(self, collection: CollectionConfig) -> int | None:
         policy = self._load_optimization_policy(collection)
         if policy is None:
-            return 1
+            return None
         return int(policy[3])
 
     def _is_runtime_error_tuple_capped(self, plan: StrategyPlan, state: JobState) -> bool:
@@ -2943,6 +2943,8 @@ class BacktestRunner:
         count = self._runtime_signal_error_counts.get(key, 0) + 1
         self._runtime_signal_error_counts[key] = count
         threshold = self._runtime_signal_error_limit(state.job.collection)
+        if threshold is None:
+            return
         if count < threshold or key in self._runtime_signal_error_capped:
             return
         self._runtime_signal_error_capped.add(key)

@@ -1650,6 +1650,33 @@ def test_run_all_runtime_signal_errors_threshold_one_skips_remaining_params(tmp_
     )
 
 
+def test_run_all_runtime_signal_errors_are_not_capped_without_optimization_policy(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3, 4]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.cfg.validation = None
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.param_search = "grid"
+
+    results = runner.run_all()
+    assert results == []
+    assert calls["count"] == 4
+    generate_failures = [f for f in runner.failures if f.get("stage") == "generate_signals"]
+    assert len(generate_failures) == 4
+    assert all("runtime_error_threshold_exceeded" not in f.get("error", "") for f in runner.failures)
+
+
 def test_load_optimization_policy_defaults_runtime_error_threshold_when_none(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     collection = CollectionConfig(
