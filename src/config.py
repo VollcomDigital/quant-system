@@ -1180,13 +1180,10 @@ def _parse_continuity(
         parsed_raw, prefix, "max_missing_bar_pct", min_value=0, max_value=100
     )
     calendar_cfg = _parse_validation_calendar(parsed_raw.get("calendar"), f"{prefix}.calendar")
-    return _normalize_continuity_config(
-        ValidationContinuityConfig(
-            min_score=min_score,
-            max_missing_bar_pct=max_missing,
-            calendar=calendar_cfg,
-        ),
-        prefix,
+    return ValidationContinuityConfig(
+        min_score=min_score,
+        max_missing_bar_pct=max_missing,
+        calendar=calendar_cfg,
     )
 
 def _parse_outlier_detection(
@@ -1200,13 +1197,10 @@ def _parse_outlier_detection(
     )
     method = parse_optional_str(parsed_raw, "method")
     zscore_threshold = parse_required_float(parsed_raw, prefix, "zscore_threshold")
-    return _normalize_outlier_detection_config(
-        ValidationOutlierDetectionConfig(
-            max_outlier_pct=max_outlier_pct,
-            method=method,
-            zscore_threshold=zscore_threshold,
-        ),
-        prefix,
+    return ValidationOutlierDetectionConfig(
+        max_outlier_pct=max_outlier_pct,
+        method=method,
+        zscore_threshold=zscore_threshold,
     )
 
 
@@ -1219,13 +1213,10 @@ def _parse_stationarity_regime_shift(
     window = parse_required_int(parsed_raw, prefix, "window", min_value=10)
     mean_shift_max = parse_required_float(parsed_raw, prefix, "mean_shift_max", min_value=0.0)
     vol_ratio_max = parse_required_float(parsed_raw, prefix, "vol_ratio_max", min_value=1.0)
-    return _normalize_stationarity_regime_shift_config(
-        ValidationStationarityRegimeShiftConfig(
-            window=window,
-            mean_shift_max=float(mean_shift_max),
-            vol_ratio_max=float(vol_ratio_max),
-        ),
-        prefix,
+    return ValidationStationarityRegimeShiftConfig(
+        window=window,
+        mean_shift_max=float(mean_shift_max),
+        vol_ratio_max=float(vol_ratio_max),
     )
 
 
@@ -1250,14 +1241,11 @@ def _parse_stationarity(
         regime_shift = _parse_stationarity_regime_shift(
             regime_shift_raw, f"{prefix}.regime_shift"
         )
-    return _normalize_stationarity_config(
-        ValidationStationarityConfig(
-            adf_pvalue_max=float(adf_pvalue_max),
-            kpss_pvalue_min=float(kpss_pvalue_min) if kpss_pvalue_min is not None else None,
-            min_points=int(min_points) if min_points is not None else None,
-            regime_shift=regime_shift,
-        ),
-        prefix,
+    return ValidationStationarityConfig(
+        adf_pvalue_max=float(adf_pvalue_max),
+        kpss_pvalue_min=float(kpss_pvalue_min) if kpss_pvalue_min is not None else None,
+        min_points=int(min_points) if min_points is not None else None,
+        regime_shift=regime_shift,
     )
 
 
@@ -1276,14 +1264,11 @@ def _parse_lookahead_shuffle_test(
     max_failed_permutations = parse_optional_int(
         parsed_raw, prefix, "max_failed_permutations", min_value=0
     )
-    return _normalize_lookahead_shuffle_test_config(
-        ValidationLookaheadShuffleTestConfig(
-            permutations=permutations,
-            threshold=threshold,
-            seed=seed,
-            max_failed_permutations=max_failed_permutations,
-        ),
-        prefix,
+    return ValidationLookaheadShuffleTestConfig(
+        permutations=permutations,
+        threshold=threshold,
+        seed=seed,
+        max_failed_permutations=max_failed_permutations,
     )
 
 
@@ -1293,13 +1278,10 @@ def _parse_validation_calendar(raw: Any, prefix: str) -> ValidationCalendarConfi
     parsed_raw = require_mapping(raw, prefix)
     kind_raw = parse_optional_str(parsed_raw, "kind")
     exchange = parsed_raw.get("exchange")
-    return _normalize_calendar_config(
-        ValidationCalendarConfig(
-            kind=kind_raw,
-            exchange=str(exchange).strip() if exchange is not None else None,
-            timezone=parsed_raw.get("timezone"),
-        ),
-        prefix,
+    return ValidationCalendarConfig(
+        kind=kind_raw,
+        exchange=str(exchange).strip() if exchange is not None else None,
+        timezone=parsed_raw.get("timezone"),
     )
 
 
@@ -1441,13 +1423,10 @@ def _parse_result_consistency_outlier_dependency(
         min_value=0.0,
         max_value=1.0,
     )
-    return _normalize_result_consistency_outlier_dependency_config(
-        ResultConsistencyOutlierDependencyConfig(
-            slices=slices,
-            profit_share_threshold=float(profit_share_threshold),
-            trade_share_threshold=float(trade_share_threshold),
-        ),
-        prefix,
+    return ResultConsistencyOutlierDependencyConfig(
+        slices=slices,
+        profit_share_threshold=float(profit_share_threshold),
+        trade_share_threshold=float(trade_share_threshold),
     )
 
 
@@ -1463,11 +1442,8 @@ def _parse_result_consistency_execution_price_variance(
         "price_tolerance_bps",
         min_value=0.0,
     )
-    return _normalize_result_consistency_execution_price_variance_config(
-        ResultConsistencyExecutionPriceVarianceConfig(
-            price_tolerance_bps=float(price_tolerance_bps),
-        ),
-        prefix,
+    return ResultConsistencyExecutionPriceVarianceConfig(
+        price_tolerance_bps=float(price_tolerance_bps),
     )
 
 
