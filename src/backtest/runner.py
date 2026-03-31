@@ -3093,9 +3093,14 @@ class BacktestRunner:
                 params=outcome.best_params if isinstance(outcome.best_params, dict) else None,
             )
             if lookahead_meta is not None and isinstance(outcome.best_stats, dict):
-                result_validation = dict(outcome.best_stats.get("result_validation", {}))
+                best_stats = dict(outcome.best_stats)
+                existing_result_validation = best_stats.get("result_validation")
+                result_validation = (
+                    dict(existing_result_validation) if isinstance(existing_result_validation, dict) else {}
+                )
                 result_validation["lookahead_shuffle_test"] = dict(lookahead_meta)
-                outcome.best_stats["result_validation"] = result_validation
+                best_stats["result_validation"] = result_validation
+                outcome.best_stats = best_stats
             if lookahead_reason is not None:
                 reasons.append(lookahead_reason)
         if reasons:

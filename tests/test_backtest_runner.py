@@ -2480,6 +2480,47 @@ def test_run_all_lookahead_shuffle_test_attaches_result_validation_metadata(
     assert result_validation["lookahead_shuffle_test"]["is_complete"] is True
 
 
+def test_run_all_lookahead_shuffle_test_does_not_mutate_cached_stats_payload(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = [
+        StrategyConfig(
+            name="leaky_shuffle",
+            module=None,
+            cls=None,
+            params={},
+        )
+    ]
+    runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
+    runner.cfg.validation = ValidationConfig(
+        result_consistency=ResultConsistencyConfig(
+            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
+                permutations=9,
+                threshold=999.0,
+                seed=7,
+            )
+        ),
+    )
+    resolve_validation_overrides(runner.cfg)
+
+    class _Source:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            return _make_trending_ohlcv(25)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
+    _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+
+    assert len(results) == 1
+    assert runner.results_cache.saved
+    assert "result_validation" not in runner.results_cache.saved[0]["stats"]
+    result_validation = results[0].stats.get("result_validation")
+    assert result_validation is not None
+    assert result_validation["lookahead_shuffle_test"]["is_complete"] is True
+
+
 def test_run_all_reliability_not_verified_skips_job(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
