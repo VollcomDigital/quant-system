@@ -1216,6 +1216,46 @@ class BacktestRunner:
         if decision.action == "skip_optimization":
             state.policy_skip_optimization = True
 
+    @staticmethod
+    def _should_log_gate_decision(decision: GateDecision) -> bool:
+        return (not decision.passed) or decision.action != "continue"
+
+    @staticmethod
+    def _should_record_gate_failure(record_failure: bool, decision: GateDecision) -> bool:
+        return record_failure and decision.action in {"skip_job", "skip_collection", "reject_result"}
+
+    def _gate_context(self, state: JobState, context_extra: dict[str, Any] | None) -> dict[str, Any]:
+        context = self._job_log_context(state.job)
+        if context_extra:
+            context |= context_extra
+        return context
+
+    def _record_gate_failure(
+        self,
+        state: JobState,
+        decision: GateDecision,
+        context_extra: dict[str, Any] | None,
+    ) -> None:
+        failure: dict[str, Any] = {
+            **self._job_log_context(state.job),
+            "stage": decision.stage,
+            "error": "; ".join(decision.reasons) if decision.reasons else "gate_failed",
+        }
+        if context_extra:
+            for key, value in context_extra.items():
+                if key not in failure:
+                    failure[key] = value
+        self._failure_record(failure)
+
+    def _update_blocked_collections(
+        self,
+        state: JobState,
+        decision: GateDecision,
+        blocked_collections: set[int] | None,
+    ) -> None:
+        if decision.action == "skip_collection" and blocked_collections is not None:
+            blocked_collections.add(self._collection_gate_key(state.job.collection))
+
     def _handle_gate_decision(
         self,
         state: JobState,
@@ -1225,25 +1265,13 @@ class BacktestRunner:
         blocked_collections: set[int] | None = None,
     ) -> GateDecision:
         """Apply, log, and optionally record a non-continue gate decision."""
-        context = self._job_log_context(state.job)
-        if context_extra:
-            context |= context_extra
+        context = self._gate_context(state, context_extra)
         self._apply_gate_to_state(state, decision)
-        if decision.action == "skip_collection" and blocked_collections is not None:
-            blocked_collections.add(self._collection_gate_key(state.job.collection))
-        if not decision.passed or decision.action != "continue":
+        self._update_blocked_collections(state, decision, blocked_collections)
+        if self._should_log_gate_decision(decision):
             self._gate_log(decision.stage, decision, context)
-            if record_failure and decision.action in {"skip_job", "skip_collection", "reject_result"}:
-                failure: dict[str, Any] = {
-                    **self._job_log_context(state.job),
-                    "stage": decision.stage,
-                    "error": "; ".join(decision.reasons) if decision.reasons else "gate_failed",
-                }
-                if context_extra:
-                    for key, value in context_extra.items():
-                        if key not in failure:
-                            failure[key] = value
-                self._failure_record(failure)
+            if self._should_record_gate_failure(record_failure, decision):
+                self._record_gate_failure(state, decision, context_extra)
         return decision
 
     @staticmethod
@@ -2285,6 +2313,141 @@ class BacktestRunner:
     def _lookahead_shuffle_indeterminate_reason(reason: str) -> str:
         return f"lookahead_shuffle_test_indeterminate(reason={reason})"
 
+    def _lookahead_shuffle_indeterminate(
+        self,
+        reason: str,
+        *,
+        policy: ValidationLookaheadShuffleTestConfig | None = None,
+        seed: int | None = None,
+        failed_permutations: int | None = None,
+        max_failed_permutations: int | None = None,
+        include_max_failed_permutations: bool = False,
+        reason_detail: str | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        diagnostics: dict[str, Any] = {
+            "is_complete": False,
+            "reason": reason,
+            "metric_name": self.cfg.metric,
+        }
+        if reason_detail is not None:
+            diagnostics["reason_detail"] = reason_detail
+        if policy is not None:
+            diagnostics["permutations"] = policy.permutations
+        if seed is not None:
+            diagnostics["seed"] = seed
+        if failed_permutations is not None:
+            diagnostics["failed_permutations"] = failed_permutations
+        if include_max_failed_permutations or max_failed_permutations is not None:
+            diagnostics["max_failed_permutations"] = max_failed_permutations
+        return self._lookahead_shuffle_indeterminate_reason(reason), diagnostics
+
+    def _lookahead_shuffle_execution_context(
+        self,
+        context: ValidationContext,
+        derived_seed: int,
+    ) -> tuple[Any, bool, int, float, float, np.random.Generator]:
+        _, _, _, _, data_col_enum = self._ensure_pybroker()
+        fractional = self._fractional_enabled(context.job.collection, context.job.symbol)
+        bars_per_year = self._bars_per_year(context.job.timeframe)
+        fees, slippage = self._fees_slippage_for(context.job.collection)
+        rng = np.random.default_rng(derived_seed)
+        return data_col_enum, fractional, bars_per_year, fees, slippage, rng
+
+    def _lookahead_shuffle_prepared_data(
+        self,
+        shuffled_raw: pd.DataFrame,
+        close_col: str,
+        context: ValidationContext,
+        data_col_enum: Any,
+        fractional: bool,
+        bars_per_year: int,
+        fees: float,
+        slippage: float,
+    ) -> ExecutionPreparedData:
+        data_frame, dates = self._prepare_pybroker_frame(
+            shuffled_raw,
+            context.job.symbol,
+            data_col_enum,
+        )
+        return ExecutionPreparedData(
+            data_frame=data_frame,
+            dates=dates,
+            fees=fees,
+            slippage=slippage,
+            fractional=fractional,
+            bars_per_year=bars_per_year,
+            fingerprint=(
+                f"{len(shuffled_raw)}:{shuffled_raw.index[-1].isoformat()}:"
+                f"{float(shuffled_raw[close_col].astype(float).iloc[-1])}"
+            ),
+        )
+
+    def _run_lookahead_shuffle_permutations(
+        self,
+        *,
+        context: ValidationContext,
+        plan: StrategyPlan,
+        policy: ValidationLookaheadShuffleTestConfig,
+        raw_df: pd.DataFrame,
+        close_col: str,
+        data_col_enum: Any,
+        fractional: bool,
+        bars_per_year: int,
+        fees: float,
+        slippage: float,
+        rng: np.random.Generator,
+        effective_params: dict[str, Any],
+        max_failed_permutations: int | None,
+        derived_seed: int,
+    ) -> tuple[list[float], int, tuple[str, dict[str, Any]] | None]:
+        metric_values: list[float] = []
+        failed_permutations = 0
+        for _ in range(policy.permutations):
+            permutation = rng.permutation(len(raw_df))
+            shuffled_raw = raw_df.iloc[permutation].copy()
+            shuffled_raw.index = raw_df.index
+            prepared = self._lookahead_shuffle_prepared_data(
+                shuffled_raw=shuffled_raw,
+                close_col=close_col,
+                context=context,
+                data_col_enum=data_col_enum,
+                fractional=fractional,
+                bars_per_year=bars_per_year,
+                fees=fees,
+                slippage=slippage,
+            )
+            full_params = {**plan.fixed_params, **effective_params}
+            try:
+                entries, exits = self._generate_aligned_signals(
+                    plan.strategy,
+                    shuffled_raw,
+                    full_params,
+                    plan=plan,
+                    state=context.state,
+                    track_runtime_errors=False,
+                )
+                request = self._build_evaluation_request(plan, context.state, prepared, full_params)
+                outcome = self._evaluate_strategy_outcome(request, prepared, entries, exits)
+            except Exception as exc:
+                failed_permutations += 1
+                if (
+                    max_failed_permutations is not None
+                    and failed_permutations > max_failed_permutations
+                ):
+                    return metric_values, failed_permutations, self._lookahead_shuffle_indeterminate(
+                        "too_many_failed_permutations",
+                        policy=policy,
+                        seed=derived_seed,
+                        failed_permutations=failed_permutations,
+                        max_failed_permutations=max_failed_permutations,
+                        include_max_failed_permutations=True,
+                        reason_detail=str(exc),
+                    )
+                continue
+            if outcome.valid and np.isfinite(outcome.metric_value):
+                metric_values.append(float(outcome.metric_value))
+        return metric_values, failed_permutations, None
+
     def _lookahead_shuffle_test_result(
         self,
         context: ValidationContext,
@@ -2297,11 +2460,7 @@ class BacktestRunner:
 
         raw_df = context.validated_data.raw_df
         if raw_df.empty:
-            return self._lookahead_shuffle_indeterminate_reason("empty_dataframe"), {
-                "is_complete": False,
-                "reason": "empty_dataframe",
-                "metric_name": self.cfg.metric,
-            }
+            return self._lookahead_shuffle_indeterminate("empty_dataframe")
 
         derived_seed = self._lookahead_shuffle_seed(
             policy.seed,
@@ -2312,90 +2471,44 @@ class BacktestRunner:
         )
         close_col = self._resolve_close_column(raw_df)
         if close_col is None:
-            return self._lookahead_shuffle_indeterminate_reason("missing_close_column"), {
-                "is_complete": False,
-                "reason": "missing_close_column",
-                "metric_name": self.cfg.metric,
-            }
+            return self._lookahead_shuffle_indeterminate("missing_close_column")
         try:
-            _, _, _, _, data_col_enum = self._ensure_pybroker()
-            fractional = self._fractional_enabled(context.job.collection, context.job.symbol)
-            bars_per_year = self._bars_per_year(context.job.timeframe)
-            fees, slippage = self._fees_slippage_for(context.job.collection)
-            rng = np.random.default_rng(derived_seed)
+            data_col_enum, fractional, bars_per_year, fees, slippage, rng = (
+                self._lookahead_shuffle_execution_context(context, derived_seed)
+            )
             effective_params = params or {}
-            metric_values: list[float] = []
-            failed_permutations = 0
             max_failed_permutations = getattr(policy, "max_failed_permutations", None)
             max_failed_permutations = (
                 int(max_failed_permutations) if max_failed_permutations is not None else None
             )
-
-            for _ in range(policy.permutations):
-                permutation = rng.permutation(len(raw_df))
-                shuffled_raw = raw_df.iloc[permutation].copy()
-                shuffled_raw.index = raw_df.index
-                data_frame, dates = self._prepare_pybroker_frame(
-                    shuffled_raw,
-                    context.job.symbol,
-                    data_col_enum,
-                )
-                prepared = ExecutionPreparedData(
-                    data_frame=data_frame,
-                    dates=dates,
-                    fees=fees,
-                    slippage=slippage,
-                    fractional=fractional,
-                    bars_per_year=bars_per_year,
-                    fingerprint=(
-                        f"{len(shuffled_raw)}:{shuffled_raw.index[-1].isoformat()}:"
-                        f"{float(shuffled_raw[close_col].astype(float).iloc[-1])}"
-                    ),
-                )
-                full_params = {**plan.fixed_params, **effective_params}
-                try:
-                    entries, exits = self._generate_aligned_signals(
-                        plan.strategy,
-                        shuffled_raw,
-                        full_params,
-                        plan=plan,
-                        state=context.state,
-                        track_runtime_errors=False,
-                    )
-                    request = self._build_evaluation_request(plan, context.state, prepared, full_params)
-                    outcome = self._evaluate_strategy_outcome(request, prepared, entries, exits)
-                except Exception as exc:
-                    failed_permutations += 1
-                    if (
-                        max_failed_permutations is not None
-                        and failed_permutations > max_failed_permutations
-                    ):
-                        return self._lookahead_shuffle_indeterminate_reason(
-                            "too_many_failed_permutations"
-                        ), {
-                            "is_complete": False,
-                            "reason": "too_many_failed_permutations",
-                            "reason_detail": str(exc),
-                            "permutations": policy.permutations,
-                            "seed": derived_seed,
-                            "metric_name": self.cfg.metric,
-                            "failed_permutations": failed_permutations,
-                            "max_failed_permutations": max_failed_permutations,
-                        }
-                    continue
-                if outcome.valid and np.isfinite(outcome.metric_value):
-                    metric_values.append(float(outcome.metric_value))
+            metric_values, failed_permutations, early_result = self._run_lookahead_shuffle_permutations(
+                context=context,
+                plan=plan,
+                policy=policy,
+                raw_df=raw_df,
+                close_col=close_col,
+                data_col_enum=data_col_enum,
+                fractional=fractional,
+                bars_per_year=bars_per_year,
+                fees=fees,
+                slippage=slippage,
+                rng=rng,
+                effective_params=effective_params,
+                max_failed_permutations=max_failed_permutations,
+                derived_seed=derived_seed,
+            )
+            if early_result is not None:
+                return early_result
 
             if not metric_values:
-                return self._lookahead_shuffle_indeterminate_reason("no_finite_metrics"), {
-                    "is_complete": False,
-                    "reason": "no_finite_metrics",
-                    "permutations": policy.permutations,
-                    "seed": derived_seed,
-                    "metric_name": self.cfg.metric,
-                    "failed_permutations": failed_permutations,
-                    "max_failed_permutations": max_failed_permutations,
-                }
+                return self._lookahead_shuffle_indeterminate(
+                    "no_finite_metrics",
+                    policy=policy,
+                    seed=derived_seed,
+                    failed_permutations=failed_permutations,
+                    max_failed_permutations=max_failed_permutations,
+                    include_max_failed_permutations=True,
+                )
 
             metric_array = np.asarray(metric_values, dtype=float)
             median_metric = float(np.median(metric_array))
@@ -2424,13 +2537,11 @@ class BacktestRunner:
                 return reason, diagnostics
             return None, diagnostics
         except Exception as exc:
-            return self._lookahead_shuffle_indeterminate_reason(str(exc)), {
-                "is_complete": False,
-                "reason": str(exc),
-                "permutations": policy.permutations,
-                "seed": derived_seed,
-                "metric_name": self.cfg.metric,
-            }
+            return self._lookahead_shuffle_indeterminate(
+                str(exc),
+                policy=policy,
+                seed=derived_seed,
+            )
 
     def _strategy_validate_plan_common(self, context: ValidationContext) -> GateDecision:
         # `validation.optimization` decides strategy-level action when search is infeasible.
