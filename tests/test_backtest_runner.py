@@ -2521,8 +2521,8 @@ def test_run_all_lookahead_shuffle_test_indeterminate_rejects_result(
     failure = runner.failures[0]
     assert failure["stage"] == "strategy_validation"
     assert failure["error"].startswith("lookahead_shuffle_test_indeterminate(")
-    assert failure["result_validation"]["lookahead_shuffle_test"]["is_complete"] is False
-    assert failure["result_validation"]["lookahead_shuffle_test"]["reason"] == "no_finite_metrics"
+    assert failure["strategy"] == "shuffle_sensitive"
+    assert "result_validation" not in failure
 
 
 def test_run_all_lookahead_shuffle_test_rejects_result_in_strategy_validation(
@@ -2564,7 +2564,8 @@ def test_run_all_lookahead_shuffle_test_rejects_result_in_strategy_validation(
     failure = runner.failures[0]
     assert failure["stage"] == "strategy_validation"
     assert "lookahead_shuffle_test_exceeded" in failure["error"]
-    assert failure["result_validation"]["lookahead_shuffle_test"]["is_complete"] is True
+    assert failure["strategy"] == "leaky_shuffle"
+    assert "result_validation" not in failure
 
 
 def test_run_all_lookahead_shuffle_test_attaches_result_validation_metadata(

@@ -1196,7 +1196,15 @@ def _parse_outlier_detection(
         parsed_raw, prefix, "max_outlier_pct", min_value=0, max_value=100
     )
     method = parse_optional_str(parsed_raw, "method")
+    if method is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): method")
+    if method not in {"zscore", "modified_zscore"}:
+        raise ValueError(
+            f"Invalid `{prefix}.method`: expected one of ['modified_zscore', 'zscore']"
+        )
     zscore_threshold = parse_required_float(parsed_raw, prefix, "zscore_threshold")
+    if zscore_threshold <= 0:
+        raise ValueError(f"`{prefix}.zscore_threshold` must be > 0")
     return ValidationOutlierDetectionConfig(
         max_outlier_pct=max_outlier_pct,
         method=method,

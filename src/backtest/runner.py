@@ -1259,10 +1259,8 @@ class BacktestRunner:
             "stage": decision.stage,
             "error": "; ".join(decision.reasons) if decision.reasons else "gate_failed",
         }
-        if context_extra:
-            for key, value in context_extra.items():
-                if key not in failure:
-                    failure[key] = value
+        if context_extra and "strategy" in context_extra and "strategy" not in failure:
+            failure["strategy"] = context_extra["strategy"]
         self._failure_record(failure)
 
     def _update_blocked_collections(
