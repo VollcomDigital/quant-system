@@ -182,6 +182,24 @@ class ValidationContext:
     outcome: StrategyEvalOutcome | None = None
 
 
+@dataclass
+class LookaheadShuffleRunContext:
+    context: ValidationContext
+    plan: StrategyPlan
+    policy: ValidationLookaheadShuffleTestConfig
+    raw_df: pd.DataFrame
+    close_col: str
+    data_col_enum: Any
+    fractional: bool
+    bars_per_year: int
+    fees: float
+    slippage: float
+    rng: np.random.Generator
+    effective_params: dict[str, Any]
+    max_failed_permutations: int | None
+    derived_seed: int
+
+
 class BacktestRunner:
     _CRYPTO_SOURCE_NAMES = {"binance", "bybit", "ccxt", "coinbase", "kraken", "okx", "kucoin"}
     _VALIDATION_GATE_IDS = (
@@ -2384,62 +2402,50 @@ class BacktestRunner:
 
     def _run_lookahead_shuffle_permutations(
         self,
-        *,
-        context: ValidationContext,
-        plan: StrategyPlan,
-        policy: ValidationLookaheadShuffleTestConfig,
-        raw_df: pd.DataFrame,
-        close_col: str,
-        data_col_enum: Any,
-        fractional: bool,
-        bars_per_year: int,
-        fees: float,
-        slippage: float,
-        rng: np.random.Generator,
-        effective_params: dict[str, Any],
-        max_failed_permutations: int | None,
-        derived_seed: int,
+        run_ctx: LookaheadShuffleRunContext,
     ) -> tuple[list[float], int, tuple[str, dict[str, Any]] | None]:
         metric_values: list[float] = []
         failed_permutations = 0
-        for _ in range(policy.permutations):
-            permutation = rng.permutation(len(raw_df))
-            shuffled_raw = raw_df.iloc[permutation].copy()
-            shuffled_raw.index = raw_df.index
+        for _ in range(run_ctx.policy.permutations):
+            permutation = run_ctx.rng.permutation(len(run_ctx.raw_df))
+            shuffled_raw = run_ctx.raw_df.iloc[permutation].copy()
+            shuffled_raw.index = run_ctx.raw_df.index
             prepared = self._lookahead_shuffle_prepared_data(
                 shuffled_raw=shuffled_raw,
-                close_col=close_col,
-                context=context,
-                data_col_enum=data_col_enum,
-                fractional=fractional,
-                bars_per_year=bars_per_year,
-                fees=fees,
-                slippage=slippage,
+                close_col=run_ctx.close_col,
+                context=run_ctx.context,
+                data_col_enum=run_ctx.data_col_enum,
+                fractional=run_ctx.fractional,
+                bars_per_year=run_ctx.bars_per_year,
+                fees=run_ctx.fees,
+                slippage=run_ctx.slippage,
             )
-            full_params = {**plan.fixed_params, **effective_params}
+            full_params = {**run_ctx.plan.fixed_params, **run_ctx.effective_params}
             try:
                 entries, exits = self._generate_aligned_signals(
-                    plan.strategy,
+                    run_ctx.plan.strategy,
                     shuffled_raw,
                     full_params,
-                    plan=plan,
-                    state=context.state,
+                    plan=run_ctx.plan,
+                    state=run_ctx.context.state,
                     track_runtime_errors=False,
                 )
-                request = self._build_evaluation_request(plan, context.state, prepared, full_params)
+                request = self._build_evaluation_request(
+                    run_ctx.plan, run_ctx.context.state, prepared, full_params
+                )
                 outcome = self._evaluate_strategy_outcome(request, prepared, entries, exits)
             except Exception as exc:
                 failed_permutations += 1
                 if (
-                    max_failed_permutations is not None
-                    and failed_permutations > max_failed_permutations
+                    run_ctx.max_failed_permutations is not None
+                    and failed_permutations > run_ctx.max_failed_permutations
                 ):
                     return metric_values, failed_permutations, self._lookahead_shuffle_indeterminate(
                         "too_many_failed_permutations",
-                        policy=policy,
-                        seed=derived_seed,
+                        policy=run_ctx.policy,
+                        seed=run_ctx.derived_seed,
                         failed_permutations=failed_permutations,
-                        max_failed_permutations=max_failed_permutations,
+                        max_failed_permutations=run_ctx.max_failed_permutations,
                         include_max_failed_permutations=True,
                         reason_detail=str(exc),
                     )
@@ -2482,20 +2488,22 @@ class BacktestRunner:
                 int(max_failed_permutations) if max_failed_permutations is not None else None
             )
             metric_values, failed_permutations, early_result = self._run_lookahead_shuffle_permutations(
-                context=context,
-                plan=plan,
-                policy=policy,
-                raw_df=raw_df,
-                close_col=close_col,
-                data_col_enum=data_col_enum,
-                fractional=fractional,
-                bars_per_year=bars_per_year,
-                fees=fees,
-                slippage=slippage,
-                rng=rng,
-                effective_params=effective_params,
-                max_failed_permutations=max_failed_permutations,
-                derived_seed=derived_seed,
+                LookaheadShuffleRunContext(
+                    context=context,
+                    plan=plan,
+                    policy=policy,
+                    raw_df=raw_df,
+                    close_col=close_col,
+                    data_col_enum=data_col_enum,
+                    fractional=fractional,
+                    bars_per_year=bars_per_year,
+                    fees=fees,
+                    slippage=slippage,
+                    rng=rng,
+                    effective_params=effective_params,
+                    max_failed_permutations=max_failed_permutations,
+                    derived_seed=derived_seed,
+                )
             )
             if early_result is not None:
                 return early_result

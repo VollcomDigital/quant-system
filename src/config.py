@@ -491,7 +491,10 @@ def _apply_result_consistency_defaults(cfg: ResultConsistencyConfig) -> ResultCo
             else None
         ),
         lookahead_shuffle_test=(
-            _apply_lookahead_shuffle_test_defaults(cfg.lookahead_shuffle_test)
+            _apply_lookahead_shuffle_test_defaults(
+                cfg.lookahead_shuffle_test,
+                "validation.result_consistency.lookahead_shuffle_test",
+            )
             if cfg.lookahead_shuffle_test is not None
             else None
         ),
@@ -800,18 +803,56 @@ def _normalize_lookahead_shuffle_test_config(
 ) -> ValidationLookaheadShuffleTestConfig | None:
     if cfg is None:
         return None
+    permutations = _normalize_lookahead_permutations(cfg, prefix)
+    threshold = _normalize_lookahead_threshold(cfg, prefix)
+    seed = _normalize_lookahead_seed(cfg, prefix)
+    max_failed_permutations = _normalize_lookahead_max_failed_permutations(cfg, prefix, permutations)
+    return ValidationLookaheadShuffleTestConfig(
+        permutations=permutations,
+        threshold=threshold,
+        seed=seed,
+        max_failed_permutations=max_failed_permutations,
+    )
+
+
+def _normalize_lookahead_permutations(
+    cfg: ValidationLookaheadShuffleTestConfig,
+    prefix: str,
+) -> int | None:
     permutations_raw = getattr(cfg, "permutations", None)
     permutations = int(permutations_raw) if permutations_raw is not None else None
     if permutations is not None and permutations < 5:
         raise ValueError(f"`{prefix}.permutations` must be >= 5")
+    return permutations
+
+
+def _normalize_lookahead_threshold(
+    cfg: ValidationLookaheadShuffleTestConfig,
+    prefix: str,
+) -> float | None:
     threshold_raw = getattr(cfg, "threshold", None)
     threshold = float(threshold_raw) if threshold_raw is not None else None
     if threshold is not None and not math.isfinite(threshold):
         raise ValueError(f"`{prefix}.threshold` must be finite")
+    return threshold
+
+
+def _normalize_lookahead_seed(
+    cfg: ValidationLookaheadShuffleTestConfig,
+    prefix: str,
+) -> int | None:
     seed_raw = getattr(cfg, "seed", None)
     seed = int(seed_raw) if seed_raw is not None else None
     if seed is not None and seed < 0:
         raise ValueError(f"`{prefix}.seed` must be >= 0")
+    return seed
+
+
+def _normalize_lookahead_max_failed_permutations(
+    cfg: ValidationLookaheadShuffleTestConfig,
+    prefix: str,
+    permutations: int | None,
+) -> int | None:
     max_failed_permutations_raw = getattr(cfg, "max_failed_permutations", None)
     max_failed_permutations = (
         int(max_failed_permutations_raw) if max_failed_permutations_raw is not None else None
@@ -828,28 +869,33 @@ def _normalize_lookahead_shuffle_test_config(
             raise ValueError(
                 f"`{prefix}.max_failed_permutations` must be <= `{prefix}.permutations`"
             )
-    return ValidationLookaheadShuffleTestConfig(
-        permutations=permutations,
-        threshold=threshold,
-        seed=seed,
-        max_failed_permutations=max_failed_permutations,
-    )
+    return max_failed_permutations
 
 
 def _apply_lookahead_shuffle_test_defaults(
     cfg: ValidationLookaheadShuffleTestConfig,
+    prefix: str,
 ) -> ValidationLookaheadShuffleTestConfig:
+    effective_permutations = (
+        cfg.permutations
+        if cfg.permutations is not None
+        else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS
+    )
+    max_failed_permutations = cfg.max_failed_permutations
+    if (
+        max_failed_permutations is not None
+        and max_failed_permutations > effective_permutations
+    ):
+        raise ValueError(
+            f"`{prefix}.max_failed_permutations` must be <= `{prefix}.permutations`"
+        )
     return ValidationLookaheadShuffleTestConfig(
-        permutations=(
-            cfg.permutations
-            if cfg.permutations is not None
-            else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS
-        ),
+        permutations=effective_permutations,
         threshold=(
             cfg.threshold if cfg.threshold is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD
         ),
         seed=cfg.seed if cfg.seed is not None else LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED,
-        max_failed_permutations=cfg.max_failed_permutations,
+        max_failed_permutations=max_failed_permutations,
     )
 
 
@@ -875,7 +921,10 @@ def _merge_lookahead_shuffle_test_config(
         "validation.result_consistency.lookahead_shuffle_test",
     )
     assert normalized is not None
-    return _apply_lookahead_shuffle_test_defaults(normalized)
+    return _apply_lookahead_shuffle_test_defaults(
+        normalized,
+        "validation.result_consistency.lookahead_shuffle_test",
+    )
 
 
 def resolve_validation_overrides(cfg: Config) -> None:
