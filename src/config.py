@@ -318,12 +318,12 @@ def _normalize_continuity_config(
     if min_score is not None:
         min_score = float(min_score)
         if min_score < 0 or min_score > 1:
-            raise ValueError(f"`{prefix}.min_score` must be <= 1")
+            raise ValueError(f"`{prefix}.min_score` must be between 0 and 1")
     max_missing_bar_pct = getattr(cfg, "max_missing_bar_pct", None)
     if max_missing_bar_pct is not None:
         max_missing_bar_pct = float(max_missing_bar_pct)
         if max_missing_bar_pct < 0 or max_missing_bar_pct > 100:
-            raise ValueError(f"`{prefix}.max_missing_bar_pct` must be <= 100")
+            raise ValueError(f"`{prefix}.max_missing_bar_pct` must be between 0 and 100")
     return ValidationContinuityConfig(
         min_score=min_score,
         max_missing_bar_pct=max_missing_bar_pct,
