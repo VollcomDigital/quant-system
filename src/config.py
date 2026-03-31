@@ -46,7 +46,7 @@ class NotificationsConfig:
 
 @dataclass
 class ValidationCalendarConfig:
-    kind: str | None = None
+    kind: str | None = "auto"
     exchange: str | None = None
     timezone: str | None = None
 
