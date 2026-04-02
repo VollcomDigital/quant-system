@@ -1914,8 +1914,6 @@ class BacktestRunner:
         if returns is None:
             return ["stationarity_regime_shift_indeterminate(reason=missing_returns)"]
         regime = stationarity_cfg.regime_shift
-        if regime is None:
-            return ["stationarity_regime_shift_indeterminate(reason=missing_regime_shift_config)"]
         window = int(regime.window)
         required = max(cls._stationarity_min_points(stationarity_cfg), window * 2)
         available = len(returns)

@@ -758,7 +758,11 @@ def _apply_stationarity_defaults(cfg: ValidationStationarityConfig) -> Validatio
         adf_pvalue_max=cfg.adf_pvalue_max,
         kpss_pvalue_min=cfg.kpss_pvalue_min,
         min_points=min_points,
-        regime_shift=cfg.regime_shift,
+        regime_shift=(
+            _apply_stationarity_regime_shift_defaults(cfg.regime_shift)
+            if cfg.regime_shift is not None
+            else None
+        ),
     )
 
 
