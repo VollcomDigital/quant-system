@@ -622,19 +622,13 @@ def _merge_continuity_config(
 ) -> ValidationContinuityConfig | None:
     if base is None and override is None:
         return None
-    normalized = _normalize_continuity_config(
-        ValidationContinuityConfig(
-            min_score=_merged_field(base, override, "min_score"),
-            max_missing_bar_pct=_merged_field(base, override, "max_missing_bar_pct"),
-            calendar=_merge_calendar_config(
-                getattr(base, "calendar", None),
-                getattr(override, "calendar", None),
-            ),
+    return ValidationContinuityConfig(
+        min_score=_merged_field(base, override, "min_score"),
+        max_missing_bar_pct=_merged_field(base, override, "max_missing_bar_pct"),
+        calendar=_merge_calendar_config(
+            getattr(base, "calendar", None),
+            getattr(override, "calendar", None),
         ),
-        "validation.data_quality.continuity",
-    )
-    return _apply_continuity_defaults(
-        _require_normalized(normalized, "validation.data_quality.continuity")
     )
 
 
@@ -644,16 +638,10 @@ def _merge_calendar_config(
 ) -> ValidationCalendarConfig | None:
     if base is None and override is None:
         return None
-    normalized = _normalize_calendar_config(
-        ValidationCalendarConfig(
-            kind=_merged_field(base, override, "kind"),
-            exchange=_merged_field(base, override, "exchange"),
-            timezone=_merged_field(base, override, "timezone"),
-        ),
-        "validation.data_quality.continuity.calendar",
-    )
-    return _apply_calendar_defaults(
-        _require_normalized(normalized, "validation.data_quality.continuity.calendar")
+    return ValidationCalendarConfig(
+        kind=_merged_field(base, override, "kind"),
+        exchange=_merged_field(base, override, "exchange"),
+        timezone=_merged_field(base, override, "timezone"),
     )
 
 
@@ -663,17 +651,10 @@ def _merge_outlier_detection_config(
 ) -> ValidationOutlierDetectionConfig | None:
     if base is None and override is None:
         return None
-
-    normalized = _normalize_outlier_detection_config(
-        ValidationOutlierDetectionConfig(
-            max_outlier_pct=_merged_field(base, override, "max_outlier_pct"),
-            method=_merged_field(base, override, "method"),
-            zscore_threshold=_merged_field(base, override, "zscore_threshold"),
-        ),
-        "validation.data_quality.outlier_detection",
-    )
-    return _apply_outlier_detection_defaults(
-        _require_normalized(normalized, "validation.data_quality.outlier_detection")
+    return ValidationOutlierDetectionConfig(
+        max_outlier_pct=_merged_field(base, override, "max_outlier_pct"),
+        method=_merged_field(base, override, "method"),
+        zscore_threshold=_merged_field(base, override, "zscore_threshold"),
     )
 
 
@@ -771,16 +752,10 @@ def _merge_stationarity_regime_shift_config(
 ) -> ValidationStationarityRegimeShiftConfig | None:
     if base is None and override is None:
         return None
-    normalized = _normalize_stationarity_regime_shift_config(
-        ValidationStationarityRegimeShiftConfig(
-            window=_merged_field(base, override, "window"),
-            mean_shift_max=_merged_field(base, override, "mean_shift_max"),
-            vol_ratio_max=_merged_field(base, override, "vol_ratio_max"),
-        ),
-        "validation.data_quality.stationarity.regime_shift",
-    )
-    return _apply_stationarity_regime_shift_defaults(
-        _require_normalized(normalized, "validation.data_quality.stationarity.regime_shift")
+    return ValidationStationarityRegimeShiftConfig(
+        window=_merged_field(base, override, "window"),
+        mean_shift_max=_merged_field(base, override, "mean_shift_max"),
+        vol_ratio_max=_merged_field(base, override, "vol_ratio_max"),
     )
 
 
@@ -790,20 +765,14 @@ def _merge_stationarity_config(
 ) -> ValidationStationarityConfig | None:
     if base is None and override is None:
         return None
-    normalized = _normalize_stationarity_config(
-        ValidationStationarityConfig(
-            adf_pvalue_max=_merged_field(base, override, "adf_pvalue_max"),
-            kpss_pvalue_min=_merged_field(base, override, "kpss_pvalue_min"),
-            min_points=_merged_field(base, override, "min_points"),
-            regime_shift=_merge_stationarity_regime_shift_config(
-                getattr(base, "regime_shift", None),
-                getattr(override, "regime_shift", None),
-            ),
+    return ValidationStationarityConfig(
+        adf_pvalue_max=_merged_field(base, override, "adf_pvalue_max"),
+        kpss_pvalue_min=_merged_field(base, override, "kpss_pvalue_min"),
+        min_points=_merged_field(base, override, "min_points"),
+        regime_shift=_merge_stationarity_regime_shift_config(
+            getattr(base, "regime_shift", None),
+            getattr(override, "regime_shift", None),
         ),
-        "validation.data_quality.stationarity",
-    )
-    return _apply_stationarity_defaults(
-        _require_normalized(normalized, "validation.data_quality.stationarity")
     )
 
 

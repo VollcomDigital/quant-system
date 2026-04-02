@@ -168,8 +168,8 @@ Use this lifecycle for each policy module:
    - Output: effective module config or `None`.
    - Job:
      - resolve fields via `_merged_field` (override wins only when non-`None`)
-     - enforce required merged fields
-     - call `_normalize_*` then `_apply_*_defaults`
+     - for parent module merges: call `_normalize_*` then `_apply_*_defaults`
+     - for nested sub-merges: only merge fields; do not normalize/apply at sub-level
    - Rule: merge is where effective defaults are materialized.
 
 5. `resolve_validation_overrides`
@@ -208,6 +208,7 @@ Required conventions:
 
 - `_merge_*_config` contains no inline validation branches beyond the `None/None` short-circuit.
 - `_merge_*_config` does not call `_parse_*`.
+- Nested `_merge_*` helpers under a parent module should be raw field merges only; parent module merge is the single owner for normalize + apply-defaults.
 - `_normalize_*` is the only place for validation/canonicalization rules.
 - `_apply_*_defaults` is the only place where module defaults are injected.
 - Even when a module currently has no defaults, keep `_apply_*_defaults` as an identity function for consistency.
@@ -239,6 +240,7 @@ When adding a new module under `validation.*`:
 3. Add `_normalize_new_module(...)` for validation/normalization only.
 4. Add `_apply_new_module_defaults(...)` for effective default injection only.
 5. Add `_merge_new_module_config(base, override)` and call normalize + apply-defaults there.
+   - For nested sub-blocks, implement raw `_merge_<sub>_config(...)` helpers and let the parent module merge own normalize + apply-defaults.
 6. Wire module into:
    - `_parse_validation_*` tree
    - `_merge_data_quality_config` / relevant parent merge
