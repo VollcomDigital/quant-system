@@ -3328,7 +3328,7 @@ class BacktestRunner:
                 outcome = self._strategy_run(plan, state, validated_data, prepared)
                 if outcome is None:
                     continue
-                validation_decision = self._strategy_validate_results(
+                raw_validation_decision = self._strategy_validate_results(
                     state, outcome, plan, validated_data
                 )
                 validation_context_extra: dict[str, Any] = {"strategy": outcome.strategy}
@@ -3336,14 +3336,14 @@ class BacktestRunner:
                     result_validation = outcome.best_stats.get("result_validation")
                     if isinstance(result_validation, dict):
                         validation_context_extra["result_validation"] = dict(result_validation)
-                validation_decision = self._handle_gate_decision(
+                handled_validation_decision = self._handle_gate_decision(
                     state,
-                    validation_decision,
+                    raw_validation_decision,
                     context_extra=validation_context_extra,
                     blocked_collections=blocked_collections,
                 )
-                if not validation_decision.passed:
-                    if validation_decision.action in {"skip_job", "skip_collection"}:
+                if not handled_validation_decision.passed:
+                    if handled_validation_decision.action in {"skip_job", "skip_collection"}:
                         break
                     continue
 
