@@ -1068,6 +1068,19 @@ def parse_optional_str(
     return parsed.lower() if normalize else parsed
 
 
+def parse_required_str(
+    raw: dict[str, Any],
+    prefix: str,
+    key: str,
+    *,
+    normalize: bool = True,
+) -> str:
+    value = parse_optional_str(raw, key, normalize=normalize)
+    if value is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): {key}")
+    return value
+
+
 def parse_optional_bool(
     raw: dict[str, Any],
     prefix: str,
@@ -1195,9 +1208,7 @@ def _parse_outlier_detection(
     max_outlier_pct = parse_required_float(
         parsed_raw, prefix, "max_outlier_pct", min_value=0, max_value=100
     )
-    method = parse_optional_str(parsed_raw, "method")
-    if method is None:
-        raise ValueError(f"Invalid `{prefix}`: missing required field(s): method")
+    method = parse_required_str(parsed_raw, prefix, "method")
     if method not in {"zscore", "modified_zscore"}:
         raise ValueError(
             f"Invalid `{prefix}.method`: expected one of ['modified_zscore', 'zscore']"
