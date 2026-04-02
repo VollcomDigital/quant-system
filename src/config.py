@@ -160,6 +160,7 @@ STATIONARITY_DEFAULT_MIN_POINTS = 30
 LOOKAHEAD_SHUFFLE_TEST_DEFAULT_PERMUTATIONS = 20
 LOOKAHEAD_SHUFFLE_TEST_DEFAULT_THRESHOLD = 0.0
 LOOKAHEAD_SHUFFLE_TEST_DEFAULT_SEED = 1337
+LOOKAHEAD_SHUFFLE_TEST_CONFIG_PREFIX = "validation.result_consistency.lookahead_shuffle_test"
 
 
 def _merged_field(base: Any, override: Any, field: str) -> Any:
@@ -493,7 +494,7 @@ def _apply_result_consistency_defaults(cfg: ResultConsistencyConfig) -> ResultCo
         lookahead_shuffle_test=(
             _apply_lookahead_shuffle_test_defaults(
                 cfg.lookahead_shuffle_test,
-                "validation.result_consistency.lookahead_shuffle_test",
+                LOOKAHEAD_SHUFFLE_TEST_CONFIG_PREFIX,
             )
             if cfg.lookahead_shuffle_test is not None
             else None
@@ -918,12 +919,12 @@ def _merge_lookahead_shuffle_test_config(
                 int(max_failed_permutations) if max_failed_permutations is not None else None
             ),
         ),
-        "validation.result_consistency.lookahead_shuffle_test",
+        LOOKAHEAD_SHUFFLE_TEST_CONFIG_PREFIX,
     )
     assert normalized is not None
     return _apply_lookahead_shuffle_test_defaults(
         normalized,
-        "validation.result_consistency.lookahead_shuffle_test",
+        LOOKAHEAD_SHUFFLE_TEST_CONFIG_PREFIX,
     )
 
 
