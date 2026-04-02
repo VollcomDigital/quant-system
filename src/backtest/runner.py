@@ -3332,10 +3332,6 @@ class BacktestRunner:
                     state, outcome, plan, validated_data
                 )
                 validation_context_extra: dict[str, Any] = {"strategy": outcome.strategy}
-                if isinstance(outcome.best_stats, dict):
-                    result_validation = outcome.best_stats.get("result_validation")
-                    if isinstance(result_validation, dict):
-                        validation_context_extra["result_validation"] = dict(result_validation)
                 handled_validation_decision = self._handle_gate_decision(
                     state,
                     raw_validation_decision,
