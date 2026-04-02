@@ -1805,7 +1805,8 @@ class BacktestRunner:
             returns, returns_issue = cls._stationarity_close_returns(raw_df)
         if returns_issue is not None:
             return None, f"stationarity_adf_indeterminate(reason={returns_issue})", None
-        assert returns is not None
+        if returns is None:
+            return None, "stationarity_adf_indeterminate(reason=missing_returns)", None
         available = len(returns)
         required = cls._stationarity_min_points(stationarity_cfg)
         if available < required:
@@ -1856,7 +1857,8 @@ class BacktestRunner:
             returns, returns_issue = cls._stationarity_close_returns(raw_df)
         if returns_issue is not None:
             return None, f"stationarity_kpss_indeterminate(reason={returns_issue})", None
-        assert returns is not None
+        if returns is None:
+            return None, "stationarity_kpss_indeterminate(reason=missing_returns)", None
         available = len(returns)
         required = cls._stationarity_min_points(stationarity_cfg)
         if available < required:
@@ -1909,9 +1911,11 @@ class BacktestRunner:
             returns, returns_issue = cls._stationarity_close_returns(raw_df)
         if returns_issue is not None:
             return [f"stationarity_regime_shift_indeterminate(reason={returns_issue})"]
-        assert returns is not None
+        if returns is None:
+            return ["stationarity_regime_shift_indeterminate(reason=missing_returns)"]
         regime = stationarity_cfg.regime_shift
-        assert regime is not None
+        if regime is None:
+            return ["stationarity_regime_shift_indeterminate(reason=missing_regime_shift_config)"]
         window = int(regime.window)
         required = max(cls._stationarity_min_points(stationarity_cfg), window * 2)
         available = len(returns)
@@ -3081,8 +3085,10 @@ class BacktestRunner:
             return precheck_decision
         outcome = context.outcome
         plan = context.plan
-        assert outcome is not None
-        assert plan is not None
+        if outcome is None:
+            return GateDecision(False, "reject_result", ["missing_strategy_outcome"], "strategy_validation")
+        if plan is None:
+            return GateDecision(False, "reject_result", ["missing_strategy_plan_context"], "strategy_validation")
 
         reasons = self._collect_strategy_validation_reasons(context, outcome)
         self._append_lookahead_shuffle_reason(context, plan, outcome, reasons)

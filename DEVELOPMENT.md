@@ -199,8 +199,9 @@ def _merge_<module>_config(base, override):
         ),
         "validation.<module_path>",
     )
-    assert normalized is not None
-    return _apply_<module>_defaults(normalized)
+    return _apply_<module>_defaults(
+        _require_normalized(normalized, "validation.<module_path>")
+    )
 ```
 
 Required conventions:
@@ -212,6 +213,8 @@ Required conventions:
 - Even when a module currently has no defaults, keep `_apply_*_defaults` as an identity function for consistency.
 - `_parse_*` returns normalized parsed objects and never injects inheritance-sensitive defaults.
 - Error prefixes must match full config paths (for example `validation.result_consistency...`) for stable tests and UX.
+- Production code should not rely on `assert` for runtime invariants; use explicit guards (`if ...: raise/return`) so behavior is stable when Python is run with `-O`.
+- In config merge helpers, use `_require_normalized(...)` for post-normalize non-`None` guarantees instead of `assert`.
 
 ### Defaulting rules (strict)
 

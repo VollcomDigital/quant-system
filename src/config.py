@@ -170,6 +170,12 @@ def _merged_field(base: Any, override: Any, field: str) -> Any:
     return getattr(base, field, None)
 
 
+def _require_normalized(value: Any, prefix: str) -> Any:
+    if value is None:
+        raise RuntimeError(f"Internal error: normalization returned None for {prefix}")
+    return value
+
+
 def _apply_calendar_defaults(cfg: ValidationCalendarConfig) -> ValidationCalendarConfig:
     kind = cfg.kind if cfg.kind is not None else DEFAULT_CALENDAR_KIND
     return ValidationCalendarConfig(
@@ -529,8 +535,9 @@ def _merge_data_quality_config(
         ),
         "validation.data_quality",
     )
-    assert normalized is not None
-    return _apply_data_quality_defaults(normalized)
+    return _apply_data_quality_defaults(
+        _require_normalized(normalized, "validation.data_quality")
+    )
 
 
 def _merge_optimization_config(
@@ -548,8 +555,9 @@ def _merge_optimization_config(
         ),
         "validation.optimization",
     )
-    assert normalized is not None
-    return _apply_optimization_defaults(normalized)
+    return _apply_optimization_defaults(
+        _require_normalized(normalized, "validation.optimization")
+    )
 
 
 def _merge_result_consistency_config(
@@ -579,8 +587,9 @@ def _merge_result_consistency_config(
     ):
         return None
     normalized = _normalize_result_consistency_config(merged, "validation.result_consistency")
-    assert normalized is not None
-    return _apply_result_consistency_defaults(normalized)
+    return _apply_result_consistency_defaults(
+        _require_normalized(normalized, "validation.result_consistency")
+    )
 
 
 def _merge_result_consistency_outlier_dependency_config(
@@ -597,8 +606,9 @@ def _merge_result_consistency_outlier_dependency_config(
         ),
         "validation.result_consistency.outlier_dependency",
     )
-    assert normalized is not None
-    return _apply_result_consistency_outlier_dependency_defaults(normalized)
+    return _apply_result_consistency_outlier_dependency_defaults(
+        _require_normalized(normalized, "validation.result_consistency.outlier_dependency")
+    )
 
 
 def _merge_result_consistency_execution_price_variance_config(
@@ -613,8 +623,9 @@ def _merge_result_consistency_execution_price_variance_config(
         ),
         "validation.result_consistency.execution_price_variance",
     )
-    assert normalized is not None
-    return _apply_result_consistency_execution_price_variance_defaults(normalized)
+    return _apply_result_consistency_execution_price_variance_defaults(
+        _require_normalized(normalized, "validation.result_consistency.execution_price_variance")
+    )
 
 def _merge_continuity_config(
     base: ValidationContinuityConfig | None,
@@ -633,8 +644,9 @@ def _merge_continuity_config(
         ),
         "validation.data_quality.continuity",
     )
-    assert normalized is not None
-    return _apply_continuity_defaults(normalized)
+    return _apply_continuity_defaults(
+        _require_normalized(normalized, "validation.data_quality.continuity")
+    )
 
 
 def _merge_calendar_config(
@@ -651,8 +663,9 @@ def _merge_calendar_config(
         ),
         "validation.data_quality.continuity.calendar",
     )
-    assert normalized is not None
-    return _apply_calendar_defaults(normalized)
+    return _apply_calendar_defaults(
+        _require_normalized(normalized, "validation.data_quality.continuity.calendar")
+    )
 
 
 def _merge_outlier_detection_config(
@@ -670,8 +683,9 @@ def _merge_outlier_detection_config(
         ),
         "validation.data_quality.outlier_detection",
     )
-    assert normalized is not None
-    return _apply_outlier_detection_defaults(normalized)
+    return _apply_outlier_detection_defaults(
+        _require_normalized(normalized, "validation.data_quality.outlier_detection")
+    )
 
 
 def _normalize_stationarity_regime_shift_config(
@@ -772,8 +786,9 @@ def _merge_stationarity_regime_shift_config(
         ),
         "validation.data_quality.stationarity.regime_shift",
     )
-    assert normalized is not None
-    return _apply_stationarity_regime_shift_defaults(normalized)
+    return _apply_stationarity_regime_shift_defaults(
+        _require_normalized(normalized, "validation.data_quality.stationarity.regime_shift")
+    )
 
 
 def _merge_stationarity_config(
@@ -794,8 +809,9 @@ def _merge_stationarity_config(
         ),
         "validation.data_quality.stationarity",
     )
-    assert normalized is not None
-    return _apply_stationarity_defaults(normalized)
+    return _apply_stationarity_defaults(
+        _require_normalized(normalized, "validation.data_quality.stationarity")
+    )
 
 
 def _normalize_lookahead_shuffle_test_config(
@@ -921,9 +937,8 @@ def _merge_lookahead_shuffle_test_config(
         ),
         LOOKAHEAD_SHUFFLE_TEST_CONFIG_PREFIX,
     )
-    assert normalized is not None
     return _apply_lookahead_shuffle_test_defaults(
-        normalized,
+        _require_normalized(normalized, "validation.result_consistency.lookahead_shuffle_test"),
         LOOKAHEAD_SHUFFLE_TEST_CONFIG_PREFIX,
     )
 
