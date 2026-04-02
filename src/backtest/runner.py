@@ -2633,17 +2633,6 @@ class BacktestRunner:
     ) -> float:
         """Evaluate one parameter set, preferring mode-aware cache when available."""
         full_params = {**plan.fixed_params, **params}
-        try:
-            entries, exits = self._generate_aligned_signals(
-                plan.strategy,
-                validated_data.raw_df,
-                full_params,
-                plan=plan,
-                state=state,
-                track_runtime_errors=True,
-            )
-        except Exception:
-            return float("nan")
         request = self._build_evaluation_request(plan, state, prepared, full_params)
         cached = self.evaluation_cache.get(
             collection=request.collection,
@@ -2661,6 +2650,17 @@ class BacktestRunner:
         )
         if cached is not None:
             return self._apply_cached_evaluation(plan, validated_data, request, cached, full_params)
+        try:
+            entries, exits = self._generate_aligned_signals(
+                plan.strategy,
+                validated_data.raw_df,
+                full_params,
+                plan=plan,
+                state=state,
+                track_runtime_errors=True,
+            )
+        except Exception:
+            return float("nan")
         self.metrics["result_cache_misses"] += 1
         outcome = self._evaluate_strategy_outcome(request, prepared, entries, exits)
         return self._apply_fresh_evaluation(
