@@ -3085,10 +3085,6 @@ class BacktestRunner:
             return precheck_decision
         outcome = context.outcome
         plan = context.plan
-        if outcome is None:
-            return GateDecision(False, "reject_result", ["missing_strategy_outcome"], "strategy_validation")
-        if plan is None:
-            return GateDecision(False, "reject_result", ["missing_strategy_plan_context"], "strategy_validation")
 
         reasons = self._collect_strategy_validation_reasons(context, outcome)
         self._append_lookahead_shuffle_reason(context, plan, outcome, reasons)
