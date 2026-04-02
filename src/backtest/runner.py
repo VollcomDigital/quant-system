@@ -3076,41 +3076,70 @@ class BacktestRunner:
 
     def _strategy_validate_results_common(self, context: ValidationContext) -> GateDecision:
         # Keep this gate lightweight for now; stricter schema checks can be added later.
+        precheck_decision = self._strategy_validation_precheck(context)
+        if precheck_decision is not None:
+            return precheck_decision
         outcome = context.outcome
         plan = context.plan
-        validated_data = context.validated_data
+        assert outcome is not None
+        assert plan is not None
+
+        reasons = self._collect_strategy_validation_reasons(context, outcome)
+        self._append_lookahead_shuffle_reason(context, plan, outcome, reasons)
+        return self._strategy_validation_reject_or_continue(reasons)
+
+    @staticmethod
+    def _strategy_validation_precheck(context: ValidationContext) -> GateDecision | None:
+        outcome = context.outcome
         if outcome is None:
             return GateDecision(False, "reject_result", ["missing_strategy_outcome"], "strategy_validation")
-        if plan is None or validated_data is None:
+        if context.plan is None or context.validated_data is None:
             return GateDecision(False, "reject_result", ["missing_strategy_plan_context"], "strategy_validation")
         if not outcome.has_valid_candidate:
             return GateDecision(False, "reject_result", ["no_valid_candidate"], "strategy_validation")
+        return None
 
-        reasons = self._collect_strategy_validation_reasons(context, outcome)
+    def _append_lookahead_shuffle_reason(
+        self,
+        context: ValidationContext,
+        plan: StrategyPlan,
+        outcome: StrategyEvalOutcome,
+        reasons: list[str],
+    ) -> None:
         lookahead_policy = self._load_lookahead_shuffle_test_policy(context.job.collection)
-        if lookahead_policy is not None:
-            lookahead_reason, lookahead_meta = self._lookahead_shuffle_test_result(
-                context,
-                plan,
-                lookahead_policy,
-                params=outcome.best_params if isinstance(outcome.best_params, dict) else None,
-            )
-            if lookahead_meta is not None and isinstance(outcome.best_stats, dict):
-                best_stats = dict(outcome.best_stats)
-                existing_result_validation = best_stats.get("result_validation")
-                result_validation = (
-                    dict(existing_result_validation) if isinstance(existing_result_validation, dict) else {}
-                )
-                result_validation["lookahead_shuffle_test"] = dict(lookahead_meta)
-                best_stats["result_validation"] = result_validation
-                outcome.best_stats = best_stats
-            if lookahead_reason is not None:
-                reasons.append(lookahead_reason)
+        if lookahead_policy is None:
+            return
+        lookahead_reason, lookahead_meta = self._lookahead_shuffle_test_result(
+            context,
+            plan,
+            lookahead_policy,
+            params=outcome.best_params if isinstance(outcome.best_params, dict) else None,
+        )
+        self._attach_lookahead_shuffle_meta(outcome, lookahead_meta)
+        if lookahead_reason is not None:
+            reasons.append(lookahead_reason)
+
+    @staticmethod
+    def _attach_lookahead_shuffle_meta(
+        outcome: StrategyEvalOutcome,
+        lookahead_meta: dict[str, Any] | None,
+    ) -> None:
+        if lookahead_meta is None or not isinstance(outcome.best_stats, dict):
+            return
+        best_stats = dict(outcome.best_stats)
+        existing_result_validation = best_stats.get("result_validation")
+        result_validation = (
+            dict(existing_result_validation) if isinstance(existing_result_validation, dict) else {}
+        )
+        result_validation["lookahead_shuffle_test"] = dict(lookahead_meta)
+        best_stats["result_validation"] = result_validation
+        outcome.best_stats = best_stats
+
+    @staticmethod
+    def _strategy_validation_reject_or_continue(reasons: list[str]) -> GateDecision:
         if reasons:
-            decision = GateDecision(False, "reject_result", reasons, "strategy_validation")
-        else:
-            decision = GateDecision(True, "continue", [], "strategy_validation")
-        return decision
+            return GateDecision(False, "reject_result", reasons, "strategy_validation")
+        return GateDecision(True, "continue", [], "strategy_validation")
 
     def _collect_strategy_validation_reasons(
         self,
