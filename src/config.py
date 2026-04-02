@@ -598,16 +598,10 @@ def _merge_result_consistency_outlier_dependency_config(
 ) -> ResultConsistencyOutlierDependencyConfig | None:
     if base is None and override is None:
         return None
-    normalized = _normalize_result_consistency_outlier_dependency_config(
-        ResultConsistencyOutlierDependencyConfig(
-            slices=_merged_field(base, override, "slices"),
-            profit_share_threshold=_merged_field(base, override, "profit_share_threshold"),
-            trade_share_threshold=_merged_field(base, override, "trade_share_threshold"),
-        ),
-        "validation.result_consistency.outlier_dependency",
-    )
-    return _apply_result_consistency_outlier_dependency_defaults(
-        _require_normalized(normalized, "validation.result_consistency.outlier_dependency")
+    return ResultConsistencyOutlierDependencyConfig(
+        slices=_merged_field(base, override, "slices"),
+        profit_share_threshold=_merged_field(base, override, "profit_share_threshold"),
+        trade_share_threshold=_merged_field(base, override, "trade_share_threshold"),
     )
 
 
@@ -617,15 +611,10 @@ def _merge_result_consistency_execution_price_variance_config(
 ) -> ResultConsistencyExecutionPriceVarianceConfig | None:
     if base is None and override is None:
         return None
-    normalized = _normalize_result_consistency_execution_price_variance_config(
-        ResultConsistencyExecutionPriceVarianceConfig(
-            price_tolerance_bps=_merged_field(base, override, "price_tolerance_bps"),
-        ),
-        "validation.result_consistency.execution_price_variance",
+    return ResultConsistencyExecutionPriceVarianceConfig(
+        price_tolerance_bps=_merged_field(base, override, "price_tolerance_bps"),
     )
-    return _apply_result_consistency_execution_price_variance_defaults(
-        _require_normalized(normalized, "validation.result_consistency.execution_price_variance")
-    )
+
 
 def _merge_continuity_config(
     base: ValidationContinuityConfig | None,
@@ -926,24 +915,11 @@ def _merge_lookahead_shuffle_test_config(
 ) -> ValidationLookaheadShuffleTestConfig | None:
     if base is None and override is None:
         return None
-    permutations = _merged_field(base, override, "permutations")
-    threshold = _merged_field(base, override, "threshold")
-    seed = _merged_field(base, override, "seed")
-    max_failed_permutations = _merged_field(base, override, "max_failed_permutations")
-    normalized = _normalize_lookahead_shuffle_test_config(
-        ValidationLookaheadShuffleTestConfig(
-            permutations=int(permutations) if permutations is not None else None,
-            threshold=float(threshold) if threshold is not None else None,
-            seed=int(seed) if seed is not None else None,
-            max_failed_permutations=(
-                int(max_failed_permutations) if max_failed_permutations is not None else None
-            ),
-        ),
-        LOOKAHEAD_SHUFFLE_TEST_CONFIG_PREFIX,
-    )
-    return _apply_lookahead_shuffle_test_defaults(
-        _require_normalized(normalized, "validation.result_consistency.lookahead_shuffle_test"),
-        LOOKAHEAD_SHUFFLE_TEST_CONFIG_PREFIX,
+    return ValidationLookaheadShuffleTestConfig(
+        permutations=_merged_field(base, override, "permutations"),
+        threshold=_merged_field(base, override, "threshold"),
+        seed=_merged_field(base, override, "seed"),
+        max_failed_permutations=_merged_field(base, override, "max_failed_permutations"),
     )
 
 
