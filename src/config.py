@@ -932,11 +932,7 @@ def _apply_lookahead_shuffle_test_defaults(
         raise ValueError(f"Invalid `{prefix}`: missing required field(s): permutations")
     if cfg.pvalue_max is None:
         raise ValueError(f"Invalid `{prefix}`: missing required field(s): pvalue_max")
-    effective_permutations = (
-        cfg.permutations
-        if cfg.permutations is not None
-        else LOOKAHEAD_SHUFFLE_TEST_PERMUTATIONS_DEFAULT
-    )
+    effective_permutations = cfg.permutations
     max_failed_permutations = cfg.max_failed_permutations
     if (
         max_failed_permutations is not None
