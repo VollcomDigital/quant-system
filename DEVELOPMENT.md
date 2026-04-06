@@ -77,35 +77,46 @@ flowchart TD
 
 Source: `BacktestRunner.run_all` and helper methods in `src/backtest/runner.py`.
 
-This table tracks which metadata is created at each stage/check and where it
-lands (logs/caches/stores/reports).
+### 1) Final stats model (single source of truth)
 
-| Stage / check | Metadata created or updated | Lands in logs | Lands in caches/stores | Lands in reports |
-|---|---|---|---|---|
-| `collection_validation` gate | `GateDecision` (`passed/action/reasons`), `JobState.decisions`/`reasons_by_stage` | `collection_validation_gate` event (when non-continue) | in-memory `JobState` only | only if failure copied to `runner.failures` |
-| `data_fetch` gate | same gate metadata as above | `data_fetch_gate` | in-memory `JobState` only | only if failure copied to `runner.failures` |
-| `data_validation` gate | continuity + reliability reasons in `ValidatedData`; gate decision in state | `data_validation_gate` | in-memory `ValidatedData`, `JobState` | failure entries in `summary.json.failures` / `health.md` when blocked |
-| `data_preparation` gate | prepared execution context (`ExecutionPreparedData`), gate decision in state | `data_preparation_gate` | in-memory only | only if failure copied to `runner.failures` |
-| `strategy_optimization` gate | plan skip reasons/details, gate decision; optional runtime-threshold detail in `plan.optimization_details` | `strategy_optimization_gate` with `strategy` + `search_method` | in-memory plan/state; runtime cache counters | failures in `summary.json.failures` when rejected/skipped |
-| Strategy evaluation (cache lookup) | `EvaluationRequest` including `validation_config_hash` and `strategy_fingerprint`; cache hit/miss counters | no gate event; normal process logs only | read/write `evaluation_cache.sqlite` and `results.sqlite` | aggregate counters in `summary.json.metrics` / `metrics.prom` |
-| Strategy evaluation (fresh compute) | evaluator `stats` (`trade_meta`, metrics), best-candidate state, cached metric/stats payloads | no gate event | writes to `evaluation_cache.sqlite` (raw stats) and `results.sqlite` (enriched stats) | reflected in final result stats if candidate selected |
-| `strategy_validation` checks | result-consistency reasons; lookahead diagnostics attached to `best_stats.post_run_meta.lookahead_shuffle_test` | `strategy_validation_gate` with `strategy` | `BestResult.stats` persisted to `result_store.sqlite`; no `post_run_meta` in eval cache writes | failures in `summary.json.failures`; selected stats exported in run outputs |
-| Result finalize | `BestResult` + `ResultRecord` write | no gate event | `result_store.sqlite` (`result_records`) | `all_results.csv`, `summary.csv`, `report.md`, `summary.json` |
-| Run finalize | validation profile metadata, active/inactive gates, run counters, failures list | summary lines in CLI output | `result_store.sqlite` (`run_metadata`) | `summary.json`, `metrics.prom`, `health.md` |
+`result_store.result_records.stats_json` stores `BestResult.stats` for each
+selected strategy result.
 
-### Sink Matrix
+Top-level keys in `BestResult.stats` (full current overview):
 
-| Sink | What is stored |
-|---|---|
-| Structured gate logs (`log_json`) | Stage gate verdict + job context + small `context_extra` (`strategy`, `search_method` where applicable). |
-| `runner.failures` (in-memory) | Normalized failure payloads (`collection/symbol/timeframe/source/stage/error` + optional `strategy`). |
-| `.cache/evaluation/evaluation_cache.sqlite` | Per-evaluation cache rows keyed by request identity + `mode_config_hash` + `validation_config_hash` + `strategy_fingerprint`; stores `metric_value` + raw `stats`. |
-| `.cache/results/results.sqlite` | Run-scoped result cache rows (`run_id`, params, metric, enriched `stats`) for reporting/backward-compatible retrieval. |
-| `.cache/evaluation/result_store.sqlite` (`result_records`) | Final selected `BestResult` rows for the run, including persisted `stats` (for example `trade_meta`, `post_run_meta`). |
-| `.cache/evaluation/result_store.sqlite` (`run_metadata`) | Effective validation profile + active/inactive gate ids for the run. |
-| `reports/<run>/summary.json` | run timing, counters, failures list, dashboard summary, validation metadata snapshot. |
-| `reports/<run>/health.md` | Human-readable table of failures derived from `runner.failures`. |
-| `reports/<run>/metrics.prom` | Prometheus counters (cache hits/misses, eval counts, duration, etc.). |
+| Parent key | Child keys (full/current) | Notes |
+|---|---|---|
+| core performance keys | `sharpe`, `sortino`, `omega`, `tail_ratio`, `profit`, `pain_index`, `trades`, `max_drawdown`, `cagr`, `calmar`, `equity_curve`, `drawdown_curve`, `trades_log` | base evaluator/runner stats payload |
+| `trade_meta` | `outlier_dependency`, `execution_price_variance` | produced by evaluator |
+| `trade_meta.outlier_dependency` | `is_complete`, `analyzed_trades_count`, `total_trades`, `trade_count_with_pnl`, `total_positive_profit`, `profit_share_threshold_used`, `dominant_trade_count_for_profit_share`, `dominant_trade_share_for_profit_share`, `slices_used`, `max_slice_profit_share`, `reason`, `expected_trades` | `reason`/`expected_trades` appear on incomplete paths |
+| `trade_meta.execution_price_variance` | `is_complete`, `checked_fills`, `violations`, `violation_ratio`, `reason`, `price_tolerance_bps_used` | complete or incomplete path |
+| `data_reliability` | `continuity` (+ pre-existing reliability keys if present) | merged in `_enrich_evaluation_stats` |
+| `optimization` (optional) | `skipped`, `reason`, `reasons`, `min_bars_required`, `bars_available`, `reliability_reasons`, `runtime_error_threshold` | present when optimization details exist |
+| `post_run_meta` (optional) | `lookahead_shuffle_test` | added during strategy-validation post check |
+| `post_run_meta.lookahead_shuffle_test` | `is_complete`, `reason`, `reason_detail`, `metric_name`, `permutations`, `seed`, `failed_permutations`, `max_failed_permutations`, `threshold`, `finite_permutations`, `median_shuffled_metric`, `min_shuffled_metric`, `max_shuffled_metric` | fields vary by complete/incomplete path |
+
+### 2) Where each parent key lands
+
+Legend: `[x]` = lands there, `[ ]` = does not land there.
+
+| Metadata key/group | Gate logs | `runner.failures` | `evaluation_cache.sqlite` | `results.sqlite` | `result_store.sqlite` (`result_records`) | `summary.json` |
+|---|---|---|---|---|---|---|
+| Gate decision (`passed/action/reasons`) | [x] | [x] (flattened error on fail only) | [ ] | [ ] | [ ] | [x] (via failures list) |
+| Gate context `strategy` | [x] | [x] | [ ] | [ ] | [ ] | [x] (inside failures) |
+| Gate context `search_method` | [x] (`strategy_optimization_gate`) | [ ] | [ ] | [ ] | [ ] | [ ] |
+| Core performance keys | [ ] | [ ] | [x] | [x] | [x] | [ ] |
+| `trade_meta` | [ ] | [ ] | [x] | [x] | [x] | [ ] |
+| `data_reliability` | [ ] | [ ] | [ ] | [x] | [x] | [ ] |
+| `optimization` | [ ] | [ ] | [ ] | [x] | [x] | [ ] |
+| `post_run_meta` | [ ] | [ ] | [ ] | [ ] | [x] | [ ] |
+| Run-level validation profile (`active_gates`, etc.) | [ ] | [ ] | [ ] | [ ] | [x] (`run_metadata`) | [x] (`validation`) |
+| Run counters (`result_cache_hits`, etc.) | [ ] | [ ] | [ ] | [ ] | [ ] | [x] (`metrics`) + `metrics.prom` |
+
+### 3) Short rule
+
+- Research/debug metadata that must survive belongs in `BestResult.stats`
+  (result store).
+- Operational gate signals belong in gate logs/failures and should stay small.
 
 ## Continuity Score Calendar Behavior
 
