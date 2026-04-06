@@ -2340,7 +2340,7 @@ def test_lookahead_shuffle_uses_isolated_plan_state(tmp_path, monkeypatch):
     runner.cfg.validation = ValidationConfig(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=3,
+                permutations=5,
                 threshold=999.0,
                 seed=7,
             )
@@ -2417,7 +2417,7 @@ def test_lookahead_shuffle_requests_are_marked_non_cacheable(tmp_path, monkeypat
     runner.cfg.validation = ValidationConfig(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=4,
+                permutations=5,
                 threshold=999.0,
                 seed=7,
             )
