@@ -2663,6 +2663,7 @@ class BacktestRunner:
         )
         if cached is not None:
             return self._apply_cached_evaluation(plan, validated_data, request, cached, full_params)
+        self.metrics["result_cache_misses"] += 1
         try:
             entries, exits = self._generate_aligned_signals(
                 plan.strategy,
@@ -2674,7 +2675,6 @@ class BacktestRunner:
             )
         except Exception:
             return float("nan")
-        self.metrics["result_cache_misses"] += 1
         outcome = self._evaluate_strategy_outcome(request, prepared, entries, exits)
         return self._apply_fresh_evaluation(
             plan=plan,
