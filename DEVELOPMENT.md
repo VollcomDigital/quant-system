@@ -73,6 +73,40 @@ flowchart TD
   C --> Z([return BestResult list])
 ```
 
+## Metadata By Stage
+
+Source: `BacktestRunner.run_all` and helper methods in `src/backtest/runner.py`.
+
+This table tracks which metadata is created at each stage/check and where it
+lands (logs/caches/stores/reports).
+
+| Stage / check | Metadata created or updated | Lands in logs | Lands in caches/stores | Lands in reports |
+|---|---|---|---|---|
+| `collection_validation` gate | `GateDecision` (`passed/action/reasons`), `JobState.decisions`/`reasons_by_stage` | `collection_validation_gate` event (when non-continue) | in-memory `JobState` only | only if failure copied to `runner.failures` |
+| `data_fetch` gate | same gate metadata as above | `data_fetch_gate` | in-memory `JobState` only | only if failure copied to `runner.failures` |
+| `data_validation` gate | continuity + reliability reasons in `ValidatedData`; gate decision in state | `data_validation_gate` | in-memory `ValidatedData`, `JobState` | failure entries in `summary.json.failures` / `health.md` when blocked |
+| `data_preparation` gate | prepared execution context (`ExecutionPreparedData`), gate decision in state | `data_preparation_gate` | in-memory only | only if failure copied to `runner.failures` |
+| `strategy_optimization` gate | plan skip reasons/details, gate decision; optional runtime-threshold detail in `plan.optimization_details` | `strategy_optimization_gate` with `strategy` + `search_method` | in-memory plan/state; runtime cache counters | failures in `summary.json.failures` when rejected/skipped |
+| Strategy evaluation (cache lookup) | `EvaluationRequest` including `validation_config_hash` and `strategy_fingerprint`; cache hit/miss counters | no gate event; normal process logs only | read/write `evaluation_cache.sqlite` and `results.sqlite` | aggregate counters in `summary.json.metrics` / `metrics.prom` |
+| Strategy evaluation (fresh compute) | evaluator `stats` (`trade_meta`, metrics), best-candidate state, cached metric/stats payloads | no gate event | writes to `evaluation_cache.sqlite` (raw stats) and `results.sqlite` (enriched stats) | reflected in final result stats if candidate selected |
+| `strategy_validation` checks | result-consistency reasons; lookahead diagnostics attached to `best_stats.post_run_meta.lookahead_shuffle_test` | `strategy_validation_gate` with `strategy` | `BestResult.stats` persisted to `result_store.sqlite`; no `post_run_meta` in eval cache writes | failures in `summary.json.failures`; selected stats exported in run outputs |
+| Result finalize | `BestResult` + `ResultRecord` write | no gate event | `result_store.sqlite` (`result_records`) | `all_results.csv`, `summary.csv`, `report.md`, `summary.json` |
+| Run finalize | validation profile metadata, active/inactive gates, run counters, failures list | summary lines in CLI output | `result_store.sqlite` (`run_metadata`) | `summary.json`, `metrics.prom`, `health.md` |
+
+### Sink Matrix
+
+| Sink | What is stored |
+|---|---|
+| Structured gate logs (`log_json`) | Stage gate verdict + job context + small `context_extra` (`strategy`, `search_method` where applicable). |
+| `runner.failures` (in-memory) | Normalized failure payloads (`collection/symbol/timeframe/source/stage/error` + optional `strategy`). |
+| `.cache/evaluation/evaluation_cache.sqlite` | Per-evaluation cache rows keyed by request identity + `mode_config_hash` + `validation_config_hash` + `strategy_fingerprint`; stores `metric_value` + raw `stats`. |
+| `.cache/results/results.sqlite` | Run-scoped result cache rows (`run_id`, params, metric, enriched `stats`) for reporting/backward-compatible retrieval. |
+| `.cache/evaluation/result_store.sqlite` (`result_records`) | Final selected `BestResult` rows for the run, including persisted `stats` (for example `trade_meta`, `post_run_meta`). |
+| `.cache/evaluation/result_store.sqlite` (`run_metadata`) | Effective validation profile + active/inactive gate ids for the run. |
+| `reports/<run>/summary.json` | run timing, counters, failures list, dashboard summary, validation metadata snapshot. |
+| `reports/<run>/health.md` | Human-readable table of failures derived from `runner.failures`. |
+| `reports/<run>/metrics.prom` | Prometheus counters (cache hits/misses, eval counts, duration, etc.). |
+
 ## Continuity Score Calendar Behavior
 
 Source: `BacktestRunner.compute_continuity_score` in
