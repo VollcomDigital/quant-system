@@ -1530,6 +1530,87 @@ def _patch_source_with_bars(monkeypatch, bars: int) -> None:
     monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
 
 
+def _patch_trending_source(monkeypatch, bars: int = 25) -> None:
+    class _Source:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            return _make_trending_ohlcv(bars)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
+
+
+def _lookahead_shuffle_test_config(
+    *,
+    permutations: int = 100,
+    pvalue_max: float = 0.05,
+    seed: int = 7,
+    max_failed_permutations: int | None = None,
+) -> ValidationLookaheadShuffleTestConfig:
+    return ValidationLookaheadShuffleTestConfig(
+        permutations=permutations,
+        pvalue_max=pvalue_max,
+        seed=seed,
+        max_failed_permutations=max_failed_permutations,
+    )
+
+
+def _configure_result_consistency_runner(
+    runner: BacktestRunner,
+    *,
+    strategy_name: str,
+    strategy_cls: type[BaseStrategy],
+    result_consistency: ResultConsistencyConfig,
+) -> None:
+    runner.cfg.strategies = [
+        StrategyConfig(
+            name=strategy_name,
+            module=None,
+            cls=None,
+            params={},
+        )
+    ]
+    runner.external_index = {strategy_name: strategy_cls}
+    runner.cfg.validation = ValidationConfig(result_consistency=result_consistency)
+    resolve_validation_overrides(runner.cfg)
+
+
+def _build_strategy_validation_artifacts(
+    runner: BacktestRunner,
+    *,
+    strategy_name: str,
+    raw_df: pd.DataFrame | None = None,
+    outcome: StrategyEvalOutcome | None = None,
+):
+    effective_raw_df = raw_df if raw_df is not None else _make_trending_ohlcv(25)
+    state = JobState(
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        )
+    )
+    plan = runner._strategy_create_plan(state, strategy_name)
+    validated_data = ValidatedData(
+        raw_df=effective_raw_df,
+        continuity={},
+        reliability_on_fail="skip_optimization",
+        reliability_reasons=[],
+    )
+    context_kwargs = {
+        "stage": "strategy_validation",
+        "state": state,
+        "mode": "backtest",
+        "job": state.job,
+        "validated_data": validated_data,
+    }
+    if outcome is not None:
+        context_kwargs["plan"] = plan
+        context_kwargs["outcome"] = outcome
+    context = ValidationContext(**context_kwargs)
+    policy = runner._load_lookahead_shuffle_test_policy(state.job.collection)
+    return state, plan, validated_data, context, policy
+
+
 def _patch_pybroker_simulation(monkeypatch) -> dict[str, int]:
     eval_calls = {"count": 0}
 
@@ -2284,49 +2365,18 @@ def test_run_all_reliability_skip_evaluation_on_max_outlier_pct(tmp_path, monkey
 
 def test_lookahead_shuffle_test_result_is_deterministic(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
-    runner.cfg.strategies = [
-        StrategyConfig(
-            name="leaky_shuffle",
-            module=None,
-            cls=None,
-            params={},
-        )
-    ]
-    runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
-    runner.cfg.validation = ValidationConfig(
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
         result_consistency=_result_consistency_config(
-            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=100,
-                pvalue_max=0.05,
-                seed=7,
-            )
+            lookahead_shuffle_test=_lookahead_shuffle_test_config()
         ),
     )
-    resolve_validation_overrides(runner.cfg)
-    raw_df = _make_trending_ohlcv(25)
-    state = JobState(
-        job=JobContext(
-            collection=runner.cfg.collections[0],
-            symbol="AAPL",
-            timeframe="1d",
-            source="custom",
-        )
+    _, plan, _, context, policy = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="leaky_shuffle",
     )
-    plan = runner._strategy_create_plan(state, "leaky_shuffle")
-    validated_data = ValidatedData(
-        raw_df=raw_df,
-        continuity={},
-        reliability_on_fail="skip_optimization",
-        reliability_reasons=[],
-    )
-    context = ValidationContext(
-        stage="strategy_validation",
-        state=state,
-        mode="backtest",
-        job=state.job,
-        validated_data=validated_data,
-    )
-    policy = runner._load_lookahead_shuffle_test_policy(state.job.collection)
     runner.metrics = {"result_cache_misses": 0}
     reason_one, meta_one = runner._lookahead_shuffle_test_result(context, plan, policy)
     reason_two, meta_two = runner._lookahead_shuffle_test_result(context, plan, policy)
@@ -2346,42 +2396,15 @@ def test_strategy_validation_result_consistency_min_gates_fail_fast_before_looka
     tmp_path, monkeypatch
 ):
     runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
-    runner.cfg.strategies = [
-        StrategyConfig(
-            name="leaky_shuffle",
-            module=None,
-            cls=None,
-            params={},
-        )
-    ]
-    runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
-    runner.cfg.validation = ValidationConfig(
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
         result_consistency=_result_consistency_config(
             min_metric=1.0,
             min_trades=10,
-            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=100,
-                pvalue_max=0.05,
-                seed=7,
-            ),
+            lookahead_shuffle_test=_lookahead_shuffle_test_config(),
         ),
-    )
-    resolve_validation_overrides(runner.cfg)
-    raw_df = _make_trending_ohlcv(25)
-    state = JobState(
-        job=JobContext(
-            collection=runner.cfg.collections[0],
-            symbol="AAPL",
-            timeframe="1d",
-            source="custom",
-        )
-    )
-    plan = runner._strategy_create_plan(state, "leaky_shuffle")
-    validated_data = ValidatedData(
-        raw_df=raw_df,
-        continuity={},
-        reliability_on_fail="skip_optimization",
-        reliability_reasons=[],
     )
     outcome = StrategyEvalOutcome(
         best_val=0.2,
@@ -2391,15 +2414,16 @@ def test_strategy_validation_result_consistency_min_gates_fail_fast_before_looka
         evaluations=1,
         skipped_reason=None,
         strategy="leaky_shuffle",
-        job=state.job,
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        ),
     )
-    context = ValidationContext(
-        stage="strategy_validation",
-        state=state,
-        mode="backtest",
-        job=state.job,
-        validated_data=validated_data,
-        plan=plan,
+    _, _, _, context, _ = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="leaky_shuffle",
         outcome=outcome,
     )
 
@@ -2422,49 +2446,18 @@ def test_strategy_validation_result_consistency_min_gates_fail_fast_before_looka
 
 def test_lookahead_shuffle_test_rejects_on_pvalue_threshold(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
-    runner.cfg.strategies = [
-        StrategyConfig(
-            name="leaky_shuffle",
-            module=None,
-            cls=None,
-            params={},
-        )
-    ]
-    runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
-    runner.cfg.validation = ValidationConfig(
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
         result_consistency=_result_consistency_config(
-            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=100,
-                pvalue_max=0.05,
-                seed=7,
-            )
+            lookahead_shuffle_test=_lookahead_shuffle_test_config()
         ),
     )
-    resolve_validation_overrides(runner.cfg)
-    raw_df = _make_trending_ohlcv(25)
-    state = JobState(
-        job=JobContext(
-            collection=runner.cfg.collections[0],
-            symbol="AAPL",
-            timeframe="1d",
-            source="custom",
-        )
+    _, plan, _, context, policy = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="leaky_shuffle",
     )
-    plan = runner._strategy_create_plan(state, "leaky_shuffle")
-    validated_data = ValidatedData(
-        raw_df=raw_df,
-        continuity={},
-        reliability_on_fail="skip_optimization",
-        reliability_reasons=[],
-    )
-    context = ValidationContext(
-        stage="strategy_validation",
-        state=state,
-        mode="backtest",
-        job=state.job,
-        validated_data=validated_data,
-    )
-    policy = runner._load_lookahead_shuffle_test_policy(state.job.collection)
     assert policy is not None
 
     def _stub_permutations(self, run_ctx):
@@ -2492,49 +2485,18 @@ def test_lookahead_shuffle_test_rejects_on_pvalue_threshold(tmp_path, monkeypatc
 
 def test_lookahead_shuffle_uses_isolated_plan_state(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
-    runner.cfg.strategies = [
-        StrategyConfig(
-            name="leaky_shuffle",
-            module=None,
-            cls=None,
-            params={},
-        )
-    ]
-    runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
-    runner.cfg.validation = ValidationConfig(
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
         result_consistency=_result_consistency_config(
-            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=100,
-                pvalue_max=1.0,
-                seed=7,
-            )
+            lookahead_shuffle_test=_lookahead_shuffle_test_config(pvalue_max=1.0)
         ),
     )
-    resolve_validation_overrides(runner.cfg)
-    raw_df = _make_trending_ohlcv(25)
-    state = JobState(
-        job=JobContext(
-            collection=runner.cfg.collections[0],
-            symbol="AAPL",
-            timeframe="1d",
-            source="custom",
-        )
+    _, plan, _, context, policy = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="leaky_shuffle",
     )
-    plan = runner._strategy_create_plan(state, "leaky_shuffle")
-    validated_data = ValidatedData(
-        raw_df=raw_df,
-        continuity={},
-        reliability_on_fail="skip_optimization",
-        reliability_reasons=[],
-    )
-    context = ValidationContext(
-        stage="strategy_validation",
-        state=state,
-        mode="backtest",
-        job=state.job,
-        validated_data=validated_data,
-    )
-    policy = runner._load_lookahead_shuffle_test_policy(state.job.collection)
     assert policy is not None
 
     original_build_request = runner._build_evaluation_request
@@ -2569,49 +2531,18 @@ def test_lookahead_shuffle_uses_isolated_plan_state(tmp_path, monkeypatch):
 
 def test_lookahead_shuffle_requests_are_marked_non_cacheable(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
-    runner.cfg.strategies = [
-        StrategyConfig(
-            name="leaky_shuffle",
-            module=None,
-            cls=None,
-            params={},
-        )
-    ]
-    runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
-    runner.cfg.validation = ValidationConfig(
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
         result_consistency=_result_consistency_config(
-            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=100,
-                pvalue_max=1.0,
-                seed=7,
-            )
+            lookahead_shuffle_test=_lookahead_shuffle_test_config(pvalue_max=1.0)
         ),
     )
-    resolve_validation_overrides(runner.cfg)
-    raw_df = _make_trending_ohlcv(25)
-    state = JobState(
-        job=JobContext(
-            collection=runner.cfg.collections[0],
-            symbol="AAPL",
-            timeframe="1d",
-            source="custom",
-        )
+    _, plan, _, context, policy = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="leaky_shuffle",
     )
-    plan = runner._strategy_create_plan(state, "leaky_shuffle")
-    validated_data = ValidatedData(
-        raw_df=raw_df,
-        continuity={},
-        reliability_on_fail="skip_optimization",
-        reliability_reasons=[],
-    )
-    context = ValidationContext(
-        stage="strategy_validation",
-        state=state,
-        mode="backtest",
-        job=state.job,
-        validated_data=validated_data,
-    )
-    policy = runner._load_lookahead_shuffle_test_policy(state.job.collection)
     assert policy is not None
     seen_cacheable_flags: list[bool] = []
 
@@ -2652,49 +2583,18 @@ def test_lookahead_shuffle_test_result_does_not_track_runtime_errors(
             raise RuntimeError("signal boom")
 
     runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
-    runner.cfg.strategies = [
-        StrategyConfig(
-            name="boom_shuffle",
-            module=None,
-            cls=None,
-            params={},
-        )
-    ]
-    runner.external_index = {"boom_shuffle": _BoomShuffleStrategy}
-    runner.cfg.validation = ValidationConfig(
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="boom_shuffle",
+        strategy_cls=_BoomShuffleStrategy,
         result_consistency=_result_consistency_config(
-            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=100,
-                pvalue_max=0.05,
-                seed=7,
-            )
+            lookahead_shuffle_test=_lookahead_shuffle_test_config()
         ),
     )
-    resolve_validation_overrides(runner.cfg)
-    raw_df = _make_trending_ohlcv(25)
-    state = JobState(
-        job=JobContext(
-            collection=runner.cfg.collections[0],
-            symbol="AAPL",
-            timeframe="1d",
-            source="custom",
-        )
+    _, plan, _, context, policy = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="boom_shuffle",
     )
-    plan = runner._strategy_create_plan(state, "boom_shuffle")
-    validated_data = ValidatedData(
-        raw_df=raw_df,
-        continuity={},
-        reliability_on_fail="skip_optimization",
-        reliability_reasons=[],
-    )
-    context = ValidationContext(
-        stage="strategy_validation",
-        state=state,
-        mode="backtest",
-        job=state.job,
-        validated_data=validated_data,
-    )
-    policy = runner._load_lookahead_shuffle_test_policy(state.job.collection)
     runner.metrics = {"result_cache_misses": 0}
 
     reason, meta = runner._lookahead_shuffle_test_result(context, plan, policy)
@@ -2724,50 +2624,20 @@ def test_lookahead_shuffle_test_result_limits_failed_permutations(
             raise RuntimeError("signal boom")
 
     runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
-    runner.cfg.strategies = [
-        StrategyConfig(
-            name="boom_shuffle",
-            module=None,
-            cls=None,
-            params={},
-        )
-    ]
-    runner.external_index = {"boom_shuffle": _BoomShuffleStrategy}
-    runner.cfg.validation = ValidationConfig(
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="boom_shuffle",
+        strategy_cls=_BoomShuffleStrategy,
         result_consistency=_result_consistency_config(
-            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=100,
-                pvalue_max=0.05,
-                seed=7,
-                max_failed_permutations=1,
+            lookahead_shuffle_test=_lookahead_shuffle_test_config(
+                max_failed_permutations=1
             )
         ),
     )
-    resolve_validation_overrides(runner.cfg)
-    raw_df = _make_trending_ohlcv(25)
-    state = JobState(
-        job=JobContext(
-            collection=runner.cfg.collections[0],
-            symbol="AAPL",
-            timeframe="1d",
-            source="custom",
-        )
+    _, plan, _, context, policy = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="boom_shuffle",
     )
-    plan = runner._strategy_create_plan(state, "boom_shuffle")
-    validated_data = ValidatedData(
-        raw_df=raw_df,
-        continuity={},
-        reliability_on_fail="skip_optimization",
-        reliability_reasons=[],
-    )
-    context = ValidationContext(
-        stage="strategy_validation",
-        state=state,
-        mode="backtest",
-        job=state.job,
-        validated_data=validated_data,
-    )
-    policy = runner._load_lookahead_shuffle_test_policy(state.job.collection)
     runner.metrics = {"result_cache_misses": 0}
 
     reason, meta = runner._lookahead_shuffle_test_result(context, plan, policy)
@@ -2800,31 +2670,15 @@ def test_run_all_lookahead_shuffle_test_indeterminate_rejects_result(
             return entries, exits
 
     runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
-    runner.cfg.strategies = [
-        StrategyConfig(
-            name="shuffle_sensitive",
-            module=None,
-            cls=None,
-            params={},
-        )
-    ]
-    runner.external_index = {"shuffle_sensitive": _ShuffleSensitiveStrategy}
-    runner.cfg.validation = ValidationConfig(
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="shuffle_sensitive",
+        strategy_cls=_ShuffleSensitiveStrategy,
         result_consistency=_result_consistency_config(
-            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=100,
-                pvalue_max=0.05,
-                seed=7,
-            )
+            lookahead_shuffle_test=_lookahead_shuffle_test_config()
         ),
     )
-    resolve_validation_overrides(runner.cfg)
-
-    class _Source:
-        def fetch(self, symbol, timeframe, only_cached=False):
-            return _make_trending_ohlcv(25)
-
-    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
+    _patch_trending_source(monkeypatch)
     eval_calls = _patch_pybroker_simulation(monkeypatch)
 
     results = runner.run_all()
@@ -2843,31 +2697,15 @@ def test_run_all_lookahead_shuffle_test_rejects_result_in_strategy_validation(
     tmp_path, monkeypatch
 ):
     runner = _make_runner(tmp_path, monkeypatch)
-    runner.cfg.strategies = [
-        StrategyConfig(
-            name="leaky_shuffle",
-            module=None,
-            cls=None,
-            params={},
-        )
-    ]
-    runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
-    runner.cfg.validation = ValidationConfig(
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
         result_consistency=_result_consistency_config(
-            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=100,
-                pvalue_max=0.05,
-                seed=7,
-            )
+            lookahead_shuffle_test=_lookahead_shuffle_test_config()
         ),
     )
-    resolve_validation_overrides(runner.cfg)
-
-    class _Source:
-        def fetch(self, symbol, timeframe, only_cached=False):
-            return _make_trending_ohlcv(25)
-
-    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
+    _patch_trending_source(monkeypatch)
     eval_calls = _patch_pybroker_simulation(monkeypatch)
 
     results = runner.run_all()
@@ -2886,31 +2724,15 @@ def test_run_all_lookahead_shuffle_test_attaches_post_run_meta(
     tmp_path, monkeypatch
 ):
     runner = _make_runner(tmp_path, monkeypatch)
-    runner.cfg.strategies = [
-        StrategyConfig(
-            name="leaky_shuffle",
-            module=None,
-            cls=None,
-            params={},
-        )
-    ]
-    runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
-    runner.cfg.validation = ValidationConfig(
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
         result_consistency=_result_consistency_config(
-            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=100,
-                pvalue_max=1.0,
-                seed=7,
-            )
+            lookahead_shuffle_test=_lookahead_shuffle_test_config(pvalue_max=1.0)
         ),
     )
-    resolve_validation_overrides(runner.cfg)
-
-    class _Source:
-        def fetch(self, symbol, timeframe, only_cached=False):
-            return _make_trending_ohlcv(25)
-
-    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
+    _patch_trending_source(monkeypatch)
     eval_calls = _patch_pybroker_simulation(monkeypatch)
 
     results = runner.run_all()
@@ -2926,31 +2748,15 @@ def test_run_all_lookahead_shuffle_test_does_not_mutate_cached_stats_payload(
     tmp_path, monkeypatch
 ):
     runner = _make_runner(tmp_path, monkeypatch)
-    runner.cfg.strategies = [
-        StrategyConfig(
-            name="leaky_shuffle",
-            module=None,
-            cls=None,
-            params={},
-        )
-    ]
-    runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
-    runner.cfg.validation = ValidationConfig(
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
         result_consistency=_result_consistency_config(
-            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=100,
-                pvalue_max=1.0,
-                seed=7,
-            )
+            lookahead_shuffle_test=_lookahead_shuffle_test_config(pvalue_max=1.0)
         ),
     )
-    resolve_validation_overrides(runner.cfg)
-
-    class _Source:
-        def fetch(self, symbol, timeframe, only_cached=False):
-            return _make_trending_ohlcv(25)
-
-    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
+    _patch_trending_source(monkeypatch)
     _patch_pybroker_simulation(monkeypatch)
 
     results = runner.run_all()
