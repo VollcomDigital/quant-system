@@ -2462,7 +2462,7 @@ class BacktestRunner:
                         reason_detail=str(exc),
                     )
                 continue
-            if outcome.valid and np.isfinite(outcome.metric_value):
+            if outcome.metric_computed and np.isfinite(outcome.metric_value):
                 metric_values.append(float(outcome.metric_value))
         return metric_values, failed_permutations, None
 
