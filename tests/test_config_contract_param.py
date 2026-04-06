@@ -96,15 +96,27 @@ CONTRACT_CASES = [
         "parse_path": "result_consistency.lookahead_shuffle_test.seed",
         "effective_path": "result_consistency.lookahead_shuffle_test.seed",
         "global_for_default": {
-            "result_consistency": {"lookahead_shuffle_test": {"permutations": 100, "pvalue_max": 0.05}}
+            "result_consistency": {
+                "min_metric": 0.5,
+                "min_trades": 20,
+                "lookahead_shuffle_test": {"permutations": 100, "pvalue_max": 0.05},
+            }
         },
         "default_value": 1337,
         "global_for_inherit": {
             "result_consistency": {
+                "min_metric": 0.5,
+                "min_trades": 20,
                 "lookahead_shuffle_test": {"permutations": 100, "pvalue_max": 0.05, "seed": 17}
             }
         },
-        "collection_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"permutations": 100}}},
+        "collection_for_inherit": {
+            "result_consistency": {
+                "min_metric": 0.5,
+                "min_trades": 20,
+                "lookahead_shuffle_test": {"permutations": 100},
+            }
+        },
         "inherit_value": 17,
     },
     {

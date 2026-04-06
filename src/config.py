@@ -128,6 +128,8 @@ class ResultConsistencyExecutionPriceVarianceConfig:
 
 @dataclass
 class ResultConsistencyConfig:
+    min_metric: float | None = None
+    min_trades: int | None = None
     outlier_dependency: ResultConsistencyOutlierDependencyConfig | None = None
     execution_price_variance: ResultConsistencyExecutionPriceVarianceConfig | None = None
     lookahead_shuffle_test: ValidationLookaheadShuffleTestConfig | None = None
@@ -175,6 +177,7 @@ VALIDATION_NON_NEGATIVE_INT_MIN = 0
 VALIDATION_NON_NEGATIVE_FLOAT_MIN = 0.0
 OPTIMIZATION_RUNTIME_ERROR_MAX_PER_TUPLE_MIN = 1
 RESULT_CONSISTENCY_OUTLIER_DEPENDENCY_SLICES_MIN = 2
+RESULT_CONSISTENCY_MIN_TRADES_MIN = 1
 OUTLIER_DETECTION_ZSCORE_THRESHOLD_MIN_EXCLUSIVE = 0.0
 
 
@@ -513,7 +516,17 @@ def _normalize_result_consistency_config(
             f"Invalid `{prefix}`: expected at least one configured module "
             "(`outlier_dependency`, `execution_price_variance`, or `lookahead_shuffle_test`)"
         )
+    min_metric_raw = getattr(cfg, "min_metric", None)
+    min_metric = float(min_metric_raw) if min_metric_raw is not None else None
+    if min_metric is not None and not math.isfinite(min_metric):
+        raise ValueError(f"`{prefix}.min_metric` must be finite")
+    min_trades_raw = getattr(cfg, "min_trades", None)
+    min_trades = int(min_trades_raw) if min_trades_raw is not None else None
+    if min_trades is not None and min_trades < RESULT_CONSISTENCY_MIN_TRADES_MIN:
+        raise ValueError(f"`{prefix}.min_trades` must be >= {RESULT_CONSISTENCY_MIN_TRADES_MIN}")
     return ResultConsistencyConfig(
+        min_metric=min_metric,
+        min_trades=min_trades,
         outlier_dependency=outlier_dependency,
         execution_price_variance=execution_price_variance,
         lookahead_shuffle_test=lookahead_shuffle_test,
@@ -521,7 +534,13 @@ def _normalize_result_consistency_config(
 
 
 def _apply_result_consistency_defaults(cfg: ResultConsistencyConfig) -> ResultConsistencyConfig:
+    if cfg.min_metric is None:
+        raise ValueError("Invalid `validation.result_consistency`: missing required field(s): min_metric")
+    if cfg.min_trades is None:
+        raise ValueError("Invalid `validation.result_consistency`: missing required field(s): min_trades")
     return ResultConsistencyConfig(
+        min_metric=cfg.min_metric,
+        min_trades=cfg.min_trades,
         outlier_dependency=(
             _apply_result_consistency_outlier_dependency_defaults(cfg.outlier_dependency)
             if cfg.outlier_dependency is not None
@@ -602,6 +621,8 @@ def _merge_result_consistency_config(
     if base is None and override is None:
         return None
     merged = ResultConsistencyConfig(
+        min_metric=_merged_field(base, override, "min_metric"),
+        min_trades=_merged_field(base, override, "min_trades"),
         outlier_dependency=_merge_result_consistency_outlier_dependency_config(
             getattr(base, "outlier_dependency", None),
             getattr(override, "outlier_dependency", None),
@@ -1468,6 +1489,14 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
         return None
     parsed_raw = require_mapping(raw, prefix)
 
+    min_metric = parse_optional_float(parsed_raw, prefix, "min_metric")
+    min_trades = parse_optional_int(
+        parsed_raw,
+        prefix,
+        "min_trades",
+        min_value=RESULT_CONSISTENCY_MIN_TRADES_MIN,
+    )
+
     outlier_dependency_raw = parsed_raw.get("outlier_dependency")
     if outlier_dependency_raw is not None and not isinstance(outlier_dependency_raw, dict):
         raise ValueError(f"Invalid `{prefix}.outlier_dependency`: expected a mapping")
@@ -1505,6 +1534,8 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
 
     return _normalize_result_consistency_config(
         ResultConsistencyConfig(
+            min_metric=min_metric,
+            min_trades=min_trades,
             outlier_dependency=outlier_dependency,
             execution_price_variance=execution_price_variance,
             lookahead_shuffle_test=lookahead_shuffle_test,

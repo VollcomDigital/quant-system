@@ -14,7 +14,7 @@ from src.backtest.evaluation.contracts import (
     EvaluationOutcome,
     EvaluationRequest,
 )
-from src.backtest.runner import BacktestRunner, BestResult, GateDecision
+from src.backtest.runner import BacktestRunner, BestResult, GateDecision, StrategyEvalOutcome
 from src.backtest.runner import JobContext, JobState, ValidationContext, ValidatedData
 from src.config import (
     CollectionConfig,
@@ -275,6 +275,18 @@ def _make_runner(
     return runner
 
 
+def _result_consistency_config(**overrides) -> ResultConsistencyConfig:
+    payload = {
+        "min_metric": -1e9,
+        "min_trades": 1,
+        "outlier_dependency": None,
+        "execution_price_variance": None,
+        "lookahead_shuffle_test": None,
+    }
+    payload.update(overrides)
+    return ResultConsistencyConfig(**payload)
+
+
 def test_bars_per_year_various_units():
     assert BacktestRunner._bars_per_year("1d") == 252
     assert BacktestRunner._bars_per_year("2w") == 26
@@ -529,6 +541,8 @@ def test_serialize_data_quality_profile_keeps_schema_and_key_order():
 
 def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
     result_consistency = SimpleNamespace(
+        min_metric=0.5,
+        min_trades=20,
         outlier_dependency=SimpleNamespace(
             slices=5,
             profit_share_threshold=0.8,
@@ -545,10 +559,14 @@ def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
     payload = BacktestRunner._serialize_result_consistency_profile(result_consistency)
 
     assert list(payload.keys()) == [
+        "min_metric",
+        "min_trades",
         "outlier_dependency",
         "execution_price_variance",
         "lookahead_shuffle_test",
     ]
+    assert payload["min_metric"] == pytest.approx(0.5)
+    assert payload["min_trades"] == 20
     assert payload["outlier_dependency"] == {
         "slices": 5,
         "profit_share_threshold": 0.8,
@@ -2276,7 +2294,7 @@ def test_lookahead_shuffle_test_result_is_deterministic(tmp_path, monkeypatch):
     ]
     runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
                 pvalue_max=0.05,
@@ -2324,6 +2342,84 @@ def test_lookahead_shuffle_test_result_is_deterministic(tmp_path, monkeypatch):
     assert runner._runtime_signal_error_counts == {}
 
 
+def test_strategy_validation_result_consistency_min_gates_fail_fast_before_lookahead(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.strategies = [
+        StrategyConfig(
+            name="leaky_shuffle",
+            module=None,
+            cls=None,
+            params={},
+        )
+    ]
+    runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
+    runner.cfg.validation = ValidationConfig(
+        result_consistency=_result_consistency_config(
+            min_metric=1.0,
+            min_trades=10,
+            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
+                permutations=100,
+                pvalue_max=0.05,
+                seed=7,
+            ),
+        ),
+    )
+    resolve_validation_overrides(runner.cfg)
+    raw_df = _make_trending_ohlcv(25)
+    state = JobState(
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        )
+    )
+    plan = runner._strategy_create_plan(state, "leaky_shuffle")
+    validated_data = ValidatedData(
+        raw_df=raw_df,
+        continuity={},
+        reliability_on_fail="skip_optimization",
+        reliability_reasons=[],
+    )
+    outcome = StrategyEvalOutcome(
+        best_val=0.2,
+        best_params={},
+        best_stats={"trades": 2},
+        has_valid_candidate=True,
+        evaluations=1,
+        skipped_reason=None,
+        strategy="leaky_shuffle",
+        job=state.job,
+    )
+    context = ValidationContext(
+        stage="strategy_validation",
+        state=state,
+        mode="backtest",
+        job=state.job,
+        validated_data=validated_data,
+        plan=plan,
+        outcome=outcome,
+    )
+
+    def _unexpected_lookahead(*_args, **_kwargs):
+        raise AssertionError("lookahead should be skipped after min gates fail")
+
+    monkeypatch.setattr(
+        runner,
+        "_lookahead_shuffle_test_result",
+        MethodType(_unexpected_lookahead, runner),
+    )
+
+    decision = runner._strategy_validate_results_common(context)
+
+    assert not decision.passed
+    assert decision.action == "reject_result"
+    assert "min_metric_not_met(required=1.0, available=0.2)" in decision.reasons
+    assert "min_trades_not_met(required=10, available=2)" in decision.reasons
+
+
 def test_lookahead_shuffle_test_rejects_on_pvalue_threshold(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
     runner.cfg.strategies = [
@@ -2336,7 +2432,7 @@ def test_lookahead_shuffle_test_rejects_on_pvalue_threshold(tmp_path, monkeypatc
     ]
     runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
                 pvalue_max=0.05,
@@ -2406,7 +2502,7 @@ def test_lookahead_shuffle_uses_isolated_plan_state(tmp_path, monkeypatch):
     ]
     runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
                 pvalue_max=1.0,
@@ -2483,7 +2579,7 @@ def test_lookahead_shuffle_requests_are_marked_non_cacheable(tmp_path, monkeypat
     ]
     runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
                 pvalue_max=1.0,
@@ -2566,7 +2662,7 @@ def test_lookahead_shuffle_test_result_does_not_track_runtime_errors(
     ]
     runner.external_index = {"boom_shuffle": _BoomShuffleStrategy}
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
                 pvalue_max=0.05,
@@ -2638,7 +2734,7 @@ def test_lookahead_shuffle_test_result_limits_failed_permutations(
     ]
     runner.external_index = {"boom_shuffle": _BoomShuffleStrategy}
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
                 pvalue_max=0.05,
@@ -2714,7 +2810,7 @@ def test_run_all_lookahead_shuffle_test_indeterminate_rejects_result(
     ]
     runner.external_index = {"shuffle_sensitive": _ShuffleSensitiveStrategy}
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
                 pvalue_max=0.05,
@@ -2757,7 +2853,7 @@ def test_run_all_lookahead_shuffle_test_rejects_result_in_strategy_validation(
     ]
     runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
                 pvalue_max=0.05,
@@ -2800,7 +2896,7 @@ def test_run_all_lookahead_shuffle_test_attaches_post_run_meta(
     ]
     runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
                 pvalue_max=1.0,
@@ -2840,7 +2936,7 @@ def test_run_all_lookahead_shuffle_test_does_not_mutate_cached_stats_payload(
     ]
     runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
                 pvalue_max=1.0,
@@ -3434,7 +3530,7 @@ def test_run_all_collection_cache_isolation_for_same_name_collections(tmp_path, 
 def test_run_all_rejects_result_on_outlier_dependency(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             outlier_dependency=ResultConsistencyOutlierDependencyConfig(
                 slices=5,
                 profit_share_threshold=0.80,
@@ -3618,7 +3714,7 @@ def test_collect_reliability_reasons_dispatches_outlier_reason_to_subclass():
 def test_run_all_result_consistency_skips_check_for_missing_trades_frame(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             outlier_dependency=ResultConsistencyOutlierDependencyConfig(
                 slices=5,
                 profit_share_threshold=0.80,
@@ -3663,7 +3759,7 @@ def test_run_all_result_consistency_skips_check_for_missing_trades_frame(tmp_pat
 def test_run_all_rejects_result_on_execution_price_variance(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             execution_price_variance=ResultConsistencyExecutionPriceVarianceConfig(
                 price_tolerance_bps=0.0
             )

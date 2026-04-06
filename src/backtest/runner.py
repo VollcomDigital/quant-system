@@ -211,6 +211,8 @@ class BacktestRunner:
         "data_quality.outlier_detection",
         "data_quality.stationarity",
         "optimization.feasibility",
+        "result_consistency.min_metric",
+        "result_consistency.min_trades",
         "result_consistency.outlier_dependency",
         "result_consistency.execution_price_variance",
         "result_consistency.lookahead_shuffle_test",
@@ -470,6 +472,8 @@ class BacktestRunner:
         outlier_dependency = getattr(result_consistency, "outlier_dependency", None)
         execution_price_variance = getattr(result_consistency, "execution_price_variance", None)
         return {
+            "min_metric": getattr(result_consistency, "min_metric", None),
+            "min_trades": getattr(result_consistency, "min_trades", None),
             "outlier_dependency": (
                 {
                     "slices": getattr(outlier_dependency, "slices", None),
@@ -526,6 +530,10 @@ class BacktestRunner:
         if result_consistency is None:
             return set()
         active: set[str] = set()
+        if getattr(result_consistency, "min_metric", None) is not None:
+            active.add("result_consistency.min_metric")
+        if getattr(result_consistency, "min_trades", None) is not None:
+            active.add("result_consistency.min_trades")
         if getattr(result_consistency, "outlier_dependency", None) is not None:
             active.add("result_consistency.outlier_dependency")
         if getattr(result_consistency, "execution_price_variance", None) is not None:
@@ -3134,7 +3142,10 @@ class BacktestRunner:
         plan = context.plan
 
         reasons = self._collect_strategy_validation_reasons(context, outcome)
-        self._append_lookahead_shuffle_reason(context, plan, outcome, reasons)
+        if reasons:
+            # Fail fast on cheap result-consistency gates before expensive shuffle checks.
+            return self._strategy_validation_reject_or_continue(reasons)
+        self._run_lookahead_shuffle_validation(context, plan, outcome, reasons)
         return self._strategy_validation_reject_or_continue(reasons)
 
     @staticmethod
@@ -3148,7 +3159,7 @@ class BacktestRunner:
             return GateDecision(False, "reject_result", ["no_valid_candidate"], "strategy_validation")
         return None
 
-    def _append_lookahead_shuffle_reason(
+    def _run_lookahead_shuffle_validation(
         self,
         context: ValidationContext,
         plan: StrategyPlan,
@@ -3202,6 +3213,12 @@ class BacktestRunner:
         policy = self._load_result_consistency_policy(context.job.collection)
         if policy is None or not isinstance(outcome.best_stats, dict):
             return reasons
+        min_metric_reason = self._min_metric_reason(outcome.best_val, policy.min_metric)
+        if min_metric_reason is not None:
+            reasons.append(min_metric_reason)
+        min_trades_reason = self._min_trades_reason(outcome.best_stats, policy.min_trades)
+        if min_trades_reason is not None:
+            reasons.append(min_trades_reason)
         outlier_policy = policy.outlier_dependency
         if outlier_policy is not None:
             reason = self._outlier_dependency_reason(outcome.best_stats, outlier_policy)
@@ -3216,6 +3233,40 @@ class BacktestRunner:
             if reason is not None:
                 reasons.append(reason)
         return reasons
+
+    @staticmethod
+    def _min_metric_reason(
+        metric_value: float,
+        min_metric: float | None,
+    ) -> str | None:
+        if min_metric is None:
+            return None
+        if not np.isfinite(metric_value):
+            return None
+        observed = float(metric_value)
+        required = float(min_metric)
+        if observed < required:
+            return f"min_metric_not_met(required={required}, available={observed})"
+        return None
+
+    @staticmethod
+    def _min_trades_reason(
+        stats: dict[str, Any],
+        min_trades: int | None,
+    ) -> str | None:
+        if min_trades is None:
+            return None
+        trades_raw = stats.get("trades")
+        if trades_raw is None:
+            return None
+        try:
+            available = int(trades_raw)
+        except (TypeError, ValueError):
+            return None
+        required = int(min_trades)
+        if available < required:
+            return f"min_trades_not_met(required={required}, available={available})"
+        return None
 
     @staticmethod
     def _strategy_validate_results_backtest(_context: ValidationContext) -> GateDecision:

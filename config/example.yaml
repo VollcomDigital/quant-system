@@ -47,6 +47,8 @@ validation:
     runtime_error_max_per_tuple: 1  # stop re-evaluating tuple after N generate_signals runtime errors
   # Optional result-level robustness check.
   result_consistency:
+    min_metric: 0.5  # fail fast: require at least this metric before expensive checks
+    min_trades: 20  # fail fast: require at least this many closed trades
     outlier_dependency:
       slices: 5  # split trade history into N equal time-slices for diagnostics
       profit_share_threshold: 0.80

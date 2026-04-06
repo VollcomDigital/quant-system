@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
+import yaml
 
 from src.config import (
     CollectionConfig,
@@ -17,6 +19,38 @@ from src.config import (
     load_config,
     resolve_validation_overrides,
 )
+
+
+def _load_from_blocks(
+    tmp_path: Path,
+    *,
+    validation_block: dict | None = None,
+    collection_validation_block: dict | None = None,
+):
+    raw = {
+        "collections": [
+            {
+                "name": "test",
+                "source": "yfinance",
+                "symbols": ["AAPL"],
+            }
+        ],
+        "timeframes": ["1d"],
+        "metric": "sharpe",
+    }
+    if validation_block is not None:
+        raw["validation"] = deepcopy(validation_block)
+    if collection_validation_block is not None:
+        raw["collections"][0]["validation"] = deepcopy(collection_validation_block)
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    return load_config(path)
+
+
+def _result_consistency_block(**overrides):
+    block = {"min_metric": 0.5, "min_trades": 20}
+    block.update(overrides)
+    return block
 
 
 def test_load_config_allows_missing_strategies(tmp_path: Path):
@@ -120,23 +154,14 @@ validation:
 
 
 def test_load_config_lookahead_shuffle_test_defaults(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    lookahead_shuffle_test:
-      permutations: 100
-      pvalue_max: 0.05
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
-    cfg = load_config(path)
+    cfg = _load_from_blocks(
+        tmp_path,
+        validation_block={
+            "result_consistency": _result_consistency_block(
+                lookahead_shuffle_test={"permutations": 100, "pvalue_max": 0.05}
+            )
+        },
+    )
     assert cfg.validation is not None
     assert cfg.validation.result_consistency is not None
     assert cfg.validation.result_consistency.lookahead_shuffle_test is not None
@@ -568,26 +593,19 @@ validation:
 
 
 def test_load_config_result_consistency_policy(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    outlier_dependency:
-      slices: 6
-      profit_share_threshold: 0.80
-      trade_share_threshold: 0.05
-    execution_price_variance:
-      price_tolerance_bps: 1.0
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
-    cfg = load_config(path)
+    cfg = _load_from_blocks(
+        tmp_path,
+        validation_block={
+            "result_consistency": _result_consistency_block(
+                outlier_dependency={
+                    "slices": 6,
+                    "profit_share_threshold": 0.80,
+                    "trade_share_threshold": 0.05,
+                },
+                execution_price_variance={"price_tolerance_bps": 1.0},
+            )
+        },
+    )
     assert cfg.validation is not None
     assert cfg.validation.result_consistency is not None
     assert cfg.validation.result_consistency.outlier_dependency is not None
@@ -617,32 +635,28 @@ validation:
 
 
 def test_load_config_result_consistency_collection_override(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-    validation:
-      result_consistency:
-        outlier_dependency:
-          slices: 4
-          profit_share_threshold: 0.75
-          trade_share_threshold: 0.10
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    outlier_dependency:
-      slices: 8
-      profit_share_threshold: 0.80
-      trade_share_threshold: 0.05
-    execution_price_variance:
-      price_tolerance_bps: 0.5
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
-    cfg = load_config(path)
+    cfg = _load_from_blocks(
+        tmp_path,
+        validation_block={
+            "result_consistency": _result_consistency_block(
+                outlier_dependency={
+                    "slices": 8,
+                    "profit_share_threshold": 0.80,
+                    "trade_share_threshold": 0.05,
+                },
+                execution_price_variance={"price_tolerance_bps": 0.5},
+            )
+        },
+        collection_validation_block={
+            "result_consistency": _result_consistency_block(
+                outlier_dependency={
+                    "slices": 4,
+                    "profit_share_threshold": 0.75,
+                    "trade_share_threshold": 0.10,
+                }
+            )
+        },
+    )
     col = cfg.collections[0]
     assert col.validation is not None
     assert col.validation.result_consistency is not None
@@ -663,128 +677,107 @@ validation:
 
 
 def test_load_config_result_consistency_invalid_slices(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    outlier_dependency:
-      slices: 1
-      profit_share_threshold: 0.80
-      trade_share_threshold: 0.05
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
     with pytest.raises(ValueError):
-        load_config(path)
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    outlier_dependency={
+                        "slices": 1,
+                        "profit_share_threshold": 0.80,
+                        "trade_share_threshold": 0.05,
+                    }
+                )
+            },
+        )
 
 
 def test_load_config_result_consistency_requires_profit_share_threshold(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    outlier_dependency:
-      slices: 5
-      trade_share_threshold: 0.05
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
     with pytest.raises(ValueError):
-        load_config(path)
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    outlier_dependency={"slices": 5, "trade_share_threshold": 0.05}
+                )
+            },
+        )
 
 
 def test_load_config_result_consistency_requires_trade_share_threshold(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    outlier_dependency:
-      slices: 5
-      profit_share_threshold: 0.80
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
     with pytest.raises(ValueError):
-        load_config(path)
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    outlier_dependency={"slices": 5, "profit_share_threshold": 0.80}
+                )
+            },
+        )
 
 
 def test_load_config_result_consistency_threshold_out_of_range(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    outlier_dependency:
-      slices: 5
-      profit_share_threshold: 1.2
-      trade_share_threshold: 0.05
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
     with pytest.raises(ValueError):
-        load_config(path)
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    outlier_dependency={
+                        "slices": 5,
+                        "profit_share_threshold": 1.2,
+                        "trade_share_threshold": 0.05,
+                    }
+                )
+            },
+        )
 
 
 def test_load_config_result_consistency_execution_price_variance_requires_tolerance(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    execution_price_variance: {}
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
     with pytest.raises(ValueError):
-        load_config(path)
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(execution_price_variance={})
+            },
+        )
 
 
 def test_load_config_result_consistency_execution_price_variance_tolerance_non_negative(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    execution_price_variance:
-      price_tolerance_bps: -0.1
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
     with pytest.raises(ValueError):
-        load_config(path)
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    execution_price_variance={"price_tolerance_bps": -0.1}
+                )
+            },
+        )
+
+
+def test_load_config_result_consistency_requires_min_metric(tmp_path: Path):
+    with pytest.raises(ValueError, match=r"validation\.result_consistency.*min_metric"):
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    min_metric=None,
+                    execution_price_variance={"price_tolerance_bps": 1.0},
+                ),
+            },
+        )
+
+
+def test_load_config_result_consistency_requires_min_trades(tmp_path: Path):
+    with pytest.raises(ValueError, match=r"validation\.result_consistency.*min_trades"):
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    min_trades=None,
+                    execution_price_variance={"price_tolerance_bps": 1.0},
+                ),
+            },
+        )
 
 
 def test_load_config_data_quality_calendar(tmp_path: Path):
@@ -1058,30 +1051,19 @@ validation:
 
 
 def test_load_config_collection_lookahead_shuffle_test_override(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-    validation:
-      result_consistency:
-        lookahead_shuffle_test:
-          permutations: 100
-          seed: 7
-          max_failed_permutations: 2
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    lookahead_shuffle_test:
-      permutations: 100
-      pvalue_max: 0.10
-      seed: 1337
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
-    cfg = load_config(path)
+    cfg = _load_from_blocks(
+        tmp_path,
+        validation_block={
+            "result_consistency": _result_consistency_block(
+                lookahead_shuffle_test={"permutations": 100, "pvalue_max": 0.10, "seed": 1337}
+            )
+        },
+        collection_validation_block={
+            "result_consistency": _result_consistency_block(
+                lookahead_shuffle_test={"permutations": 100, "seed": 7, "max_failed_permutations": 2}
+            )
+        },
+    )
     assert cfg.collections[0].validation is not None
     assert cfg.collections[0].validation.result_consistency is not None
     lookahead = cfg.collections[0].validation.result_consistency.lookahead_shuffle_test
@@ -1095,29 +1077,19 @@ validation:
 def test_load_config_collection_lookahead_shuffle_test_partial_override_inherits_base(
     tmp_path: Path,
 ):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-    validation:
-      result_consistency:
-        lookahead_shuffle_test:
-          permutations: 100
-          pvalue_max: 0.25
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    lookahead_shuffle_test:
-      permutations: 100
-      pvalue_max: 0.5
-      seed: 17
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
-    cfg = load_config(path)
+    cfg = _load_from_blocks(
+        tmp_path,
+        validation_block={
+            "result_consistency": _result_consistency_block(
+                lookahead_shuffle_test={"permutations": 100, "pvalue_max": 0.5, "seed": 17}
+            )
+        },
+        collection_validation_block={
+            "result_consistency": _result_consistency_block(
+                lookahead_shuffle_test={"permutations": 100, "pvalue_max": 0.25}
+            )
+        },
+    )
     assert cfg.collections[0].validation is not None
     assert cfg.collections[0].validation.result_consistency is not None
     lookahead = cfg.collections[0].validation.result_consistency.lookahead_shuffle_test
@@ -1149,138 +1121,90 @@ validation:
 
 
 def test_load_config_lookahead_shuffle_test_invalid_permutations(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    lookahead_shuffle_test:
-      permutations: 99
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
     with pytest.raises(ValueError, match=r"validation\.result_consistency\.lookahead_shuffle_test\.permutations"):
-        load_config(path)
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    lookahead_shuffle_test={"permutations": 99}
+                )
+            },
+        )
 
 
 def test_load_config_lookahead_shuffle_test_invalid_max_failed_permutations(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    lookahead_shuffle_test:
-      permutations: 100
-      max_failed_permutations: 101
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
     with pytest.raises(
         ValueError,
         match=r"validation\.result_consistency\.lookahead_shuffle_test\.max_failed_permutations",
     ):
-        load_config(path)
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    lookahead_shuffle_test={"permutations": 100, "max_failed_permutations": 101}
+                )
+            },
+        )
 
 
 def test_load_config_lookahead_shuffle_test_invalid_max_failed_permutations_default_permutations(
     tmp_path: Path,
 ):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    lookahead_shuffle_test:
-      max_failed_permutations: 101
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
     with pytest.raises(
         ValueError,
         match=r"validation\.result_consistency\.lookahead_shuffle_test\.max_failed_permutations",
     ):
-        load_config(path)
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    lookahead_shuffle_test={"max_failed_permutations": 101}
+                )
+            },
+        )
 
 
 def test_load_config_lookahead_shuffle_test_requires_pvalue_max(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    lookahead_shuffle_test:
-      permutations: 100
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
     with pytest.raises(ValueError, match=r"missing required field\(s\): pvalue_max"):
-        load_config(path)
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    lookahead_shuffle_test={"permutations": 100}
+                )
+            },
+        )
 
 
 def test_load_config_lookahead_shuffle_test_rejects_threshold_key(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    lookahead_shuffle_test:
-      permutations: 100
-      pvalue_max: 0.05
-      threshold: 0.2
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
     with pytest.raises(ValueError, match=r"lookahead_shuffle_test\.threshold"):
-        load_config(path)
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    lookahead_shuffle_test={
+                        "permutations": 100,
+                        "pvalue_max": 0.05,
+                        "threshold": 0.2,
+                    }
+                )
+            },
+        )
 
 
 def test_load_config_lookahead_shuffle_test_invalid_pvalue_max(tmp_path: Path):
-    config_text = """
-collections:
-  - name: test
-    source: yfinance
-    symbols: ['AAPL']
-timeframes: ['1d']
-metric: sharpe
-validation:
-  result_consistency:
-    lookahead_shuffle_test:
-      permutations: 100
-      pvalue_max: 1.2
-"""
-    path = tmp_path / "config.yaml"
-    path.write_text(config_text)
-
     with pytest.raises(
         ValueError,
         match=r"validation\.result_consistency\.lookahead_shuffle_test\.pvalue_max",
     ):
-        load_config(path)
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    lookahead_shuffle_test={"permutations": 100, "pvalue_max": 1.2}
+                )
+            },
+        )
 
 
 def test_load_config_data_quality_stationarity_invalid_kpss_pvalue(tmp_path: Path):
