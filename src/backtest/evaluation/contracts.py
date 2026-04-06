@@ -30,6 +30,7 @@ class EvaluationRequest(EvaluationSharedFields):
     source: str
     bars_per_year: int
     mode_config: EvaluationModeConfig
+    cacheable: bool = True
     strategy_fingerprint: str = ""
     result_consistency_outlier_dependency_slices: int | None = None
     result_consistency_outlier_dependency_profit_share_threshold: float | None = None

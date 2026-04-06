@@ -2407,6 +2407,13 @@ class BacktestRunner:
     ) -> tuple[list[float], int, tuple[str, dict[str, Any]] | None]:
         metric_values: list[float] = []
         failed_permutations = 0
+        shuffle_plan = StrategyPlan(
+            strategy=run_ctx.plan.strategy,
+            fixed_params=run_ctx.plan.fixed_params.copy(),
+            search_space={},
+            search_method=run_ctx.plan.search_method,
+            trials_target=run_ctx.plan.trials_target,
+        )
         for _ in range(run_ctx.policy.permutations):
             permutation = run_ctx.rng.permutation(len(run_ctx.raw_df))
             shuffled_raw = run_ctx.raw_df.iloc[permutation].copy()
@@ -2424,15 +2431,19 @@ class BacktestRunner:
             full_params = {**run_ctx.plan.fixed_params, **run_ctx.effective_params}
             try:
                 entries, exits = self._generate_aligned_signals(
-                    run_ctx.plan.strategy,
+                    shuffle_plan.strategy,
                     shuffled_raw,
                     full_params,
-                    plan=run_ctx.plan,
-                    state=run_ctx.context.state,
+                    plan=None,
+                    state=None,
                     track_runtime_errors=False,
                 )
                 request = self._build_evaluation_request(
-                    run_ctx.plan, run_ctx.context.state, prepared, full_params
+                    shuffle_plan,
+                    run_ctx.context.state,
+                    prepared,
+                    full_params,
+                    cacheable=False,
                 )
                 outcome = self._evaluate_strategy_outcome(request, prepared, entries, exits)
             except Exception as exc:
@@ -2702,6 +2713,8 @@ class BacktestRunner:
         state: JobState,
         prepared: ExecutionPreparedData,
         full_params: dict[str, Any],
+        *,
+        cacheable: bool = True,
     ) -> EvaluationRequest:
         result_consistency_policy = self._load_result_consistency_policy(state.job.collection)
         outlier_policy = (
@@ -2727,6 +2740,7 @@ class BacktestRunner:
             slippage=prepared.slippage,
             bars_per_year=prepared.bars_per_year,
             mode_config=self.mode_config,
+            cacheable=cacheable,
             strategy_fingerprint=self._strategy_fingerprint(plan.strategy),
             result_consistency_outlier_dependency_slices=(
                 outlier_policy.slices if outlier_policy is not None else None
@@ -2790,7 +2804,7 @@ class BacktestRunner:
         self._track_fresh_evaluation_metrics(outcome)
         metric_val = float(outcome.metric_value)
         cached_metric_val = metric_val if outcome.valid else float("-inf")
-        if outcome.valid or outcome.metric_computed:
+        if request.cacheable and (outcome.valid or outcome.metric_computed):
             self._evaluation_cache_set(
                 collection=request.collection,
                 symbol=request.symbol,

@@ -2326,6 +2326,155 @@ def test_lookahead_shuffle_test_result_is_deterministic(tmp_path, monkeypatch):
     assert runner._runtime_signal_error_counts == {}
 
 
+def test_lookahead_shuffle_uses_isolated_plan_state(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.strategies = [
+        StrategyConfig(
+            name="leaky_shuffle",
+            module=None,
+            cls=None,
+            params={},
+        )
+    ]
+    runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
+    runner.cfg.validation = ValidationConfig(
+        result_consistency=ResultConsistencyConfig(
+            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
+                permutations=3,
+                threshold=999.0,
+                seed=7,
+            )
+        ),
+    )
+    resolve_validation_overrides(runner.cfg)
+    raw_df = _make_trending_ohlcv(25)
+    state = JobState(
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        )
+    )
+    plan = runner._strategy_create_plan(state, "leaky_shuffle")
+    validated_data = ValidatedData(
+        raw_df=raw_df,
+        continuity={},
+        reliability_on_fail="skip_optimization",
+        reliability_reasons=[],
+    )
+    context = ValidationContext(
+        stage="strategy_validation",
+        state=state,
+        mode="backtest",
+        job=state.job,
+        validated_data=validated_data,
+    )
+    policy = runner._load_lookahead_shuffle_test_policy(state.job.collection)
+    assert policy is not None
+
+    original_build_request = runner._build_evaluation_request
+
+    def _mutating_build_request(self, eval_plan, state, prepared, full_params, *, cacheable=True):
+        eval_plan.evaluations += 99
+        eval_plan.best_val = 1_234.0
+        eval_plan.best_stats = {"mutated": True}
+        return original_build_request(
+            eval_plan,
+            state,
+            prepared,
+            full_params,
+            cacheable=cacheable,
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_build_evaluation_request",
+        MethodType(_mutating_build_request, runner),
+    )
+
+    reason, meta = runner._lookahead_shuffle_test_result(context, plan, policy)
+
+    assert reason is None
+    assert meta is not None
+    assert plan.evaluations == 0
+    assert plan.best_val == float("-inf")
+    assert plan.best_stats is None
+    assert plan.best_params is None
+
+
+def test_lookahead_shuffle_requests_are_marked_non_cacheable(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.strategies = [
+        StrategyConfig(
+            name="leaky_shuffle",
+            module=None,
+            cls=None,
+            params={},
+        )
+    ]
+    runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
+    runner.cfg.validation = ValidationConfig(
+        result_consistency=ResultConsistencyConfig(
+            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
+                permutations=4,
+                threshold=999.0,
+                seed=7,
+            )
+        ),
+    )
+    resolve_validation_overrides(runner.cfg)
+    raw_df = _make_trending_ohlcv(25)
+    state = JobState(
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        )
+    )
+    plan = runner._strategy_create_plan(state, "leaky_shuffle")
+    validated_data = ValidatedData(
+        raw_df=raw_df,
+        continuity={},
+        reliability_on_fail="skip_optimization",
+        reliability_reasons=[],
+    )
+    context = ValidationContext(
+        stage="strategy_validation",
+        state=state,
+        mode="backtest",
+        job=state.job,
+        validated_data=validated_data,
+    )
+    policy = runner._load_lookahead_shuffle_test_policy(state.job.collection)
+    assert policy is not None
+    seen_cacheable_flags: list[bool] = []
+
+    def _capture_evaluation_request(self, request, prepared, entries, exits):
+        seen_cacheable_flags.append(request.cacheable)
+        return EvaluationOutcome(
+            metric_value=1.0,
+            stats={},
+            valid=True,
+            attempted=True,
+            simulation_executed=True,
+            metric_computed=True,
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_evaluate_strategy_outcome",
+        MethodType(_capture_evaluation_request, runner),
+    )
+
+    reason, meta = runner._lookahead_shuffle_test_result(context, plan, policy)
+
+    assert reason is None
+    assert meta is not None
+    assert seen_cacheable_flags == [False] * policy.permutations
+
+
 def test_lookahead_shuffle_test_result_does_not_track_runtime_errors(
     tmp_path, monkeypatch
 ):
