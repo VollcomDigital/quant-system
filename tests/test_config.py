@@ -129,7 +129,9 @@ timeframes: ['1d']
 metric: sharpe
 validation:
   result_consistency:
-    lookahead_shuffle_test: {}
+    lookahead_shuffle_test:
+      permutations: 100
+      pvalue_max: 0.05
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -138,11 +140,8 @@ validation:
     assert cfg.validation is not None
     assert cfg.validation.result_consistency is not None
     assert cfg.validation.result_consistency.lookahead_shuffle_test is not None
-    # Global parse preserves explicit user input shape; defaults are resolved on
-    # effective collection-level policy during override resolution.
-    assert cfg.validation.result_consistency.lookahead_shuffle_test.permutations is None
-    assert cfg.validation.result_consistency.lookahead_shuffle_test.threshold is None
-    assert cfg.validation.result_consistency.lookahead_shuffle_test.pvalue_max is None
+    assert cfg.validation.result_consistency.lookahead_shuffle_test.permutations == 100
+    assert cfg.validation.result_consistency.lookahead_shuffle_test.pvalue_max == pytest.approx(0.05)
     assert cfg.validation.result_consistency.lookahead_shuffle_test.seed is None
     assert cfg.validation.result_consistency.lookahead_shuffle_test.max_failed_permutations is None
     assert cfg.collections[0].validation is not None
@@ -151,10 +150,9 @@ validation:
     assert (
         cfg.collections[0].validation.result_consistency.lookahead_shuffle_test.permutations == 100
     )
-    assert cfg.collections[
-        0
-    ].validation.result_consistency.lookahead_shuffle_test.threshold == pytest.approx(0.0)
-    assert cfg.collections[0].validation.result_consistency.lookahead_shuffle_test.pvalue_max is None
+    assert cfg.collections[0].validation.result_consistency.lookahead_shuffle_test.pvalue_max == pytest.approx(
+        0.05
+    )
     assert cfg.collections[0].validation.result_consistency.lookahead_shuffle_test.seed == 1337
     assert (
         cfg.collections[
@@ -245,7 +243,7 @@ validation:
   data_quality:
     lookahead_shuffle_test:
       permutations: 100
-      threshold: 0.25
+      pvalue_max: 0.25
       seed: 11
     on_fail: skip_job
 """
@@ -1069,7 +1067,6 @@ collections:
       result_consistency:
         lookahead_shuffle_test:
           permutations: 100
-          threshold: 0.25
           seed: 7
           max_failed_permutations: 2
 timeframes: ['1d']
@@ -1078,7 +1075,7 @@ validation:
   result_consistency:
     lookahead_shuffle_test:
       permutations: 100
-      threshold: 0.0
+      pvalue_max: 0.10
       seed: 1337
 """
     path = tmp_path / "config.yaml"
@@ -1090,7 +1087,7 @@ validation:
     lookahead = cfg.collections[0].validation.result_consistency.lookahead_shuffle_test
     assert lookahead is not None
     assert lookahead.permutations == 100
-    assert lookahead.threshold == pytest.approx(0.25)
+    assert lookahead.pvalue_max == pytest.approx(0.10)
     assert lookahead.seed == 7
     assert lookahead.max_failed_permutations == 2
 
@@ -1107,13 +1104,14 @@ collections:
       result_consistency:
         lookahead_shuffle_test:
           permutations: 100
+          pvalue_max: 0.25
 timeframes: ['1d']
 metric: sharpe
 validation:
   result_consistency:
     lookahead_shuffle_test:
       permutations: 100
-      threshold: 0.5
+      pvalue_max: 0.5
       seed: 17
 """
     path = tmp_path / "config.yaml"
@@ -1125,7 +1123,7 @@ validation:
     lookahead = cfg.collections[0].validation.result_consistency.lookahead_shuffle_test
     assert lookahead is not None
     assert lookahead.permutations == 100
-    assert lookahead.threshold == pytest.approx(0.5)
+    assert lookahead.pvalue_max == pytest.approx(0.25)
     assert lookahead.seed == 17
 
 
@@ -1216,6 +1214,48 @@ validation:
         ValueError,
         match=r"validation\.result_consistency\.lookahead_shuffle_test\.max_failed_permutations",
     ):
+        load_config(path)
+
+
+def test_load_config_lookahead_shuffle_test_requires_pvalue_max(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    lookahead_shuffle_test:
+      permutations: 100
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"missing required field\(s\): pvalue_max"):
+        load_config(path)
+
+
+def test_load_config_lookahead_shuffle_test_rejects_threshold_key(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    lookahead_shuffle_test:
+      permutations: 100
+      pvalue_max: 0.05
+      threshold: 0.2
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"lookahead_shuffle_test\.threshold"):
         load_config(path)
 
 

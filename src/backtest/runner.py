@@ -425,7 +425,6 @@ class BacktestRunner:
             return None
         return {
             "permutations": getattr(lookahead_shuffle_test, "permutations", None),
-            "threshold": getattr(lookahead_shuffle_test, "threshold", None),
             "pvalue_max": getattr(lookahead_shuffle_test, "pvalue_max", None),
             "seed": getattr(lookahead_shuffle_test, "seed", None),
             "max_failed_permutations": getattr(
@@ -2539,7 +2538,6 @@ class BacktestRunner:
                 "permutations": policy.permutations,
                 "seed": derived_seed,
                 "metric_name": self.cfg.metric,
-                "threshold": policy.threshold,
                 "pvalue_max": getattr(policy, "pvalue_max", None),
                 "finite_permutations": int(metric_array.size),
                 "failed_permutations": failed_permutations,
@@ -2566,16 +2564,6 @@ class BacktestRunner:
                         f"seed={derived_seed})"
                     )
                     return reason, diagnostics
-            if median_metric > policy.threshold:
-                reason = (
-                    "lookahead_shuffle_test_exceeded("
-                    f"metric={self.cfg.metric}, "
-                    f"threshold={policy.threshold}, "
-                    f"median_shuffled_metric={median_metric}, "
-                    f"permutations={policy.permutations}, "
-                    f"seed={derived_seed})"
-                )
-                return reason, diagnostics
             return None, diagnostics
         except Exception as exc:
             return self._lookahead_shuffle_indeterminate(

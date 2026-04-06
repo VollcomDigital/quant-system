@@ -55,8 +55,7 @@ validation:
       price_tolerance_bps: 1.0  # tiny tolerance for float/tick rounding
     lookahead_shuffle_test:
       permutations: 100  # deterministic bar shuffles used for the null test
-      threshold: 0.3  # softer baseline; pvalue_max remains the primary statistical guard
-      pvalue_max: 0.05  # reject when shuffled metric beats observed metric too often
+      pvalue_max: 0.05  # required: reject when shuffled metric beats observed metric too often
       seed: 1337  # base seed combined with collection/symbol/timeframe/strategy
       max_failed_permutations: 2  # optional cap; reject as indeterminate if exceeded
 

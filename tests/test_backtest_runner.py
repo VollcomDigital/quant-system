@@ -537,7 +537,6 @@ def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
         execution_price_variance=SimpleNamespace(price_tolerance_bps=1.0),
         lookahead_shuffle_test=SimpleNamespace(
             permutations=100,
-            threshold=0.0,
             seed=1337,
             max_failed_permutations=2,
         ),
@@ -558,7 +557,6 @@ def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
     assert payload["execution_price_variance"] == {"price_tolerance_bps": 1.0}
     assert payload["lookahead_shuffle_test"] == {
         "permutations": 100,
-        "threshold": 0.0,
         "pvalue_max": None,
         "seed": 1337,
         "max_failed_permutations": 2,
@@ -2281,7 +2279,7 @@ def test_lookahead_shuffle_test_result_is_deterministic(tmp_path, monkeypatch):
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
-                threshold=0.0,
+                pvalue_max=0.05,
                 seed=7,
             )
         ),
@@ -2317,7 +2315,6 @@ def test_lookahead_shuffle_test_result_is_deterministic(tmp_path, monkeypatch):
 
     assert reason_one == reason_two
     assert meta_one == meta_two
-    assert reason_one is not None
     assert meta_one is not None
     assert meta_one["is_complete"] is True
     assert meta_one["seed"] == meta_two["seed"]
@@ -2342,7 +2339,6 @@ def test_lookahead_shuffle_test_rejects_on_pvalue_threshold(tmp_path, monkeypatc
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
-                threshold=999.0,
                 pvalue_max=0.05,
                 seed=7,
             )
@@ -2413,7 +2409,7 @@ def test_lookahead_shuffle_uses_isolated_plan_state(tmp_path, monkeypatch):
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
-                threshold=999.0,
+                pvalue_max=1.0,
                 seed=7,
             )
         ),
@@ -2490,7 +2486,7 @@ def test_lookahead_shuffle_requests_are_marked_non_cacheable(tmp_path, monkeypat
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
-                threshold=999.0,
+                pvalue_max=1.0,
                 seed=7,
             )
         ),
@@ -2573,7 +2569,7 @@ def test_lookahead_shuffle_test_result_does_not_track_runtime_errors(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
-                threshold=0.0,
+                pvalue_max=0.05,
                 seed=7,
             )
         ),
@@ -2645,7 +2641,7 @@ def test_lookahead_shuffle_test_result_limits_failed_permutations(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
-                threshold=0.0,
+                pvalue_max=0.05,
                 seed=7,
                 max_failed_permutations=1,
             )
@@ -2721,7 +2717,7 @@ def test_run_all_lookahead_shuffle_test_indeterminate_rejects_result(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
-                threshold=0.0,
+                pvalue_max=0.05,
                 seed=7,
             )
         ),
@@ -2764,7 +2760,7 @@ def test_run_all_lookahead_shuffle_test_rejects_result_in_strategy_validation(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
-                threshold=0.0,
+                pvalue_max=0.05,
                 seed=7,
             )
         ),
@@ -2785,7 +2781,7 @@ def test_run_all_lookahead_shuffle_test_rejects_result_in_strategy_validation(
     assert len(runner.failures) == 1
     failure = runner.failures[0]
     assert failure["stage"] == "strategy_validation"
-    assert "lookahead_shuffle_test_exceeded" in failure["error"]
+    assert "lookahead_shuffle_test_pvalue_exceeded" in failure["error"]
     assert failure["strategy"] == "leaky_shuffle"
     assert "result_validation" not in failure
 
@@ -2807,7 +2803,7 @@ def test_run_all_lookahead_shuffle_test_attaches_post_run_meta(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
-                threshold=999.0,
+                pvalue_max=1.0,
                 seed=7,
             )
         ),
@@ -2847,7 +2843,7 @@ def test_run_all_lookahead_shuffle_test_does_not_mutate_cached_stats_payload(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
                 permutations=100,
-                threshold=999.0,
+                pvalue_max=1.0,
                 seed=7,
             )
         ),

@@ -94,7 +94,6 @@ class ValidationStationarityConfig:
 @dataclass
 class ValidationLookaheadShuffleTestConfig:
     permutations: int | None = None
-    threshold: float | None = None
     pvalue_max: float | None = None
     seed: int | None = None
     max_failed_permutations: int | None = None
@@ -164,8 +163,6 @@ STATIONARITY_REGIME_SHIFT_MEAN_SHIFT_MIN = 0.0
 STATIONARITY_REGIME_SHIFT_VOL_RATIO_MIN = 1.0
 LOOKAHEAD_SHUFFLE_TEST_PERMUTATIONS_DEFAULT = 100
 LOOKAHEAD_SHUFFLE_TEST_PERMUTATIONS_MIN = 100
-LOOKAHEAD_SHUFFLE_TEST_THRESHOLD_DEFAULT = 0.0
-LOOKAHEAD_SHUFFLE_TEST_PVALUE_MAX_DEFAULT: float | None = None
 LOOKAHEAD_SHUFFLE_TEST_SEED_DEFAULT = 1337
 LOOKAHEAD_SHUFFLE_TEST_SEED_MIN = 0
 LOOKAHEAD_SHUFFLE_TEST_FAILED_PERMUTATIONS_MIN = 0
@@ -830,13 +827,11 @@ def _normalize_lookahead_shuffle_test_config(
     if cfg is None:
         return None
     permutations = _normalize_lookahead_permutations(cfg, prefix)
-    threshold = _normalize_lookahead_threshold(cfg, prefix)
     pvalue_max = _normalize_lookahead_pvalue_max(cfg, prefix)
     seed = _normalize_lookahead_seed(cfg, prefix)
     max_failed_permutations = _normalize_lookahead_max_failed_permutations(cfg, prefix, permutations)
     return ValidationLookaheadShuffleTestConfig(
         permutations=permutations,
-        threshold=threshold,
         pvalue_max=pvalue_max,
         seed=seed,
         max_failed_permutations=max_failed_permutations,
@@ -854,17 +849,6 @@ def _normalize_lookahead_permutations(
             f"`{prefix}.permutations` must be >= {LOOKAHEAD_SHUFFLE_TEST_PERMUTATIONS_MIN}"
         )
     return permutations
-
-
-def _normalize_lookahead_threshold(
-    cfg: ValidationLookaheadShuffleTestConfig,
-    prefix: str,
-) -> float | None:
-    threshold_raw = getattr(cfg, "threshold", None)
-    threshold = float(threshold_raw) if threshold_raw is not None else None
-    if threshold is not None and not math.isfinite(threshold):
-        raise ValueError(f"`{prefix}.threshold` must be finite")
-    return threshold
 
 
 def _normalize_lookahead_pvalue_max(
@@ -923,6 +907,10 @@ def _apply_lookahead_shuffle_test_defaults(
     cfg: ValidationLookaheadShuffleTestConfig,
     prefix: str,
 ) -> ValidationLookaheadShuffleTestConfig:
+    if cfg.permutations is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): permutations")
+    if cfg.pvalue_max is None:
+        raise ValueError(f"Invalid `{prefix}`: missing required field(s): pvalue_max")
     effective_permutations = (
         cfg.permutations
         if cfg.permutations is not None
@@ -938,12 +926,7 @@ def _apply_lookahead_shuffle_test_defaults(
         )
     return ValidationLookaheadShuffleTestConfig(
         permutations=effective_permutations,
-        threshold=(
-            cfg.threshold if cfg.threshold is not None else LOOKAHEAD_SHUFFLE_TEST_THRESHOLD_DEFAULT
-        ),
-        pvalue_max=(
-            cfg.pvalue_max if cfg.pvalue_max is not None else LOOKAHEAD_SHUFFLE_TEST_PVALUE_MAX_DEFAULT
-        ),
+        pvalue_max=cfg.pvalue_max,
         seed=cfg.seed if cfg.seed is not None else LOOKAHEAD_SHUFFLE_TEST_SEED_DEFAULT,
         max_failed_permutations=max_failed_permutations,
     )
@@ -957,7 +940,6 @@ def _merge_lookahead_shuffle_test_config(
         return None
     return ValidationLookaheadShuffleTestConfig(
         permutations=_merged_field(base, override, "permutations"),
-        threshold=_merged_field(base, override, "threshold"),
         pvalue_max=_merged_field(base, override, "pvalue_max"),
         seed=_merged_field(base, override, "seed"),
         max_failed_permutations=_merged_field(base, override, "max_failed_permutations"),
@@ -1356,15 +1338,16 @@ def _parse_lookahead_shuffle_test(
     if raw is None:
         return None
     parsed_raw = require_mapping(raw, prefix)
+    if "threshold" in parsed_raw:
+        raise ValueError(
+            f"Invalid `{prefix}.threshold`: deprecated; use `{prefix}.pvalue_max`"
+        )
     permutations = parse_optional_int(
         parsed_raw,
         prefix,
         "permutations",
         min_value=LOOKAHEAD_SHUFFLE_TEST_PERMUTATIONS_MIN,
     )
-    threshold = parse_optional_float(parsed_raw, prefix, "threshold")
-    if threshold is not None and not math.isfinite(threshold):
-        raise ValueError(f"`{prefix}.threshold` must be finite")
     pvalue_max = parse_optional_float(
         parsed_raw,
         prefix,
@@ -1381,7 +1364,6 @@ def _parse_lookahead_shuffle_test(
     )
     return ValidationLookaheadShuffleTestConfig(
         permutations=permutations,
-        threshold=threshold,
         pvalue_max=pvalue_max,
         seed=seed,
         max_failed_permutations=max_failed_permutations,
