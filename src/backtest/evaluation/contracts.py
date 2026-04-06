@@ -30,6 +30,7 @@ class EvaluationRequest(EvaluationSharedFields):
     source: str
     bars_per_year: int
     mode_config: EvaluationModeConfig
+    strategy_fingerprint: str = ""
     result_consistency_outlier_dependency_slices: int | None = None
     result_consistency_outlier_dependency_profit_share_threshold: float | None = None
     result_consistency_execution_price_tolerance_bps: float | None = None
@@ -53,6 +54,7 @@ class EvaluationCacheRecord(EvaluationSharedFields):
     evaluation_mode: EvaluationMode
     mode_config_hash: str
     validation_config_hash: str
+    strategy_fingerprint: str = ""
 
     @classmethod
     def from_mapping(cls, payload: dict[str, Any]) -> "EvaluationCacheRecord":
@@ -77,6 +79,7 @@ class EvaluationCacheRecord(EvaluationSharedFields):
             evaluation_mode=cast(EvaluationMode, evaluation_mode),
             mode_config_hash=str(payload["mode_config_hash"]),
             validation_config_hash=str(payload["validation_config_hash"]),
+            strategy_fingerprint=str(payload.get("strategy_fingerprint", "")),
         )
         
 @dataclass(frozen=True)

@@ -1192,6 +1192,7 @@ def test_run_all_cached_invalid_outcomes_remain_invalid(tmp_path, monkeypatch):
                 payload["evaluation_mode"],
                 payload["mode_config_hash"],
                 payload["validation_config_hash"],
+                payload.get("strategy_fingerprint", ""),
             )
 
         def get(self, **kwargs):
@@ -2568,7 +2569,7 @@ def test_run_all_lookahead_shuffle_test_rejects_result_in_strategy_validation(
     assert "result_validation" not in failure
 
 
-def test_run_all_lookahead_shuffle_test_attaches_result_validation_metadata(
+def test_run_all_lookahead_shuffle_test_attaches_post_run_meta(
     tmp_path, monkeypatch
 ):
     runner = _make_runner(tmp_path, monkeypatch)
@@ -2603,9 +2604,9 @@ def test_run_all_lookahead_shuffle_test_attaches_result_validation_metadata(
 
     assert len(results) == 1
     assert eval_calls["count"] == 10
-    result_validation = results[0].stats.get("result_validation")
-    assert result_validation is not None
-    assert result_validation["lookahead_shuffle_test"]["is_complete"] is True
+    post_run_meta = results[0].stats.get("post_run_meta")
+    assert post_run_meta is not None
+    assert post_run_meta["lookahead_shuffle_test"]["is_complete"] is True
 
 
 def test_run_all_lookahead_shuffle_test_does_not_mutate_cached_stats_payload(
@@ -2643,10 +2644,10 @@ def test_run_all_lookahead_shuffle_test_does_not_mutate_cached_stats_payload(
 
     assert len(results) == 1
     assert runner.results_cache.saved
-    assert "result_validation" not in runner.results_cache.saved[0]["stats"]
-    result_validation = results[0].stats.get("result_validation")
-    assert result_validation is not None
-    assert result_validation["lookahead_shuffle_test"]["is_complete"] is True
+    assert "post_run_meta" not in runner.results_cache.saved[0]["stats"]
+    post_run_meta = results[0].stats.get("post_run_meta")
+    assert post_run_meta is not None
+    assert post_run_meta["lookahead_shuffle_test"]["is_complete"] is True
 
 
 def test_run_all_reliability_not_verified_skips_job(tmp_path, monkeypatch):

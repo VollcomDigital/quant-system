@@ -256,6 +256,7 @@ class BacktestRunner:
         self._evaluation_cache_write_failures = 0
         self._runtime_signal_error_counts: dict[tuple[str, str, str, str], int] = {}
         self._runtime_signal_error_capped: set[tuple[str, str, str, str]] = set()
+        self._strategy_fingerprint_cache: dict[type[BaseStrategy], str] = {}
         self.validation_metadata: dict[str, Any] = {}
         self.active_validation_gates: list[str] = []
         self.inactive_validation_gates: list[str] = []
@@ -2647,6 +2648,7 @@ class BacktestRunner:
             evaluation_mode=self.mode_config.mode,
             mode_config_hash=self.mode_config_hash,
             validation_config_hash=state.validation_config_hash,
+            strategy_fingerprint=request.strategy_fingerprint,
         )
         if cached is not None:
             return self._apply_cached_evaluation(plan, validated_data, request, cached, full_params)
@@ -2671,6 +2673,28 @@ class BacktestRunner:
             outcome=outcome,
             full_params=full_params,
         )
+
+    def _strategy_fingerprint(self, strategy: BaseStrategy) -> str:
+        strategy_cls = type(strategy)
+        cached = self._strategy_fingerprint_cache.get(strategy_cls)
+        if cached is not None:
+            return cached
+        payload: dict[str, Any] = {
+            "module": getattr(strategy_cls, "__module__", ""),
+            "qualname": getattr(strategy_cls, "__qualname__", strategy_cls.__name__),
+        }
+        try:
+            payload["source"] = inspect.getsource(strategy_cls)
+        except (OSError, TypeError):
+            try:
+                payload["source"] = inspect.getsource(strategy_cls.generate_signals)
+            except (OSError, TypeError, AttributeError):
+                payload["source"] = repr(strategy_cls)
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        self._strategy_fingerprint_cache[strategy_cls] = digest
+        return digest
 
     def _build_evaluation_request(
         self,
@@ -2703,6 +2727,7 @@ class BacktestRunner:
             slippage=prepared.slippage,
             bars_per_year=prepared.bars_per_year,
             mode_config=self.mode_config,
+            strategy_fingerprint=self._strategy_fingerprint(plan.strategy),
             result_consistency_outlier_dependency_slices=(
                 outlier_policy.slices if outlier_policy is not None else None
             ),
@@ -2781,6 +2806,7 @@ class BacktestRunner:
                 evaluation_mode=self.mode_config.mode,
                 mode_config_hash=self.mode_config_hash,
                 validation_config_hash=state.validation_config_hash,
+                strategy_fingerprint=request.strategy_fingerprint,
             )
             self._cache_set(
                 collection=request.collection,
@@ -3127,12 +3153,12 @@ class BacktestRunner:
         if lookahead_meta is None or not isinstance(outcome.best_stats, dict):
             return
         best_stats = dict(outcome.best_stats)
-        existing_result_validation = best_stats.get("result_validation")
-        result_validation = (
-            dict(existing_result_validation) if isinstance(existing_result_validation, dict) else {}
+        existing_post_run_meta = best_stats.get("post_run_meta")
+        post_run_meta = (
+            dict(existing_post_run_meta) if isinstance(existing_post_run_meta, dict) else {}
         )
-        result_validation["lookahead_shuffle_test"] = dict(lookahead_meta)
-        best_stats["result_validation"] = result_validation
+        post_run_meta["lookahead_shuffle_test"] = dict(lookahead_meta)
+        best_stats["post_run_meta"] = post_run_meta
         outcome.best_stats = best_stats
 
     @staticmethod
