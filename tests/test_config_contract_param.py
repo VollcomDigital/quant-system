@@ -92,33 +92,19 @@ CONTRACT_CASES = [
         "inherit_value": 50,
     },
     {
-        "id": "lookahead.permutations",
-        "parse_path": "result_consistency.lookahead_shuffle_test.permutations",
-        "effective_path": "result_consistency.lookahead_shuffle_test.permutations",
-        "global_for_default": {"result_consistency": {"lookahead_shuffle_test": {}}},
-        "default_value": 20,
-        "global_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"permutations": 33}}},
-        "collection_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"threshold": 0.2}}},
-        "inherit_value": 33,
-    },
-    {
-        "id": "lookahead.threshold",
-        "parse_path": "result_consistency.lookahead_shuffle_test.threshold",
-        "effective_path": "result_consistency.lookahead_shuffle_test.threshold",
-        "global_for_default": {"result_consistency": {"lookahead_shuffle_test": {}}},
-        "default_value": 0.0,
-        "global_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"threshold": 0.5}}},
-        "collection_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"permutations": 9}}},
-        "inherit_value": 0.5,
-    },
-    {
         "id": "lookahead.seed",
         "parse_path": "result_consistency.lookahead_shuffle_test.seed",
         "effective_path": "result_consistency.lookahead_shuffle_test.seed",
-        "global_for_default": {"result_consistency": {"lookahead_shuffle_test": {}}},
+        "global_for_default": {
+            "result_consistency": {"lookahead_shuffle_test": {"permutations": 100, "pvalue_max": 0.05}}
+        },
         "default_value": 1337,
-        "global_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"seed": 17}}},
-        "collection_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"permutations": 9}}},
+        "global_for_inherit": {
+            "result_consistency": {
+                "lookahead_shuffle_test": {"permutations": 100, "pvalue_max": 0.05, "seed": 17}
+            }
+        },
+        "collection_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"permutations": 100}}},
         "inherit_value": 17,
     },
     {
