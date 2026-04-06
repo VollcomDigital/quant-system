@@ -536,7 +536,7 @@ def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
         ),
         execution_price_variance=SimpleNamespace(price_tolerance_bps=1.0),
         lookahead_shuffle_test=SimpleNamespace(
-            permutations=20,
+            permutations=100,
             threshold=0.0,
             seed=1337,
             max_failed_permutations=2,
@@ -557,8 +557,9 @@ def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
     }
     assert payload["execution_price_variance"] == {"price_tolerance_bps": 1.0}
     assert payload["lookahead_shuffle_test"] == {
-        "permutations": 20,
+        "permutations": 100,
         "threshold": 0.0,
+        "pvalue_max": None,
         "seed": 1337,
         "max_failed_permutations": 2,
     }
@@ -2279,7 +2280,7 @@ def test_lookahead_shuffle_test_result_is_deterministic(tmp_path, monkeypatch):
     runner.cfg.validation = ValidationConfig(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=9,
+                permutations=100,
                 threshold=0.0,
                 seed=7,
             )
@@ -2326,6 +2327,77 @@ def test_lookahead_shuffle_test_result_is_deterministic(tmp_path, monkeypatch):
     assert runner._runtime_signal_error_counts == {}
 
 
+def test_lookahead_shuffle_test_rejects_on_pvalue_threshold(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.strategies = [
+        StrategyConfig(
+            name="leaky_shuffle",
+            module=None,
+            cls=None,
+            params={},
+        )
+    ]
+    runner.external_index = {"leaky_shuffle": _LeakyShuffleStrategy}
+    runner.cfg.validation = ValidationConfig(
+        result_consistency=ResultConsistencyConfig(
+            lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
+                permutations=100,
+                threshold=999.0,
+                pvalue_max=0.05,
+                seed=7,
+            )
+        ),
+    )
+    resolve_validation_overrides(runner.cfg)
+    raw_df = _make_trending_ohlcv(25)
+    state = JobState(
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        )
+    )
+    plan = runner._strategy_create_plan(state, "leaky_shuffle")
+    validated_data = ValidatedData(
+        raw_df=raw_df,
+        continuity={},
+        reliability_on_fail="skip_optimization",
+        reliability_reasons=[],
+    )
+    context = ValidationContext(
+        stage="strategy_validation",
+        state=state,
+        mode="backtest",
+        job=state.job,
+        validated_data=validated_data,
+    )
+    policy = runner._load_lookahead_shuffle_test_policy(state.job.collection)
+    assert policy is not None
+
+    def _stub_permutations(self, run_ctx):
+        return ([0.8] * 100), 0, None
+
+    monkeypatch.setattr(
+        runner,
+        "_run_lookahead_shuffle_permutations",
+        MethodType(_stub_permutations, runner),
+    )
+
+    reason, meta = runner._lookahead_shuffle_test_result(
+        context,
+        plan,
+        policy,
+        observed_metric=0.1,
+    )
+
+    assert reason is not None
+    assert "lookahead_shuffle_test_pvalue_exceeded" in reason
+    assert meta is not None
+    assert meta["shuffle_pvalue"] == pytest.approx(1.0)
+    assert meta["observed_metric"] == pytest.approx(0.1)
+
+
 def test_lookahead_shuffle_uses_isolated_plan_state(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
     runner.cfg.strategies = [
@@ -2340,7 +2412,7 @@ def test_lookahead_shuffle_uses_isolated_plan_state(tmp_path, monkeypatch):
     runner.cfg.validation = ValidationConfig(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=5,
+                permutations=100,
                 threshold=999.0,
                 seed=7,
             )
@@ -2417,7 +2489,7 @@ def test_lookahead_shuffle_requests_are_marked_non_cacheable(tmp_path, monkeypat
     runner.cfg.validation = ValidationConfig(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=5,
+                permutations=100,
                 threshold=999.0,
                 seed=7,
             )
@@ -2500,7 +2572,7 @@ def test_lookahead_shuffle_test_result_does_not_track_runtime_errors(
     runner.cfg.validation = ValidationConfig(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=5,
+                permutations=100,
                 threshold=0.0,
                 seed=7,
             )
@@ -2540,7 +2612,7 @@ def test_lookahead_shuffle_test_result_does_not_track_runtime_errors(
     assert meta is not None
     assert meta["is_complete"] is False
     assert meta["reason"] == "no_finite_metrics"
-    assert meta["failed_permutations"] == 5
+    assert meta["failed_permutations"] == policy.permutations
     assert meta["max_failed_permutations"] is None
     assert runner._runtime_signal_error_counts == {}
     assert runner.metrics["result_cache_misses"] == 0
@@ -2572,7 +2644,7 @@ def test_lookahead_shuffle_test_result_limits_failed_permutations(
     runner.cfg.validation = ValidationConfig(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=5,
+                permutations=100,
                 threshold=0.0,
                 seed=7,
                 max_failed_permutations=1,
@@ -2648,7 +2720,7 @@ def test_run_all_lookahead_shuffle_test_indeterminate_rejects_result(
     runner.cfg.validation = ValidationConfig(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=5,
+                permutations=100,
                 threshold=0.0,
                 seed=7,
             )
@@ -2691,7 +2763,7 @@ def test_run_all_lookahead_shuffle_test_rejects_result_in_strategy_validation(
     runner.cfg.validation = ValidationConfig(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=9,
+                permutations=100,
                 threshold=0.0,
                 seed=7,
             )
@@ -2709,7 +2781,7 @@ def test_run_all_lookahead_shuffle_test_rejects_result_in_strategy_validation(
     results = runner.run_all()
 
     assert results == []
-    assert eval_calls["count"] == 10
+    assert eval_calls["count"] == 1 + 100
     assert len(runner.failures) == 1
     failure = runner.failures[0]
     assert failure["stage"] == "strategy_validation"
@@ -2734,7 +2806,7 @@ def test_run_all_lookahead_shuffle_test_attaches_post_run_meta(
     runner.cfg.validation = ValidationConfig(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=9,
+                permutations=100,
                 threshold=999.0,
                 seed=7,
             )
@@ -2752,7 +2824,7 @@ def test_run_all_lookahead_shuffle_test_attaches_post_run_meta(
     results = runner.run_all()
 
     assert len(results) == 1
-    assert eval_calls["count"] == 10
+    assert eval_calls["count"] == 1 + 100
     post_run_meta = results[0].stats.get("post_run_meta")
     assert post_run_meta is not None
     assert post_run_meta["lookahead_shuffle_test"]["is_complete"] is True
@@ -2774,7 +2846,7 @@ def test_run_all_lookahead_shuffle_test_does_not_mutate_cached_stats_payload(
     runner.cfg.validation = ValidationConfig(
         result_consistency=ResultConsistencyConfig(
             lookahead_shuffle_test=ValidationLookaheadShuffleTestConfig(
-                permutations=9,
+                permutations=100,
                 threshold=999.0,
                 seed=7,
             )

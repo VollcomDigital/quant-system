@@ -96,10 +96,10 @@ CONTRACT_CASES = [
         "parse_path": "result_consistency.lookahead_shuffle_test.permutations",
         "effective_path": "result_consistency.lookahead_shuffle_test.permutations",
         "global_for_default": {"result_consistency": {"lookahead_shuffle_test": {}}},
-        "default_value": 20,
-        "global_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"permutations": 33}}},
+        "default_value": 100,
+        "global_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"permutations": 133}}},
         "collection_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"threshold": 0.2}}},
-        "inherit_value": 33,
+        "inherit_value": 133,
     },
     {
         "id": "lookahead.threshold",
@@ -108,7 +108,7 @@ CONTRACT_CASES = [
         "global_for_default": {"result_consistency": {"lookahead_shuffle_test": {}}},
         "default_value": 0.0,
         "global_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"threshold": 0.5}}},
-        "collection_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"permutations": 9}}},
+        "collection_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"permutations": 100}}},
         "inherit_value": 0.5,
     },
     {
@@ -118,7 +118,7 @@ CONTRACT_CASES = [
         "global_for_default": {"result_consistency": {"lookahead_shuffle_test": {}}},
         "default_value": 1337,
         "global_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"seed": 17}}},
-        "collection_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"permutations": 9}}},
+        "collection_for_inherit": {"result_consistency": {"lookahead_shuffle_test": {"permutations": 100}}},
         "inherit_value": 17,
     },
     {

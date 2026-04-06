@@ -21,7 +21,7 @@ from ..config import (
     ResultConsistencyConfig,
     ResultConsistencyExecutionPriceVarianceConfig,
     ResultConsistencyOutlierDependencyConfig,
-    STATIONARITY_DEFAULT_MIN_POINTS,
+    STATIONARITY_MIN_POINTS_DEFAULT,
     ValidationContinuityConfig,
     ValidationDataQualityConfig,
     ValidationLookaheadShuffleTestConfig,
@@ -426,6 +426,7 @@ class BacktestRunner:
         return {
             "permutations": getattr(lookahead_shuffle_test, "permutations", None),
             "threshold": getattr(lookahead_shuffle_test, "threshold", None),
+            "pvalue_max": getattr(lookahead_shuffle_test, "pvalue_max", None),
             "seed": getattr(lookahead_shuffle_test, "seed", None),
             "max_failed_permutations": getattr(
                 lookahead_shuffle_test, "max_failed_permutations", None
@@ -1895,7 +1896,7 @@ class BacktestRunner:
     @staticmethod
     def _stationarity_min_points(stationarity_cfg: ValidationStationarityConfig) -> int:
         min_points = stationarity_cfg.min_points
-        return STATIONARITY_DEFAULT_MIN_POINTS if min_points is None else int(min_points)
+        return STATIONARITY_MIN_POINTS_DEFAULT if min_points is None else int(min_points)
 
     @classmethod
     def _stationarity_regime_shift_reason(
@@ -2471,6 +2472,7 @@ class BacktestRunner:
         context: ValidationContext,
         plan: StrategyPlan,
         policy: ValidationLookaheadShuffleTestConfig | None,
+        observed_metric: float | None = None,
         params: dict[str, Any] | None = None,
     ) -> tuple[str | None, dict[str, Any] | None]:
         if policy is None or context.validated_data is None:
@@ -2538,6 +2540,7 @@ class BacktestRunner:
                 "seed": derived_seed,
                 "metric_name": self.cfg.metric,
                 "threshold": policy.threshold,
+                "pvalue_max": getattr(policy, "pvalue_max", None),
                 "finite_permutations": int(metric_array.size),
                 "failed_permutations": failed_permutations,
                 "max_failed_permutations": max_failed_permutations,
@@ -2545,6 +2548,24 @@ class BacktestRunner:
                 "min_shuffled_metric": float(np.min(metric_array)),
                 "max_shuffled_metric": float(np.max(metric_array)),
             }
+            pvalue_max = getattr(policy, "pvalue_max", None)
+            if pvalue_max is not None and observed_metric is not None and np.isfinite(observed_metric):
+                observed_metric_val = float(observed_metric)
+                exceed_count = int(np.sum(metric_array >= observed_metric_val))
+                pvalue = float((exceed_count + 1) / (metric_array.size + 1))
+                diagnostics["observed_metric"] = observed_metric_val
+                diagnostics["shuffle_pvalue"] = pvalue
+                if pvalue > float(pvalue_max):
+                    reason = (
+                        "lookahead_shuffle_test_pvalue_exceeded("
+                        f"metric={self.cfg.metric}, "
+                        f"pvalue_max={pvalue_max}, "
+                        f"available={pvalue}, "
+                        f"observed_metric={observed_metric_val}, "
+                        f"permutations={policy.permutations}, "
+                        f"seed={derived_seed})"
+                    )
+                    return reason, diagnostics
             if median_metric > policy.threshold:
                 reason = (
                     "lookahead_shuffle_test_exceeded("
@@ -3153,6 +3174,7 @@ class BacktestRunner:
             context,
             plan,
             lookahead_policy,
+            observed_metric=float(outcome.best_val) if np.isfinite(outcome.best_val) else None,
             params=outcome.best_params if isinstance(outcome.best_params, dict) else None,
         )
         self._attach_lookahead_shuffle_meta(outcome, lookahead_meta)
