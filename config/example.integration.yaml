@@ -1,0 +1,59 @@
+metric: sortino
+timeframes: ["1d"]
+
+validation:
+  # You can keep only `data_quality`, only `optimization`, or both.
+  data_quality:
+    min_data_points: 1000
+    is_verified: true  # set false to force `collection_not_verified`
+    continuity:
+      min_score: 0.98
+      max_missing_bar_pct: 0.1  # config-driven gap threshold for reliable collections
+      calendar:
+        kind: auto  # auto | crypto_24_7 | weekday | exchange
+        # exchange: XNYS
+        # timezone: UTC-05:00
+    kurtosis: 10.0  # config-driven max kurtosis of close-to-close returns
+    outlier_detection:
+      max_outlier_pct: 2.0  # max percent of return bars flagged as outliers
+      method: modified_zscore  # zscore | modified_zscore
+      zscore_threshold: 3.5  # required threshold for selected method
+    stationarity:
+      adf_pvalue_max: 0.05  # reject when the ADF p-value is above this
+      # Optional KPSS companion check (KPSS null hypothesis is stationarity).
+      # Reject when KPSS p-value drops below this threshold.
+      # kpss_pvalue_min: 0.05
+      min_points: 30  # optional; safe minimum for the return series
+      regime_shift:
+        window: 20
+        mean_shift_max: 1.5  # normalized adjacent-window mean shift
+        vol_ratio_max: 1.75  # adjacent-window volatility ratio ceiling
+    on_fail: skip_optimization  # optimization-only fallback | skip_job | skip_collection
+  # Optional strategy-level optimization feasibility policy.
+  optimization:
+    on_fail: baseline_only  # baseline_only | skip_job
+    min_bars: 2000  # absolute floor before optimization can run
+    dof_multiplier: 20  # config-driven DoF guard: max(min_bars, tunable_params * 20)
+    runtime_error_max_per_tuple: 1  # stop re-evaluating tuple after N generate_signals runtime errors
+  # Optional result-level robustness check.
+  result_consistency:
+    outlier_dependency:
+      slices: 5  # split trade history into N equal time-slices for diagnostics
+      profit_share_threshold: 0.80
+      trade_share_threshold: 0.05
+    execution_price_variance:
+      price_tolerance_bps: 1.0  # tiny tolerance for float/tick rounding
+    lookahead_shuffle_test:
+      permutations: 100  # deterministic bar shuffles used for the null test
+      pvalue_max: 0.05  # required: reject when shuffled metric beats observed metric too often
+      seed: 1337  # base seed combined with collection/symbol/timeframe/strategy
+      max_failed_permutations: 2  # optional cap; reject as indeterminate if exceeded
+
+collections:
+  - name: integration_crypto
+    source: yfinance
+    symbols: ["BTC-USD"]
+
+strategies:
+  - name: YourDeterministicStrategy
+    params: {}

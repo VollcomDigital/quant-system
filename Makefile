@@ -1,6 +1,10 @@
 SHELL := /bin/bash
 
-.PHONY: build build-nc refresh-image refresh-image-nc sh run run-stocks-dividend run-stocks-large-cap-value run-stocks-large-cap-growth run-stocks-mid-cap run-stocks-small-cap run-stocks-international run-stocks-emerging run-bonds-global run-bonds-high-yield run-bonds-corporate run-bonds-municipal run-bonds-tips run-bonds-us-treasuries run-crypto run-commodities list-strategies lock lock-update discover-crypto manifest-status dashboard tests coverage precommit-coverage
+.PHONY: build build-nc refresh-image refresh-image-nc sh run run-integration restore-integration-cache run-stocks-dividend run-stocks-large-cap-value run-stocks-large-cap-growth run-stocks-mid-cap run-stocks-small-cap run-stocks-international run-stocks-emerging run-bonds-global run-bonds-high-yield run-bonds-corporate run-bonds-municipal run-bonds-tips run-bonds-us-treasuries run-crypto run-commodities list-strategies lock lock-update discover-crypto manifest-status dashboard tests coverage precommit-coverage
+
+INTEGRATION_CACHE_ROOT := .cache/integration
+INTEGRATION_DATA_CACHE_DIR := $(INTEGRATION_CACHE_ROOT)/data
+INTEGRATION_FIXTURE_DIR := tests/fixtures/data_cache
 
 build:
 	docker-compose build
@@ -19,6 +23,13 @@ sh:
 
 run:
 	docker-compose run --rm app bash -lc "python -m src.main run --config config/example.yaml"
+
+restore-integration-cache:
+	mkdir -p "$(INTEGRATION_DATA_CACHE_DIR)/yfinance"
+	cp -f "$(INTEGRATION_FIXTURE_DIR)/yfinance/BTC-USD_1d.parquet" "$(INTEGRATION_DATA_CACHE_DIR)/yfinance/BTC-USD_1d.parquet"
+
+run-integration: restore-integration-cache
+	docker-compose run --rm -e DATA_CACHE_DIR=/app/$(INTEGRATION_DATA_CACHE_DIR) app bash -lc "python -m src.main run --config config/example.integration.yaml --only-cached"
 
 run-stocks-dividend:
 	docker-compose run --rm app bash -lc "RUN_ID=stocks-dividend-$(shell date +%Y%m%d%H%M) python -m src.main run --config config/collections/stocks_dividend.yaml"
