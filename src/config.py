@@ -598,15 +598,11 @@ def _merge_result_consistency_outlier_dependency_config(
 ) -> ResultConsistencyOutlierDependencyConfig | None:
     if base is None and override is None:
         return None
-    normalized = _normalize_result_consistency_outlier_dependency_config(
-        ResultConsistencyOutlierDependencyConfig(
-            slices=_merged_field(base, override, "slices"),
-            profit_share_threshold=_merged_field(base, override, "profit_share_threshold"),
-            trade_share_threshold=_merged_field(base, override, "trade_share_threshold"),
-        ),
-        "validation.result_consistency.outlier_dependency",
+    return ResultConsistencyOutlierDependencyConfig(
+        slices=_merged_field(base, override, "slices"),
+        profit_share_threshold=_merged_field(base, override, "profit_share_threshold"),
+        trade_share_threshold=_merged_field(base, override, "trade_share_threshold"),
     )
-    return _require_normalized(normalized, "validation.result_consistency.outlier_dependency")
 
 
 def _merge_result_consistency_execution_price_variance_config(
@@ -615,13 +611,9 @@ def _merge_result_consistency_execution_price_variance_config(
 ) -> ResultConsistencyExecutionPriceVarianceConfig | None:
     if base is None and override is None:
         return None
-    normalized = _normalize_result_consistency_execution_price_variance_config(
-        ResultConsistencyExecutionPriceVarianceConfig(
-            price_tolerance_bps=_merged_field(base, override, "price_tolerance_bps"),
-        ),
-        "validation.result_consistency.execution_price_variance",
+    return ResultConsistencyExecutionPriceVarianceConfig(
+        price_tolerance_bps=_merged_field(base, override, "price_tolerance_bps"),
     )
-    return _require_normalized(normalized, "validation.result_consistency.execution_price_variance")
 
 
 def _merge_continuity_config(
@@ -659,15 +651,11 @@ def _merge_outlier_detection_config(
 ) -> ValidationOutlierDetectionConfig | None:
     if base is None and override is None:
         return None
-    normalized = _normalize_outlier_detection_config(
-        ValidationOutlierDetectionConfig(
-            max_outlier_pct=_merged_field(base, override, "max_outlier_pct"),
-            method=_merged_field(base, override, "method"),
-            zscore_threshold=_merged_field(base, override, "zscore_threshold"),
-        ),
-        "validation.data_quality.outlier_detection",
+    return ValidationOutlierDetectionConfig(
+        max_outlier_pct=_merged_field(base, override, "max_outlier_pct"),
+        method=_merged_field(base, override, "method"),
+        zscore_threshold=_merged_field(base, override, "zscore_threshold"),
     )
-    return _require_normalized(normalized, "validation.data_quality.outlier_detection")
 
 
 def _normalize_stationarity_regime_shift_config(
