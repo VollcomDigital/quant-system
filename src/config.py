@@ -528,43 +528,28 @@ def _normalize_transaction_cost_breakeven_config(
 ) -> ResultConsistencyTransactionCostBreakevenConfig | None:
     if cfg is None:
         return None
-    enabled = getattr(cfg, "enabled", None)
-    if enabled is not None and not isinstance(enabled, bool):
-        raise ValueError(f"Invalid `{prefix}.enabled`: expected a boolean")
-    min_multiplier = getattr(cfg, "min_multiplier", None)
-    if min_multiplier is not None:
-        min_multiplier = float(min_multiplier)
-        if not math.isfinite(min_multiplier):
-            raise ValueError(f"`{prefix}.min_multiplier` must be finite")
-        if min_multiplier < TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN:
-            raise ValueError(
-                f"`{prefix}.min_multiplier` must be >= {TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN}"
-            )
-    max_multiplier = getattr(cfg, "max_multiplier", None)
-    if max_multiplier is not None:
-        max_multiplier = float(max_multiplier)
-        if not math.isfinite(max_multiplier):
-            raise ValueError(f"`{prefix}.max_multiplier` must be finite")
-        if max_multiplier < TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN:
-            raise ValueError(
-                f"`{prefix}.max_multiplier` must be >= {TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN}"
-            )
-    max_iterations = getattr(cfg, "max_iterations", None)
-    if max_iterations is not None:
-        max_iterations = int(max_iterations)
-        if max_iterations < TRANSACTION_COST_ROBUSTNESS_MAX_ITERATIONS_MIN:
-            raise ValueError(
-                f"`{prefix}.max_iterations` must be >= {TRANSACTION_COST_ROBUSTNESS_MAX_ITERATIONS_MIN}"
-            )
-    tolerance = getattr(cfg, "tolerance", None)
-    if tolerance is not None:
-        tolerance = float(tolerance)
-        if not math.isfinite(tolerance) or tolerance <= TRANSACTION_COST_ROBUSTNESS_TOLERANCE_MIN:
-            raise ValueError(
-                f"`{prefix}.tolerance` must be > {TRANSACTION_COST_ROBUSTNESS_TOLERANCE_MIN}"
-            )
-    if min_multiplier is not None and max_multiplier is not None and max_multiplier < min_multiplier:
-        raise ValueError(f"`{prefix}.max_multiplier` must be >= `{prefix}.min_multiplier`")
+    enabled = _normalize_transaction_cost_breakeven_enabled(getattr(cfg, "enabled", None), prefix)
+    min_multiplier = _normalize_transaction_cost_breakeven_multiplier(
+        getattr(cfg, "min_multiplier", None),
+        f"{prefix}.min_multiplier",
+    )
+    max_multiplier = _normalize_transaction_cost_breakeven_multiplier(
+        getattr(cfg, "max_multiplier", None),
+        f"{prefix}.max_multiplier",
+    )
+    max_iterations = _normalize_transaction_cost_breakeven_iterations(
+        getattr(cfg, "max_iterations", None),
+        prefix,
+    )
+    tolerance = _normalize_transaction_cost_breakeven_tolerance(
+        getattr(cfg, "tolerance", None),
+        prefix,
+    )
+    _validate_transaction_cost_breakeven_multiplier_range(
+        min_multiplier=min_multiplier,
+        max_multiplier=max_multiplier,
+        prefix=prefix,
+    )
     return ResultConsistencyTransactionCostBreakevenConfig(
         enabled=enabled,
         min_multiplier=min_multiplier,
@@ -572,6 +557,71 @@ def _normalize_transaction_cost_breakeven_config(
         max_iterations=max_iterations,
         tolerance=tolerance,
     )
+
+
+def _normalize_transaction_cost_breakeven_enabled(
+    enabled_raw: Any,
+    prefix: str,
+) -> bool | None:
+    if enabled_raw is not None and not isinstance(enabled_raw, bool):
+        raise ValueError(f"Invalid `{prefix}.enabled`: expected a boolean")
+    return enabled_raw
+
+
+def _normalize_transaction_cost_breakeven_multiplier(
+    multiplier_raw: Any,
+    field_path: str,
+) -> float | None:
+    if multiplier_raw is None:
+        return None
+    multiplier = float(multiplier_raw)
+    if not math.isfinite(multiplier):
+        raise ValueError(f"`{field_path}` must be finite")
+    if multiplier < TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN:
+        raise ValueError(
+            f"`{field_path}` must be >= {TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN}"
+        )
+    return multiplier
+
+
+def _normalize_transaction_cost_breakeven_iterations(
+    max_iterations_raw: Any,
+    prefix: str,
+) -> int | None:
+    if max_iterations_raw is None:
+        return None
+    max_iterations = int(max_iterations_raw)
+    if max_iterations < TRANSACTION_COST_ROBUSTNESS_MAX_ITERATIONS_MIN:
+        raise ValueError(
+            f"`{prefix}.max_iterations` must be >= {TRANSACTION_COST_ROBUSTNESS_MAX_ITERATIONS_MIN}"
+        )
+    return max_iterations
+
+
+def _normalize_transaction_cost_breakeven_tolerance(
+    tolerance_raw: Any,
+    prefix: str,
+) -> float | None:
+    if tolerance_raw is None:
+        return None
+    tolerance = float(tolerance_raw)
+    if not math.isfinite(tolerance) or tolerance <= TRANSACTION_COST_ROBUSTNESS_TOLERANCE_MIN:
+        raise ValueError(
+            f"`{prefix}.tolerance` must be > {TRANSACTION_COST_ROBUSTNESS_TOLERANCE_MIN}"
+        )
+    return tolerance
+
+
+def _validate_transaction_cost_breakeven_multiplier_range(
+    *,
+    min_multiplier: float | None,
+    max_multiplier: float | None,
+    prefix: str,
+) -> None:
+    if min_multiplier is None or max_multiplier is None:
+        return
+    if max_multiplier < min_multiplier:
+        raise ValueError(f"`{prefix}.max_multiplier` must be >= `{prefix}.min_multiplier`")
 
 
 def _normalize_transaction_cost_mode(mode_raw: Any, prefix: str) -> str | None:
