@@ -3631,13 +3631,6 @@ class BacktestRunner:
             reasons.append(transaction_cost_reason)
 
     @staticmethod
-    def _attach_lookahead_shuffle_meta(
-        outcome: StrategyEvalOutcome,
-        lookahead_meta: dict[str, Any] | None,
-    ) -> None:
-        BacktestRunner._attach_post_run_meta(outcome, "lookahead_shuffle_test", lookahead_meta)
-
-    @staticmethod
     def _strategy_validation_reject_or_continue(reasons: list[str]) -> GateDecision:
         if reasons:
             return GateDecision(False, "reject_result", reasons, "strategy_validation")
