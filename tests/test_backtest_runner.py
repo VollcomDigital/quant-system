@@ -1745,6 +1745,67 @@ def _fake_transaction_cost_scenario(
     }
 
 
+def _transaction_cost_eval_outcome_from_request(request: EvaluationRequest) -> EvaluationOutcome:
+    metric_value = 1.0 - 2000.0 * float(request.fees) - 1000.0 * float(request.slippage)
+    profit = 0.3 - 2000.0 * float(request.fees) - 1000.0 * float(request.slippage)
+    stats = {
+        "sharpe": metric_value,
+        "sortino": metric_value,
+        "omega": 1.0,
+        "tail_ratio": 1.0,
+        "profit": profit,
+        "pain_index": 0.0,
+        "trades": 2,
+        "max_drawdown": -0.1,
+        "cagr": 0.1,
+        "calmar": 1.0,
+        "equity_curve": [],
+        "drawdown_curve": [],
+        "trades_log": [],
+    }
+    return EvaluationOutcome(
+        metric_value=metric_value,
+        stats=stats,
+        valid=True,
+        attempted=True,
+        simulation_executed=True,
+        metric_computed=True,
+    )
+
+
+def _patch_transaction_cost_evaluator(monkeypatch) -> None:
+    def _fake_evaluate(self, request, prepared, entries, exits):
+        return _transaction_cost_eval_outcome_from_request(request)
+
+    monkeypatch.setattr(BacktestRunner, "_evaluate_strategy_outcome", _fake_evaluate)
+
+
+def _setup_transaction_cost_run_all_runner(
+    tmp_path,
+    monkeypatch,
+    *,
+    mode: str,
+    max_metric_drop_pct: float,
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.collections[0].fees = 0.00005
+    runner.cfg.collections[0].slippage = 0.00005
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="dummy",
+        strategy_cls=_DummyStrategy,
+        result_consistency=_result_consistency_config(
+            transaction_cost_robustness=_transaction_cost_robustness_config(
+                mode=mode,
+                max_metric_drop_pct=max_metric_drop_pct,
+            )
+        ),
+    )
+    _patch_trending_source(monkeypatch)
+    _patch_transaction_cost_evaluator(monkeypatch)
+    return runner
+
+
 def _patch_pybroker_simulation(monkeypatch) -> dict[str, int]:
     eval_calls = {"count": 0}
 
@@ -3086,50 +3147,12 @@ def test_transaction_cost_breakeven_is_indeterminate_for_invalid_baseline_metric
 def test_run_all_transaction_cost_robustness_attaches_post_run_meta(
     tmp_path, monkeypatch
 ):
-    runner = _make_runner(tmp_path, monkeypatch)
-    runner.cfg.collections[0].fees = 0.00005
-    runner.cfg.collections[0].slippage = 0.00005
-    _configure_result_consistency_runner(
-        runner,
-        strategy_name="dummy",
-        strategy_cls=_DummyStrategy,
-        result_consistency=_result_consistency_config(
-            transaction_cost_robustness=_transaction_cost_robustness_config(
-                mode="analytics",
-                max_metric_drop_pct=0.3,
-            )
-        ),
+    runner = _setup_transaction_cost_run_all_runner(
+        tmp_path,
+        monkeypatch,
+        mode="analytics",
+        max_metric_drop_pct=0.3,
     )
-    _patch_trending_source(monkeypatch)
-
-    def _fake_evaluate(self, request, prepared, entries, exits):
-        metric_value = 1.0 - 2000.0 * float(request.fees) - 1000.0 * float(request.slippage)
-        profit = 0.3 - 2000.0 * float(request.fees) - 1000.0 * float(request.slippage)
-        stats = {
-            "sharpe": metric_value,
-            "sortino": metric_value,
-            "omega": 1.0,
-            "tail_ratio": 1.0,
-            "profit": profit,
-            "pain_index": 0.0,
-            "trades": 2,
-            "max_drawdown": -0.1,
-            "cagr": 0.1,
-            "calmar": 1.0,
-            "equity_curve": [],
-            "drawdown_curve": [],
-            "trades_log": [],
-        }
-        return EvaluationOutcome(
-            metric_value=metric_value,
-            stats=stats,
-            valid=True,
-            attempted=True,
-            simulation_executed=True,
-            metric_computed=True,
-        )
-
-    monkeypatch.setattr(BacktestRunner, "_evaluate_strategy_outcome", _fake_evaluate)
 
     results = runner.run_all()
 
@@ -3142,118 +3165,32 @@ def test_run_all_transaction_cost_robustness_attaches_post_run_meta(
     assert all("post_run_meta" not in saved["stats"] for saved in runner.results_cache.saved)
 
 
-def test_run_all_transaction_cost_robustness_rejects_on_metric_drop(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    ("max_metric_drop_pct", "expected_failure_substring"),
+    [
+        (0.15, "transaction_cost_robustness_metric_drop_exceeded"),
+        (0.3, "transaction_cost_robustness_negative_profit"),
+    ],
+)
+def test_run_all_transaction_cost_robustness_rejects_in_enforce_mode(
+    tmp_path,
+    monkeypatch,
+    max_metric_drop_pct,
+    expected_failure_substring,
 ):
-    runner = _make_runner(tmp_path, monkeypatch)
-    runner.cfg.collections[0].fees = 0.00005
-    runner.cfg.collections[0].slippage = 0.00005
-    _configure_result_consistency_runner(
-        runner,
-        strategy_name="dummy",
-        strategy_cls=_DummyStrategy,
-        result_consistency=_result_consistency_config(
-            transaction_cost_robustness=_transaction_cost_robustness_config(
-                mode="enforce",
-                max_metric_drop_pct=0.15,
-            )
-        ),
+    runner = _setup_transaction_cost_run_all_runner(
+        tmp_path,
+        monkeypatch,
+        mode="enforce",
+        max_metric_drop_pct=max_metric_drop_pct,
     )
-    _patch_trending_source(monkeypatch)
-
-    def _fake_evaluate(self, request, prepared, entries, exits):
-        metric_value = 1.0 - 2000.0 * float(request.fees) - 1000.0 * float(request.slippage)
-        profit = 0.3 - 2000.0 * float(request.fees) - 1000.0 * float(request.slippage)
-        stats = {
-            "sharpe": metric_value,
-            "sortino": metric_value,
-            "omega": 1.0,
-            "tail_ratio": 1.0,
-            "profit": profit,
-            "pain_index": 0.0,
-            "trades": 2,
-            "max_drawdown": -0.1,
-            "cagr": 0.1,
-            "calmar": 1.0,
-            "equity_curve": [],
-            "drawdown_curve": [],
-            "trades_log": [],
-        }
-        return EvaluationOutcome(
-            metric_value=metric_value,
-            stats=stats,
-            valid=True,
-            attempted=True,
-            simulation_executed=True,
-            metric_computed=True,
-        )
-
-    monkeypatch.setattr(BacktestRunner, "_evaluate_strategy_outcome", _fake_evaluate)
 
     results = runner.run_all()
 
     assert results == []
     assert any(
         failure["stage"] == "strategy_validation"
-        and "transaction_cost_robustness_metric_drop_exceeded" in failure["error"]
-        for failure in runner.failures
-    )
-
-
-def test_run_all_transaction_cost_robustness_rejects_on_negative_profit(
-    tmp_path, monkeypatch
-):
-    runner = _make_runner(tmp_path, monkeypatch)
-    runner.cfg.collections[0].fees = 0.00005
-    runner.cfg.collections[0].slippage = 0.00005
-    _configure_result_consistency_runner(
-        runner,
-        strategy_name="dummy",
-        strategy_cls=_DummyStrategy,
-        result_consistency=_result_consistency_config(
-            transaction_cost_robustness=_transaction_cost_robustness_config(
-                mode="enforce",
-                max_metric_drop_pct=0.3,
-            )
-        ),
-    )
-    _patch_trending_source(monkeypatch)
-
-    def _fake_evaluate(self, request, prepared, entries, exits):
-        metric_value = 1.0 - 2000.0 * float(request.fees) - 1000.0 * float(request.slippage)
-        profit = 0.3 - 2000.0 * float(request.fees) - 1000.0 * float(request.slippage)
-        stats = {
-            "sharpe": metric_value,
-            "sortino": metric_value,
-            "omega": 1.0,
-            "tail_ratio": 1.0,
-            "profit": profit,
-            "pain_index": 0.0,
-            "trades": 2,
-            "max_drawdown": -0.1,
-            "cagr": 0.1,
-            "calmar": 1.0,
-            "equity_curve": [],
-            "drawdown_curve": [],
-            "trades_log": [],
-        }
-        return EvaluationOutcome(
-            metric_value=metric_value,
-            stats=stats,
-            valid=True,
-            attempted=True,
-            simulation_executed=True,
-            metric_computed=True,
-        )
-
-    monkeypatch.setattr(BacktestRunner, "_evaluate_strategy_outcome", _fake_evaluate)
-
-    results = runner.run_all()
-
-    assert results == []
-    assert any(
-        failure["stage"] == "strategy_validation"
-        and "transaction_cost_robustness_negative_profit" in failure["error"]
+        and expected_failure_substring in failure["error"]
         for failure in runner.failures
     )
 
