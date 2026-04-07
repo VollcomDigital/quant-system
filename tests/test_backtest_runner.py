@@ -15,13 +15,22 @@ from src.backtest.evaluation.contracts import (
     EvaluationRequest,
 )
 from src.backtest.runner import BacktestRunner, BestResult, GateDecision, StrategyEvalOutcome
-from src.backtest.runner import JobContext, JobState, ValidationContext, ValidatedData
+from src.backtest.runner import (
+    ExecutionPreparedData,
+    JobContext,
+    JobState,
+    TransactionCostRobustnessRunContext,
+    ValidationContext,
+    ValidatedData,
+)
 from src.config import (
     CollectionConfig,
     Config,
     OptimizationPolicyConfig,
     ResultConsistencyConfig,
     ResultConsistencyExecutionPriceVarianceConfig,
+    ResultConsistencyTransactionCostBreakevenConfig,
+    ResultConsistencyTransactionCostRobustnessConfig,
     ResultConsistencyOutlierDependencyConfig,
     StrategyConfig,
     ValidationCalendarConfig,
@@ -282,6 +291,7 @@ def _result_consistency_config(**overrides) -> ResultConsistencyConfig:
         "outlier_dependency": None,
         "execution_price_variance": None,
         "lookahead_shuffle_test": None,
+        "transaction_cost_robustness": None,
     }
     payload.update(overrides)
     return ResultConsistencyConfig(**payload)
@@ -551,8 +561,21 @@ def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
         execution_price_variance=SimpleNamespace(price_tolerance_bps=1.0),
         lookahead_shuffle_test=SimpleNamespace(
             permutations=100,
+            pvalue_max=0.05,
             seed=1337,
             max_failed_permutations=2,
+        ),
+        transaction_cost_robustness=SimpleNamespace(
+            mode="analytics",
+            stress_multipliers=[2.0, 5.0],
+            max_metric_drop_pct=0.3,
+            breakeven=SimpleNamespace(
+                enabled=True,
+                min_multiplier=1.0,
+                max_multiplier=5.0,
+                max_iterations=8,
+                tolerance=0.05,
+            ),
         ),
     )
 
@@ -564,6 +587,7 @@ def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
         "outlier_dependency",
         "execution_price_variance",
         "lookahead_shuffle_test",
+        "transaction_cost_robustness",
     ]
     assert payload["min_metric"] == pytest.approx(0.5)
     assert payload["min_trades"] == 20
@@ -575,9 +599,21 @@ def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
     assert payload["execution_price_variance"] == {"price_tolerance_bps": 1.0}
     assert payload["lookahead_shuffle_test"] == {
         "permutations": 100,
-        "pvalue_max": None,
+        "pvalue_max": 0.05,
         "seed": 1337,
         "max_failed_permutations": 2,
+    }
+    assert payload["transaction_cost_robustness"] == {
+        "mode": "analytics",
+        "stress_multipliers": [2.0, 5.0],
+        "max_metric_drop_pct": 0.3,
+        "breakeven": {
+            "enabled": True,
+            "min_multiplier": 1.0,
+            "max_multiplier": 5.0,
+            "max_iterations": 8,
+            "tolerance": 0.05,
+        },
     }
 
 
@@ -1522,6 +1558,33 @@ def _make_trending_ohlcv(periods: int) -> pd.DataFrame:
     )
 
 
+def _make_prepared_data(
+    *,
+    fees: float = 0.00005,
+    slippage: float = 0.00005,
+) -> ExecutionPreparedData:
+    dates = pd.date_range("2024-01-01", periods=5, freq="D")
+    data_frame = pd.DataFrame(
+        {
+            "open": [10.0, 11.0, 12.0, 13.0, 14.0],
+            "high": [10.5, 11.5, 12.5, 13.5, 14.5],
+            "low": [9.5, 10.5, 11.5, 12.5, 13.5],
+            "close": [10.0, 11.0, 12.0, 13.0, 14.0],
+            "volume": [100.0] * 5,
+        },
+        index=dates,
+    )
+    return ExecutionPreparedData(
+        data_frame=data_frame,
+        dates=dates,
+        fees=fees,
+        slippage=slippage,
+        fractional=True,
+        bars_per_year=252,
+        fingerprint="prepared-fingerprint",
+    )
+
+
 def _patch_source_with_bars(monkeypatch, bars: int) -> None:
     class _Source:
         def fetch(self, symbol, timeframe, only_cached=False):
@@ -1553,6 +1616,21 @@ def _lookahead_shuffle_test_config(
     )
 
 
+def _transaction_cost_robustness_config(
+    *,
+    mode: str = "analytics",
+    stress_multipliers: list[float] | None = None,
+    max_metric_drop_pct: float = 0.3,
+    breakeven: ResultConsistencyTransactionCostBreakevenConfig | None = None,
+) -> ResultConsistencyTransactionCostRobustnessConfig:
+    return ResultConsistencyTransactionCostRobustnessConfig(
+        mode=mode,
+        stress_multipliers=stress_multipliers if stress_multipliers is not None else [2.0, 5.0],
+        max_metric_drop_pct=max_metric_drop_pct,
+        breakeven=breakeven,
+    )
+
+
 def _configure_result_consistency_runner(
     runner: BacktestRunner,
     *,
@@ -1578,6 +1656,7 @@ def _build_strategy_validation_artifacts(
     *,
     strategy_name: str,
     raw_df: pd.DataFrame | None = None,
+    prepared_data=None,
     outcome: StrategyEvalOutcome | None = None,
 ):
     effective_raw_df = raw_df if raw_df is not None else _make_trending_ohlcv(25)
@@ -1603,12 +1682,67 @@ def _build_strategy_validation_artifacts(
         "job": state.job,
         "validated_data": validated_data,
     }
+    if prepared_data is not None:
+        context_kwargs["prepared_data"] = prepared_data
     if outcome is not None:
         context_kwargs["plan"] = plan
         context_kwargs["outcome"] = outcome
     context = ValidationContext(**context_kwargs)
     policy = runner._load_lookahead_shuffle_test_policy(state.job.collection)
     return state, plan, validated_data, context, policy
+
+
+def _build_transaction_cost_validation_artifacts(
+    runner: BacktestRunner,
+    *,
+    strategy_name: str,
+    prepared_data: ExecutionPreparedData | None = None,
+    policy: ResultConsistencyTransactionCostRobustnessConfig | None = None,
+    baseline_metric: float = 0.85,
+    baseline_profit: float = 0.15,
+):
+    effective_prepared = prepared_data if prepared_data is not None else _make_prepared_data()
+    state, plan, validated_data, context, _ = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name=strategy_name,
+        prepared_data=effective_prepared,
+    )
+    tc_policy = policy if policy is not None else _transaction_cost_robustness_config()
+    run_ctx = TransactionCostRobustnessRunContext(
+        context=context,
+        plan=plan,
+        policy=tc_policy,
+        prepared=effective_prepared,
+        full_params=plan.fixed_params.copy(),
+        baseline_metric=baseline_metric,
+        baseline_profit=baseline_profit,
+    )
+    return state, plan, validated_data, context, run_ctx
+
+
+def _fake_transaction_cost_scenario(
+    self,
+    run_ctx: TransactionCostRobustnessRunContext,
+    multiplier: float,
+):
+    metric_value = 0.85 - 0.05 * (float(multiplier) - 1.0)
+    profit = 0.15 - 0.05 * (float(multiplier) - 1.0)
+    metric_drop_pct = max(0.0, (run_ctx.baseline_metric - metric_value) / run_ctx.baseline_metric)
+    return {
+        "is_complete": True,
+        "status": "complete",
+        "metric_name": self.cfg.metric,
+        "multiplier": float(multiplier),
+        "fees": float(run_ctx.prepared.fees) * float(multiplier),
+        "slippage": float(run_ctx.prepared.slippage) * float(multiplier),
+        "baseline_metric": run_ctx.baseline_metric,
+        "baseline_profit": run_ctx.baseline_profit,
+        "metric_value": metric_value,
+        "profit": profit,
+        "metric_drop_pct": metric_drop_pct,
+        "metric_drop_exceeded": metric_drop_pct > run_ctx.policy.max_metric_drop_pct,
+        "profit_negative": profit < 0.0,
+    }
 
 
 def _patch_pybroker_simulation(monkeypatch) -> dict[str, int]:
@@ -2767,6 +2901,361 @@ def test_run_all_lookahead_shuffle_test_does_not_mutate_cached_stats_payload(
     post_run_meta = results[0].stats.get("post_run_meta")
     assert post_run_meta is not None
     assert post_run_meta["lookahead_shuffle_test"]["is_complete"] is True
+
+
+def test_transaction_cost_robustness_result_attaches_meta_without_cache_pollution(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _, _, _, _, run_ctx = _build_transaction_cost_validation_artifacts(
+        runner,
+        strategy_name="dummy",
+        policy=_transaction_cost_robustness_config(mode="analytics"),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_transaction_cost_robustness_scenario",
+        MethodType(_fake_transaction_cost_scenario, runner),
+    )
+
+    reason, meta = runner._transaction_cost_robustness_result(run_ctx)
+
+    assert reason is None
+    assert meta is not None
+    assert meta["is_complete"] is True
+    assert meta["status"] == "complete"
+    assert meta["stress_multipliers"] == [2.0, 5.0]
+    assert meta["stress_scenarios"][0]["multiplier"] == pytest.approx(2.0)
+    assert runner.evaluation_cache.retrieved == []
+    assert runner.results_cache.saved == []
+
+
+def test_transaction_cost_robustness_result_enforce_rejects_on_metric_drop_boundary(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _, _, _, _, run_ctx = _build_transaction_cost_validation_artifacts(
+        runner,
+        strategy_name="dummy",
+        policy=_transaction_cost_robustness_config(mode="enforce", max_metric_drop_pct=0.05),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_transaction_cost_robustness_scenario",
+        MethodType(_fake_transaction_cost_scenario, runner),
+    )
+
+    reason, meta = runner._transaction_cost_robustness_result(run_ctx)
+
+    assert reason is not None
+    assert "transaction_cost_robustness_metric_drop_exceeded" in reason
+    assert meta is not None
+    assert meta["status"] == "complete"
+    assert meta["smallest_multiplier_metric_drop_pct"] > 0.05
+
+
+def test_transaction_cost_robustness_result_enforce_rejects_on_negative_profit(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _, _, _, _, run_ctx = _build_transaction_cost_validation_artifacts(
+        runner,
+        strategy_name="dummy",
+        policy=_transaction_cost_robustness_config(mode="enforce", max_metric_drop_pct=0.3),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_transaction_cost_robustness_scenario",
+        MethodType(_fake_transaction_cost_scenario, runner),
+    )
+
+    reason, meta = runner._transaction_cost_robustness_result(run_ctx)
+
+    assert reason is not None
+    assert "transaction_cost_robustness_negative_profit" in reason
+    assert meta is not None
+    assert meta["status"] == "complete"
+    assert any(
+        scenario["profit_negative"] is True
+        for scenario in meta["stress_scenarios"]
+        if scenario["multiplier"] == 5.0
+    )
+
+
+@pytest.mark.parametrize(
+    ("breakeven_cfg", "policy", "expected_status"),
+    [
+        (
+            ResultConsistencyTransactionCostBreakevenConfig(
+                enabled=True,
+                min_multiplier=1.0,
+                max_multiplier=5.0,
+                max_iterations=8,
+                tolerance=0.01,
+            ),
+            _transaction_cost_robustness_config(mode="analytics", max_metric_drop_pct=0.1),
+            "found",
+        ),
+        (
+            ResultConsistencyTransactionCostBreakevenConfig(
+                enabled=True,
+                min_multiplier=3.0,
+                max_multiplier=5.0,
+                max_iterations=8,
+                tolerance=0.01,
+            ),
+            _transaction_cost_robustness_config(mode="analytics", max_metric_drop_pct=0.05),
+            "below_range",
+        ),
+        (
+            ResultConsistencyTransactionCostBreakevenConfig(
+                enabled=True,
+                min_multiplier=1.0,
+                max_multiplier=2.0,
+                max_iterations=8,
+                tolerance=0.01,
+            ),
+            _transaction_cost_robustness_config(mode="analytics", max_metric_drop_pct=0.3),
+            "above_range",
+        ),
+    ],
+)
+def test_transaction_cost_breakeven_statuses(
+    tmp_path,
+    monkeypatch,
+    breakeven_cfg,
+    policy,
+    expected_status,
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _, _, _, _, run_ctx = _build_transaction_cost_validation_artifacts(
+        runner,
+        strategy_name="dummy",
+        policy=_transaction_cost_robustness_config(
+            mode=policy.mode,
+            stress_multipliers=policy.stress_multipliers,
+            max_metric_drop_pct=policy.max_metric_drop_pct,
+            breakeven=breakeven_cfg,
+        ),
+    )
+    monkeypatch.setattr(
+        runner,
+        "_transaction_cost_robustness_scenario",
+        MethodType(_fake_transaction_cost_scenario, runner),
+    )
+
+    meta = runner._transaction_cost_breakeven_result(run_ctx)
+
+    assert meta is not None
+    assert meta["status"] == expected_status
+    assert meta["enabled"] is True
+
+
+def test_transaction_cost_breakeven_is_indeterminate_for_invalid_baseline_metric(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _, _, _, _, run_ctx = _build_transaction_cost_validation_artifacts(
+        runner,
+        strategy_name="dummy",
+        policy=_transaction_cost_robustness_config(
+            mode="analytics",
+            breakeven=ResultConsistencyTransactionCostBreakevenConfig(
+                enabled=True,
+                min_multiplier=1.0,
+                max_multiplier=5.0,
+                max_iterations=8,
+                tolerance=0.01,
+            ),
+        ),
+        baseline_metric=0.0,
+    )
+    monkeypatch.setattr(
+        runner,
+        "_transaction_cost_robustness_scenario",
+        MethodType(_fake_transaction_cost_scenario, runner),
+    )
+
+    meta = runner._transaction_cost_breakeven_result(run_ctx)
+
+    assert meta is not None
+    assert meta["status"] == "indeterminate"
+    assert meta["reason"] == "invalid_baseline_metric"
+
+
+def test_run_all_transaction_cost_robustness_attaches_post_run_meta(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.collections[0].fees = 0.00005
+    runner.cfg.collections[0].slippage = 0.00005
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="dummy",
+        strategy_cls=_DummyStrategy,
+        result_consistency=_result_consistency_config(
+            transaction_cost_robustness=_transaction_cost_robustness_config(
+                mode="analytics",
+                max_metric_drop_pct=0.3,
+            )
+        ),
+    )
+    _patch_trending_source(monkeypatch)
+
+    def _fake_evaluate(self, request, prepared, entries, exits):
+        metric_value = 1.0 - 2000.0 * float(request.fees) - 1000.0 * float(request.slippage)
+        profit = 0.3 - 2000.0 * float(request.fees) - 1000.0 * float(request.slippage)
+        stats = {
+            "sharpe": metric_value,
+            "sortino": metric_value,
+            "omega": 1.0,
+            "tail_ratio": 1.0,
+            "profit": profit,
+            "pain_index": 0.0,
+            "trades": 2,
+            "max_drawdown": -0.1,
+            "cagr": 0.1,
+            "calmar": 1.0,
+            "equity_curve": [],
+            "drawdown_curve": [],
+            "trades_log": [],
+        }
+        return EvaluationOutcome(
+            metric_value=metric_value,
+            stats=stats,
+            valid=True,
+            attempted=True,
+            simulation_executed=True,
+            metric_computed=True,
+        )
+
+    monkeypatch.setattr(BacktestRunner, "_evaluate_strategy_outcome", _fake_evaluate)
+
+    results = runner.run_all()
+
+    assert len(results) == 1
+    post_run_meta = results[0].stats.get("post_run_meta")
+    assert post_run_meta is not None
+    tc_meta = post_run_meta["transaction_cost_robustness"]
+    assert tc_meta["status"] == "complete"
+    assert tc_meta["stress_scenarios"][0]["multiplier"] == pytest.approx(2.0)
+    assert all("post_run_meta" not in saved["stats"] for saved in runner.results_cache.saved)
+
+
+def test_run_all_transaction_cost_robustness_rejects_on_metric_drop(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.collections[0].fees = 0.00005
+    runner.cfg.collections[0].slippage = 0.00005
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="dummy",
+        strategy_cls=_DummyStrategy,
+        result_consistency=_result_consistency_config(
+            transaction_cost_robustness=_transaction_cost_robustness_config(
+                mode="enforce",
+                max_metric_drop_pct=0.15,
+            )
+        ),
+    )
+    _patch_trending_source(monkeypatch)
+
+    def _fake_evaluate(self, request, prepared, entries, exits):
+        metric_value = 1.0 - 2000.0 * float(request.fees) - 1000.0 * float(request.slippage)
+        profit = 0.3 - 2000.0 * float(request.fees) - 1000.0 * float(request.slippage)
+        stats = {
+            "sharpe": metric_value,
+            "sortino": metric_value,
+            "omega": 1.0,
+            "tail_ratio": 1.0,
+            "profit": profit,
+            "pain_index": 0.0,
+            "trades": 2,
+            "max_drawdown": -0.1,
+            "cagr": 0.1,
+            "calmar": 1.0,
+            "equity_curve": [],
+            "drawdown_curve": [],
+            "trades_log": [],
+        }
+        return EvaluationOutcome(
+            metric_value=metric_value,
+            stats=stats,
+            valid=True,
+            attempted=True,
+            simulation_executed=True,
+            metric_computed=True,
+        )
+
+    monkeypatch.setattr(BacktestRunner, "_evaluate_strategy_outcome", _fake_evaluate)
+
+    results = runner.run_all()
+
+    assert results == []
+    assert any(
+        failure["stage"] == "strategy_validation"
+        and "transaction_cost_robustness_metric_drop_exceeded" in failure["error"]
+        for failure in runner.failures
+    )
+
+
+def test_run_all_transaction_cost_robustness_rejects_on_negative_profit(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.collections[0].fees = 0.00005
+    runner.cfg.collections[0].slippage = 0.00005
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="dummy",
+        strategy_cls=_DummyStrategy,
+        result_consistency=_result_consistency_config(
+            transaction_cost_robustness=_transaction_cost_robustness_config(
+                mode="enforce",
+                max_metric_drop_pct=0.3,
+            )
+        ),
+    )
+    _patch_trending_source(monkeypatch)
+
+    def _fake_evaluate(self, request, prepared, entries, exits):
+        metric_value = 1.0 - 2000.0 * float(request.fees) - 1000.0 * float(request.slippage)
+        profit = 0.3 - 2000.0 * float(request.fees) - 1000.0 * float(request.slippage)
+        stats = {
+            "sharpe": metric_value,
+            "sortino": metric_value,
+            "omega": 1.0,
+            "tail_ratio": 1.0,
+            "profit": profit,
+            "pain_index": 0.0,
+            "trades": 2,
+            "max_drawdown": -0.1,
+            "cagr": 0.1,
+            "calmar": 1.0,
+            "equity_curve": [],
+            "drawdown_curve": [],
+            "trades_log": [],
+        }
+        return EvaluationOutcome(
+            metric_value=metric_value,
+            stats=stats,
+            valid=True,
+            attempted=True,
+            simulation_executed=True,
+            metric_computed=True,
+        )
+
+    monkeypatch.setattr(BacktestRunner, "_evaluate_strategy_outcome", _fake_evaluate)
+
+    results = runner.run_all()
+
+    assert results == []
+    assert any(
+        failure["stage"] == "strategy_validation"
+        and "transaction_cost_robustness_negative_profit" in failure["error"]
+        for failure in runner.failures
+    )
 
 
 def test_run_all_reliability_not_verified_skips_job(tmp_path, monkeypatch):
