@@ -534,10 +534,6 @@ def _normalize_result_consistency_config(
 
 
 def _apply_result_consistency_defaults(cfg: ResultConsistencyConfig) -> ResultConsistencyConfig:
-    if cfg.min_metric is None:
-        raise ValueError("Invalid `validation.result_consistency`: missing required field(s): min_metric")
-    if cfg.min_trades is None:
-        raise ValueError("Invalid `validation.result_consistency`: missing required field(s): min_trades")
     return ResultConsistencyConfig(
         min_metric=cfg.min_metric,
         min_trades=cfg.min_trades,

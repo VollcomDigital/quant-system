@@ -754,30 +754,34 @@ def test_load_config_result_consistency_execution_price_variance_tolerance_non_n
         )
 
 
-def test_load_config_result_consistency_requires_min_metric(tmp_path: Path):
-    with pytest.raises(ValueError, match=r"validation\.result_consistency.*min_metric"):
-        _load_from_blocks(
-            tmp_path,
-            validation_block={
-                "result_consistency": _result_consistency_block(
-                    min_metric=None,
-                    execution_price_variance={"price_tolerance_bps": 1.0},
-                ),
-            },
-        )
+def test_load_config_result_consistency_allows_missing_min_metric(tmp_path: Path):
+    cfg = _load_from_blocks(
+        tmp_path,
+        validation_block={
+            "result_consistency": _result_consistency_block(
+                min_metric=None,
+                execution_price_variance={"price_tolerance_bps": 1.0},
+            ),
+        },
+    )
+    assert cfg.validation is not None
+    assert cfg.validation.result_consistency is not None
+    assert cfg.validation.result_consistency.min_metric is None
 
 
-def test_load_config_result_consistency_requires_min_trades(tmp_path: Path):
-    with pytest.raises(ValueError, match=r"validation\.result_consistency.*min_trades"):
-        _load_from_blocks(
-            tmp_path,
-            validation_block={
-                "result_consistency": _result_consistency_block(
-                    min_trades=None,
-                    execution_price_variance={"price_tolerance_bps": 1.0},
-                ),
-            },
-        )
+def test_load_config_result_consistency_allows_missing_min_trades(tmp_path: Path):
+    cfg = _load_from_blocks(
+        tmp_path,
+        validation_block={
+            "result_consistency": _result_consistency_block(
+                min_trades=None,
+                execution_price_variance={"price_tolerance_bps": 1.0},
+            ),
+        },
+    )
+    assert cfg.validation is not None
+    assert cfg.validation.result_consistency is not None
+    assert cfg.validation.result_consistency.min_trades is None
 
 
 def test_load_config_data_quality_calendar(tmp_path: Path):
