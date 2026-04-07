@@ -2978,7 +2978,7 @@ def test_transaction_cost_robustness_result_enforce_rejects_on_negative_profit(
     assert any(
         scenario["profit_negative"] is True
         for scenario in meta["stress_scenarios"]
-        if scenario["multiplier"] == 5.0
+        if np.isclose(float(scenario["multiplier"]), 5.0)
     )
 
 

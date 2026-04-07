@@ -215,7 +215,7 @@ class TransactionCostRobustnessRunContext:
 
 class BacktestRunner:
     _CRYPTO_SOURCE_NAMES = {"binance", "bybit", "ccxt", "coinbase", "kraken", "okx", "kucoin"}
-    _TRANSACTION_COST_ROBUSTNESS_DROP_EPSILON = 1e-12
+    _TRANSACTION_COST_ROBUSTNESS_DROP_EPSILON = 1e-9
     _VALIDATION_GATE_IDS = (
         "data_quality.min_required_bars",
         "data_quality.min_data_points",
@@ -2765,10 +2765,9 @@ class BacktestRunner:
             "metric_value": metric_value,
             "profit": profit,
             "metric_drop_pct": metric_drop_pct,
-            "metric_drop_exceeded": (
-                metric_drop_pct is not None
-                and float(metric_drop_pct) > float(run_ctx.policy.max_metric_drop_pct)
-                + self._TRANSACTION_COST_ROBUSTNESS_DROP_EPSILON
+            "metric_drop_exceeded": self._transaction_cost_drop_exceeds_threshold(
+                metric_drop_pct,
+                run_ctx.policy.max_metric_drop_pct,
             ),
             "profit_negative": profit is not None and profit < 0.0,
         }
@@ -2789,14 +2788,21 @@ class BacktestRunner:
             return None
         return max(0.0, (baseline_metric - stressed_metric) / baseline_metric)
 
-    def _transaction_cost_breakeven_result(
+    def _transaction_cost_drop_exceeds_threshold(
+        self,
+        metric_drop_pct: float | None,
+        threshold: float | None,
+    ) -> bool:
+        if metric_drop_pct is None or threshold is None:
+            return False
+        return float(metric_drop_pct) > float(threshold) + self._TRANSACTION_COST_ROBUSTNESS_DROP_EPSILON
+
+    def _transaction_cost_breakeven_base_meta(
         self,
         run_ctx: TransactionCostRobustnessRunContext,
-    ) -> dict[str, Any] | None:
+    ) -> dict[str, Any]:
         breakeven_cfg = run_ctx.policy.breakeven
-        if breakeven_cfg is None:
-            return None
-        base_meta: dict[str, Any] = {
+        return {
             "enabled": bool(getattr(breakeven_cfg, "enabled", False)),
             "min_multiplier": getattr(breakeven_cfg, "min_multiplier", None),
             "max_multiplier": getattr(breakeven_cfg, "max_multiplier", None),
@@ -2805,45 +2811,52 @@ class BacktestRunner:
             "metric_name": self.cfg.metric,
             "threshold": run_ctx.policy.max_metric_drop_pct,
         }
-        if not base_meta["enabled"]:
-            return {
-                **base_meta,
-                "status": "indeterminate",
-                "reason": "disabled",
-            }
-        if run_ctx.baseline_metric <= 0.0 or not np.isfinite(run_ctx.baseline_metric):
-            return {
-                **base_meta,
-                "status": "indeterminate",
-                "reason": "invalid_baseline_metric",
-            }
 
-        min_multiplier = float(getattr(breakeven_cfg, "min_multiplier"))
-        max_multiplier = float(getattr(breakeven_cfg, "max_multiplier"))
-        max_iterations = int(getattr(breakeven_cfg, "max_iterations"))
-        tolerance = float(getattr(breakeven_cfg, "tolerance"))
-        threshold = float(run_ctx.policy.max_metric_drop_pct)
-        epsilon = self._TRANSACTION_COST_ROBUSTNESS_DROP_EPSILON
+    @staticmethod
+    def _transaction_cost_breakeven_indeterminate(
+        base_meta: dict[str, Any],
+        reason: str,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        return {
+            **base_meta,
+            "status": "indeterminate",
+            "reason": reason,
+            **extra,
+        }
 
-        min_result = self._transaction_cost_robustness_scenario(run_ctx, min_multiplier)
-        max_result = self._transaction_cost_robustness_scenario(run_ctx, max_multiplier)
+    @staticmethod
+    def _transaction_cost_breakeven_boundary_incomplete(
+        min_result: dict[str, Any],
+        max_result: dict[str, Any],
+    ) -> bool:
+        return not bool(min_result.get("is_complete")) or not bool(max_result.get("is_complete"))
+
+    def _transaction_cost_breakeven_boundary_status(
+        self,
+        base_meta: dict[str, Any],
+        *,
+        min_multiplier: float,
+        max_multiplier: float,
+        threshold: float,
+        min_result: dict[str, Any],
+        max_result: dict[str, Any],
+    ) -> dict[str, Any] | None:
         min_drop = min_result.get("metric_drop_pct")
         max_drop = max_result.get("metric_drop_pct")
-        if not bool(min_result.get("is_complete")) or not bool(max_result.get("is_complete")):
-            return {
-                **base_meta,
-                "status": "indeterminate",
-                "reason": "incomplete_boundary_evaluations",
-                "boundary_results": [min_result, max_result],
-            }
+        if self._transaction_cost_breakeven_boundary_incomplete(min_result, max_result):
+            return self._transaction_cost_breakeven_indeterminate(
+                base_meta,
+                "incomplete_boundary_evaluations",
+                boundary_results=[min_result, max_result],
+            )
         if min_drop is None or max_drop is None:
-            return {
-                **base_meta,
-                "status": "indeterminate",
-                "reason": "missing_boundary_metric_drop",
-                "boundary_results": [min_result, max_result],
-            }
-        if float(min_drop) > threshold + epsilon:
+            return self._transaction_cost_breakeven_indeterminate(
+                base_meta,
+                "missing_boundary_metric_drop",
+                boundary_results=[min_result, max_result],
+            )
+        if self._transaction_cost_drop_exceeds_threshold(float(min_drop), threshold):
             return {
                 **base_meta,
                 "status": "below_range",
@@ -2851,7 +2864,7 @@ class BacktestRunner:
                 "metric_drop_pct": float(min_drop),
                 "boundary_results": [min_result, max_result],
             }
-        if float(max_drop) <= threshold + epsilon:
+        if not self._transaction_cost_drop_exceeds_threshold(float(max_drop), threshold):
             return {
                 **base_meta,
                 "status": "above_range",
@@ -2859,44 +2872,59 @@ class BacktestRunner:
                 "metric_drop_pct": float(max_drop),
                 "boundary_results": [min_result, max_result],
             }
+        return None
 
+    def _transaction_cost_breakeven_binary_search(
+        self,
+        run_ctx: TransactionCostRobustnessRunContext,
+        *,
+        min_multiplier: float,
+        max_multiplier: float,
+        threshold: float,
+        max_iterations: int,
+        tolerance: float,
+        min_result: dict[str, Any],
+        max_result: dict[str, Any],
+        base_meta: dict[str, Any],
+    ) -> dict[str, Any]:
         low_multiplier = min_multiplier
         high_multiplier = max_multiplier
-        low_drop = float(min_drop)
-        high_drop = float(max_drop)
+        low_drop = float(min_result.get("metric_drop_pct"))
+        high_drop = float(max_result.get("metric_drop_pct"))
         latest_result: dict[str, Any] | None = None
         iterations = 0
         while iterations < max_iterations and high_multiplier - low_multiplier > tolerance:
             mid_multiplier = (low_multiplier + high_multiplier) / 2.0
             mid_result = self._transaction_cost_robustness_scenario(run_ctx, mid_multiplier)
             if not bool(mid_result.get("is_complete")):
-                return {
-                    **base_meta,
-                    "status": "indeterminate",
-                    "reason": mid_result.get("reason", "incomplete_midpoint_evaluation"),
-                    "boundary_results": [min_result, max_result],
-                    "iterations": iterations + 1,
-                }
+                return self._transaction_cost_breakeven_indeterminate(
+                    base_meta,
+                    str(mid_result.get("reason", "incomplete_midpoint_evaluation")),
+                    boundary_results=[min_result, max_result],
+                    iterations=iterations + 1,
+                )
             mid_drop = mid_result.get("metric_drop_pct")
             if mid_drop is None:
-                return {
-                    **base_meta,
-                    "status": "indeterminate",
-                    "reason": "missing_midpoint_metric_drop",
-                    "boundary_results": [min_result, max_result],
-                    "iterations": iterations + 1,
-                }
+                return self._transaction_cost_breakeven_indeterminate(
+                    base_meta,
+                    "missing_midpoint_metric_drop",
+                    boundary_results=[min_result, max_result],
+                    iterations=iterations + 1,
+                )
             latest_result = mid_result
             iterations += 1
-            if float(mid_drop) > threshold + epsilon:
+            if self._transaction_cost_drop_exceeds_threshold(float(mid_drop), threshold):
                 high_multiplier = mid_multiplier
                 high_drop = float(mid_drop)
             else:
                 low_multiplier = mid_multiplier
                 low_drop = float(mid_drop)
-
         estimated_multiplier = (low_multiplier + high_multiplier) / 2.0
-        estimated_drop = high_drop if high_drop > threshold + epsilon else low_drop
+        estimated_drop = (
+            high_drop
+            if self._transaction_cost_drop_exceeds_threshold(high_drop, threshold)
+            else low_drop
+        )
         return {
             **base_meta,
             "status": "found",
@@ -2908,6 +2936,135 @@ class BacktestRunner:
             "latest_result": latest_result,
             "boundary_results": [min_result, max_result],
         }
+
+    def _transaction_cost_breakeven_result(
+        self,
+        run_ctx: TransactionCostRobustnessRunContext,
+    ) -> dict[str, Any] | None:
+        breakeven_cfg = run_ctx.policy.breakeven
+        if breakeven_cfg is None:
+            return None
+        base_meta = self._transaction_cost_breakeven_base_meta(run_ctx)
+        if not base_meta["enabled"]:
+            return self._transaction_cost_breakeven_indeterminate(base_meta, "disabled")
+        if run_ctx.baseline_metric <= 0.0 or not np.isfinite(run_ctx.baseline_metric):
+            return self._transaction_cost_breakeven_indeterminate(base_meta, "invalid_baseline_metric")
+
+        min_multiplier = float(getattr(breakeven_cfg, "min_multiplier"))
+        max_multiplier = float(getattr(breakeven_cfg, "max_multiplier"))
+        max_iterations = int(getattr(breakeven_cfg, "max_iterations"))
+        tolerance = float(getattr(breakeven_cfg, "tolerance"))
+        threshold = float(run_ctx.policy.max_metric_drop_pct)
+
+        min_result = self._transaction_cost_robustness_scenario(run_ctx, min_multiplier)
+        max_result = self._transaction_cost_robustness_scenario(run_ctx, max_multiplier)
+        boundary_status = self._transaction_cost_breakeven_boundary_status(
+            base_meta,
+            min_multiplier=min_multiplier,
+            max_multiplier=max_multiplier,
+            threshold=threshold,
+            min_result=min_result,
+            max_result=max_result,
+        )
+        if boundary_status is not None:
+            return boundary_status
+        return self._transaction_cost_breakeven_binary_search(
+            run_ctx,
+            min_multiplier=min_multiplier,
+            max_multiplier=max_multiplier,
+            threshold=threshold,
+            max_iterations=max_iterations,
+            tolerance=tolerance,
+            min_result=min_result,
+            max_result=max_result,
+            base_meta=base_meta,
+        )
+
+    def _transaction_cost_robustness_stress_scenarios(
+        self,
+        run_ctx: TransactionCostRobustnessRunContext,
+    ) -> list[dict[str, Any]]:
+        return [
+            self._transaction_cost_robustness_scenario(run_ctx, float(multiplier))
+            for multiplier in (run_ctx.policy.stress_multipliers or [])
+        ]
+
+    def _transaction_cost_robustness_meta(
+        self,
+        run_ctx: TransactionCostRobustnessRunContext,
+        stress_scenarios: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "is_complete": all(bool(scenario.get("is_complete")) for scenario in stress_scenarios),
+            "status": "complete",
+            "mode": run_ctx.policy.mode,
+            "metric_name": self.cfg.metric,
+            "baseline_metric": run_ctx.baseline_metric,
+            "baseline_profit": run_ctx.baseline_profit,
+            "max_metric_drop_pct": run_ctx.policy.max_metric_drop_pct,
+            "stress_multipliers": [scenario.get("multiplier") for scenario in stress_scenarios],
+            "stress_scenarios": stress_scenarios,
+        }
+
+    def _transaction_cost_robustness_smallest_drop_breach_reason(
+        self,
+        run_ctx: TransactionCostRobustnessRunContext,
+        meta: dict[str, Any],
+        stress_scenarios: list[dict[str, Any]],
+    ) -> str | None:
+        if not stress_scenarios:
+            return None
+        smallest = stress_scenarios[0]
+        smallest_drop = smallest.get("metric_drop_pct")
+        if not smallest.get("is_complete") or smallest_drop is None:
+            return None
+        meta["smallest_multiplier_metric_drop_pct"] = float(smallest_drop)
+        if not self._transaction_cost_drop_exceeds_threshold(
+            float(smallest_drop),
+            run_ctx.policy.max_metric_drop_pct,
+        ):
+            return None
+        return (
+            "transaction_cost_robustness_metric_drop_exceeded("
+            f"multiplier={smallest.get('multiplier')}, "
+            f"drop_pct={float(smallest_drop)}, "
+            f"threshold={run_ctx.policy.max_metric_drop_pct})"
+        )
+
+    @staticmethod
+    def _transaction_cost_robustness_negative_profit_breach_reasons(
+        stress_scenarios: list[dict[str, Any]],
+    ) -> list[str]:
+        reasons: list[str] = []
+        for scenario in stress_scenarios:
+            if scenario.get("is_complete") and scenario.get("profit_negative"):
+                reasons.append(
+                    "transaction_cost_robustness_negative_profit("
+                    f"multiplier={scenario.get('multiplier')}, "
+                    f"profit={scenario.get('profit')})"
+                )
+        return reasons
+
+    def _transaction_cost_robustness_attach_breakeven(
+        self,
+        run_ctx: TransactionCostRobustnessRunContext,
+        meta: dict[str, Any],
+        breach_reasons: list[str],
+    ) -> None:
+        breakeven_meta = self._transaction_cost_breakeven_result(run_ctx)
+        if breakeven_meta is None:
+            return
+        meta["breakeven"] = breakeven_meta
+        is_enabled = bool(breakeven_meta.get("enabled"))
+        is_indeterminate = breakeven_meta.get("status") == "indeterminate"
+        if not (is_enabled and is_indeterminate):
+            return
+        meta["is_complete"] = False
+        if run_ctx.policy.mode == "enforce":
+            breach_reasons.append(
+                "transaction_cost_robustness_indeterminate("
+                f"reason={breakeven_meta.get('reason')})"
+            )
 
     def _transaction_cost_robustness_result(
         self,
@@ -2923,58 +3080,25 @@ class BacktestRunner:
                 "missing_prepared_data",
                 policy=run_ctx.policy,
             )
-        stress_scenarios: list[dict[str, Any]] = []
-        for multiplier in run_ctx.policy.stress_multipliers or []:
-            scenario = self._transaction_cost_robustness_scenario(run_ctx, float(multiplier))
-            stress_scenarios.append(scenario)
-
+        stress_scenarios = self._transaction_cost_robustness_stress_scenarios(run_ctx)
         if not stress_scenarios:
             return self._transaction_cost_robustness_indeterminate(
                 "missing_stress_multipliers",
                 policy=run_ctx.policy,
             )
-
-        meta: dict[str, Any] = {
-            "is_complete": all(bool(scenario.get("is_complete")) for scenario in stress_scenarios),
-            "status": "complete",
-            "mode": run_ctx.policy.mode,
-            "metric_name": self.cfg.metric,
-            "baseline_metric": run_ctx.baseline_metric,
-            "baseline_profit": run_ctx.baseline_profit,
-            "max_metric_drop_pct": run_ctx.policy.max_metric_drop_pct,
-            "stress_multipliers": [scenario.get("multiplier") for scenario in stress_scenarios],
-            "stress_scenarios": stress_scenarios,
-        }
+        meta = self._transaction_cost_robustness_meta(run_ctx, stress_scenarios)
         breach_reasons: list[str] = []
-        if stress_scenarios:
-            smallest = stress_scenarios[0]
-            smallest_drop = smallest.get("metric_drop_pct")
-            if smallest.get("is_complete") and smallest_drop is not None:
-                meta["smallest_multiplier_metric_drop_pct"] = float(smallest_drop)
-                if float(smallest_drop) > float(run_ctx.policy.max_metric_drop_pct) + self._TRANSACTION_COST_ROBUSTNESS_DROP_EPSILON:
-                    breach_reasons.append(
-                        "transaction_cost_robustness_metric_drop_exceeded("
-                        f"multiplier={smallest.get('multiplier')}, "
-                        f"drop_pct={float(smallest_drop)}, "
-                        f"threshold={run_ctx.policy.max_metric_drop_pct})"
-                    )
-        for scenario in stress_scenarios:
-            if scenario.get("is_complete") and scenario.get("profit_negative"):
-                breach_reasons.append(
-                    "transaction_cost_robustness_negative_profit("
-                    f"multiplier={scenario.get('multiplier')}, "
-                    f"profit={scenario.get('profit')})"
-                )
-        breakeven_meta = self._transaction_cost_breakeven_result(run_ctx)
-        if breakeven_meta is not None:
-            meta["breakeven"] = breakeven_meta
-            if breakeven_meta.get("status") == "indeterminate" and bool(breakeven_meta.get("enabled")):
-                meta["is_complete"] = False
-                if run_ctx.policy.mode == "enforce":
-                    breach_reasons.append(
-                        "transaction_cost_robustness_indeterminate("
-                        f"reason={breakeven_meta.get('reason')})"
-                    )
+        smallest_breach = self._transaction_cost_robustness_smallest_drop_breach_reason(
+            run_ctx,
+            meta,
+            stress_scenarios,
+        )
+        if smallest_breach is not None:
+            breach_reasons.append(smallest_breach)
+        breach_reasons.extend(
+            self._transaction_cost_robustness_negative_profit_breach_reasons(stress_scenarios)
+        )
+        self._transaction_cost_robustness_attach_breakeven(run_ctx, meta, breach_reasons)
         meta["status"] = "complete" if meta["is_complete"] else "indeterminate"
         if not meta["is_complete"] and run_ctx.policy.mode == "enforce":
             if not breach_reasons:

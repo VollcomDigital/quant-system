@@ -4,7 +4,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import yaml
 
@@ -137,7 +137,7 @@ class ResultConsistencyTransactionCostBreakevenConfig:
 
 @dataclass
 class ResultConsistencyTransactionCostRobustnessConfig:
-    mode: str | None = None
+    mode: Literal["analytics", "enforce"] | None = None
     stress_multipliers: list[float] | None = None
     max_metric_drop_pct: float | None = None
     breakeven: ResultConsistencyTransactionCostBreakevenConfig | None = None
@@ -574,6 +574,59 @@ def _normalize_transaction_cost_breakeven_config(
     )
 
 
+def _normalize_transaction_cost_mode(mode_raw: Any, prefix: str) -> str | None:
+    mode = str(mode_raw).strip().lower() if mode_raw is not None else None
+    if mode is not None and mode not in TRANSACTION_COST_ROBUSTNESS_MODES:
+        raise ValueError(
+            f"Invalid `{prefix}.mode`: expected one of {sorted(TRANSACTION_COST_ROBUSTNESS_MODES)}"
+        )
+    return mode
+
+
+def _normalize_transaction_cost_stress_multipliers(
+    stress_multipliers_raw: Any,
+    prefix: str,
+) -> list[float] | None:
+    if stress_multipliers_raw is None:
+        return None
+    if not isinstance(stress_multipliers_raw, list):
+        raise ValueError(f"Invalid `{prefix}.stress_multipliers`: expected a list")
+    normalized_multipliers: list[float] = []
+    previous: float | None = None
+    for idx, value in enumerate(stress_multipliers_raw):
+        multiplier = float(value)
+        if not math.isfinite(multiplier):
+            raise ValueError(f"`{prefix}.stress_multipliers[{idx}]` must be finite")
+        if multiplier < TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN:
+            raise ValueError(
+                f"`{prefix}.stress_multipliers[{idx}]` must be >= {TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN}"
+            )
+        if previous is not None and multiplier < previous:
+            raise ValueError(f"`{prefix}.stress_multipliers` must be sorted in ascending order")
+        normalized_multipliers.append(multiplier)
+        previous = multiplier
+    return normalized_multipliers
+
+
+def _normalize_transaction_cost_max_metric_drop_pct(
+    max_metric_drop_pct_raw: Any,
+    prefix: str,
+) -> float | None:
+    if max_metric_drop_pct_raw is None:
+        return None
+    max_metric_drop_pct = float(max_metric_drop_pct_raw)
+    if (
+        max_metric_drop_pct < TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MIN
+        or max_metric_drop_pct > TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MAX
+    ):
+        raise ValueError(
+            f"`{prefix}.max_metric_drop_pct` must be between "
+            f"{TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MIN} and "
+            f"{TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MAX}"
+        )
+    return max_metric_drop_pct
+
+
 def _apply_transaction_cost_breakeven_defaults(
     cfg: ResultConsistencyTransactionCostBreakevenConfig,
 ) -> ResultConsistencyTransactionCostBreakevenConfig:
@@ -638,45 +691,15 @@ def _normalize_transaction_cost_robustness_config(
 ) -> ResultConsistencyTransactionCostRobustnessConfig | None:
     if cfg is None:
         return None
-    mode_raw = getattr(cfg, "mode", None)
-    mode = str(mode_raw).strip().lower() if mode_raw is not None else None
-    if mode is not None and mode not in TRANSACTION_COST_ROBUSTNESS_MODES:
-        raise ValueError(
-            f"Invalid `{prefix}.mode`: expected one of {sorted(TRANSACTION_COST_ROBUSTNESS_MODES)}"
-        )
-    stress_multipliers = getattr(cfg, "stress_multipliers", None)
-    if stress_multipliers is not None:
-        if not isinstance(stress_multipliers, list):
-            raise ValueError(f"Invalid `{prefix}.stress_multipliers`: expected a list")
-        normalized_multipliers: list[float] = []
-        previous: float | None = None
-        for idx, value in enumerate(stress_multipliers):
-            multiplier = float(value)
-            if not math.isfinite(multiplier):
-                raise ValueError(f"`{prefix}.stress_multipliers[{idx}]` must be finite")
-            if multiplier < TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN:
-                raise ValueError(
-                    f"`{prefix}.stress_multipliers[{idx}]` must be >= {TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN}"
-                )
-            if previous is not None and multiplier < previous:
-                raise ValueError(
-                    f"`{prefix}.stress_multipliers` must be sorted in ascending order"
-                )
-            normalized_multipliers.append(multiplier)
-            previous = multiplier
-        stress_multipliers = normalized_multipliers
-    max_metric_drop_pct = getattr(cfg, "max_metric_drop_pct", None)
-    if max_metric_drop_pct is not None:
-        max_metric_drop_pct = float(max_metric_drop_pct)
-        if (
-            max_metric_drop_pct < TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MIN
-            or max_metric_drop_pct > TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MAX
-        ):
-            raise ValueError(
-                f"`{prefix}.max_metric_drop_pct` must be between "
-                f"{TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MIN} and "
-                f"{TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MAX}"
-            )
+    mode = _normalize_transaction_cost_mode(getattr(cfg, "mode", None), prefix)
+    stress_multipliers = _normalize_transaction_cost_stress_multipliers(
+        getattr(cfg, "stress_multipliers", None),
+        prefix,
+    )
+    max_metric_drop_pct = _normalize_transaction_cost_max_metric_drop_pct(
+        getattr(cfg, "max_metric_drop_pct", None),
+        prefix,
+    )
     breakeven = _normalize_transaction_cost_breakeven_config(
         getattr(cfg, "breakeven", None),
         f"{prefix}.breakeven",
