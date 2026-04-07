@@ -21,46 +21,52 @@ class EvaluationCache:
     def _ensure(self) -> None:
         con = sqlite3.connect(self.db_path)
         try:
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS evaluation_cache (
-                    collection TEXT,
-                    symbol TEXT,
-                    timeframe TEXT,
-                    strategy TEXT,
-                    params_json TEXT,
-                    metric_name TEXT,
-                    metric_value REAL,
-                    stats_json TEXT,
-                    data_fingerprint TEXT,
-                    fees REAL,
-                    slippage REAL,
-                    evaluation_mode TEXT,
-                    mode_config_hash TEXT,
-                    validation_config_hash TEXT,
-                    engine_version TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY(
-                        collection,
-                        symbol,
-                        timeframe,
-                        strategy,
-                        params_json,
-                        metric_name,
-                        data_fingerprint,
-                        fees,
-                        slippage,
-                        evaluation_mode,
-                        mode_config_hash,
-                        validation_config_hash,
-                        engine_version
-                    )
-                )
-                """
-            )
+            self._create_evaluation_cache_table(con)
             con.commit()
         finally:
             con.close()
+
+    @staticmethod
+    def _create_evaluation_cache_table(con: sqlite3.Connection) -> None:
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS evaluation_cache (
+                collection TEXT,
+                symbol TEXT,
+                timeframe TEXT,
+                strategy TEXT,
+                params_json TEXT,
+                metric_name TEXT,
+                metric_value REAL,
+                stats_json TEXT,
+                data_fingerprint TEXT,
+                fees REAL,
+                slippage REAL,
+                evaluation_mode TEXT,
+                mode_config_hash TEXT,
+                validation_config_hash TEXT,
+                strategy_fingerprint TEXT,
+                engine_version TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(
+                    collection,
+                    symbol,
+                    timeframe,
+                    strategy,
+                    params_json,
+                    metric_name,
+                    data_fingerprint,
+                    fees,
+                    slippage,
+                    evaluation_mode,
+                    mode_config_hash,
+                    validation_config_hash,
+                    strategy_fingerprint,
+                    engine_version
+                )
+            )
+            """
+        )
 
     @staticmethod
     def hash_mode_config(mode_config: EvaluationModeConfig) -> str:
@@ -86,6 +92,7 @@ class EvaluationCache:
         evaluation_mode: str,
         mode_config_hash: str,
         validation_config_hash: str,
+        strategy_fingerprint: str,
     ) -> dict[str, Any] | None:
         params_json = json.dumps(params, sort_keys=True)
         con = sqlite3.connect(self.db_path)
@@ -99,6 +106,7 @@ class EvaluationCache:
                   AND params_json=? AND metric_name=? AND data_fingerprint=?
                   AND fees=? AND slippage=?
                   AND evaluation_mode=? AND mode_config_hash=? AND validation_config_hash=?
+                  AND strategy_fingerprint=?
                   AND engine_version=?
                 """,
                 (
@@ -114,6 +122,7 @@ class EvaluationCache:
                     evaluation_mode,
                     mode_config_hash,
                     validation_config_hash,
+                    strategy_fingerprint,
                     EVALUATION_SCHEMA_VERSION,
                 ),
             )
@@ -149,9 +158,10 @@ class EvaluationCache:
                     evaluation_mode,
                     mode_config_hash,
                     validation_config_hash,
+                    strategy_fingerprint,
                     engine_version
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.collection,
@@ -168,6 +178,7 @@ class EvaluationCache:
                     record.evaluation_mode,
                     record.mode_config_hash,
                     record.validation_config_hash,
+                    record.strategy_fingerprint,
                     EVALUATION_SCHEMA_VERSION,
                 ),
             )

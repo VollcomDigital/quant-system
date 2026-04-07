@@ -241,6 +241,8 @@ See new collection examples under `config/collections/` for FX intraday via Finn
   - `on_fail: baseline_only | skip_job`
   - `min_bars`: minimum bars required for optimization
   - `dof_multiplier`: multiplies parameter dimensions for the DoF guard
+  - `runtime_error_max_per_tuple` (optional, default `1`): maximum
+    `generate_signals` runtime errors allowed per `(strategy, symbol, timeframe)` in one run
   - `baseline_only` runs a single baseline evaluation without parameter search.
   - collection-level overrides are supported via `collections[].validation.optimization`
     and are resolved against global `validation.optimization` during config loading.
@@ -256,13 +258,22 @@ See new collection examples under `config/collections/` for FX intraday via Finn
     - fixed-action: reject result when analyzed fill prices fall outside bar `[low, high]`
       after applying tolerance.
     - missing/truncated fill metadata is non-blocking (`continue`); diagnostics are marked incomplete.
+  - `lookahead_shuffle_test` (optional module; active when configured):
+    - `permutations` (optional, default `20`): number of deterministic OHLCV bar shuffles to evaluate
+    - `threshold` (optional, default `0.0`): median shuffled metric above this value is suspicious
+    - `seed` (optional, default `1337`): base seed combined with collection/symbol/timeframe/strategy
+    - `max_failed_permutations` (optional, default unset): max allowed failed permutation
+      evaluations before the module returns an indeterminate rejection
+    - the runner permutes whole bars and reruns the selected strategy result after backtest
+      evaluation to detect look-ahead style behavior when the median shuffled metric remains above
+      the threshold
   - action is fixed to `reject_result` (no `on_fail` override).
 
 Structured logs reflect this directly via gate actions:
 - `data_validation_gate` can emit `skip_optimization` (job-level optimization disable).
 - `strategy_optimization_gate` can emit `baseline_only` (strategy-level baseline fallback) or `skip_job`.
-- `strategy_validation_gate` can emit `reject_result` for outlier dependency
-  and execution price variance.
+- `strategy_validation_gate` can emit `reject_result` for outlier dependency,
+  execution price variance, and lookahead shuffle testing.
 
 ### Optimization Only on Reliable Collections
 
@@ -290,6 +301,11 @@ The sample-size / degrees-of-freedom guard is config-driven and remains under
 
 This keeps thresholds explicit in config and lets `on_fail` decide whether the outcome is
 optimization-only fallback or a full block.
+
+Runtime signal errors are tuple-scoped and run-scoped:
+- each `generate_signals` exception increments a counter for `(strategy, symbol, timeframe)`
+- once `runtime_error_max_per_tuple` is reached, remaining parameter evaluations for that tuple are skipped
+- other tuples (different symbol/timeframe or strategy) continue normally
 
 For implementation details (continuity decision flow, weekday filtering scope, and
 vectorized gap counting), see `DEVELOPMENT.md`.

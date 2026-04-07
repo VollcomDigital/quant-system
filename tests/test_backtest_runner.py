@@ -14,7 +14,8 @@ from src.backtest.evaluation.contracts import (
     EvaluationOutcome,
     EvaluationRequest,
 )
-from src.backtest.runner import BacktestRunner, BestResult, GateDecision
+from src.backtest.runner import BacktestRunner, BestResult, GateDecision, StrategyEvalOutcome
+from src.backtest.runner import JobContext, JobState, ValidationContext, ValidatedData
 from src.config import (
     CollectionConfig,
     Config,
@@ -27,6 +28,7 @@ from src.config import (
     ValidationConfig,
     ValidationContinuityConfig,
     ValidationDataQualityConfig,
+    ValidationLookaheadShuffleTestConfig,
     ValidationOutlierDetectionConfig,
     ValidationStationarityConfig,
     ValidationStationarityRegimeShiftConfig,
@@ -109,6 +111,24 @@ class _DummyStrategy(BaseStrategy):
     def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
         entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
         exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+        return entries, exits
+
+
+class _LeakyShuffleStrategy(BaseStrategy):
+    name = "leaky_shuffle"
+
+    def param_grid(self) -> dict[str, list[int]]:
+        return {}
+
+    def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+        entries = pd.Series(False, index=df.index)
+        exits = pd.Series(False, index=df.index)
+        entries.iloc[0] = True
+        close_col = df["Close"].astype(float)
+        exit_idx = close_col.idxmax()
+        if exit_idx == df.index[0] and len(df.index) > 1:
+            exit_idx = df.index[-1]
+        exits.loc[exit_idx] = True
         return entries, exits
 
 
@@ -253,6 +273,18 @@ def _make_runner(
 
     runner.run_all = MethodType(_run_all_with_resolved_cfg, runner)
     return runner
+
+
+def _result_consistency_config(**overrides) -> ResultConsistencyConfig:
+    payload = {
+        "min_metric": -1e9,
+        "min_trades": 1,
+        "outlier_dependency": None,
+        "execution_price_variance": None,
+        "lookahead_shuffle_test": None,
+    }
+    payload.update(overrides)
+    return ResultConsistencyConfig(**payload)
 
 
 def test_bars_per_year_various_units():
@@ -455,6 +487,100 @@ def test_data_validation_without_data_quality_does_not_skip_on_continuity_errors
     assert validated_data.continuity == {}
 
 
+def test_serialize_data_quality_profile_keeps_schema_and_key_order():
+    data_quality = SimpleNamespace(
+        on_fail="skip_job",
+        min_data_points=42,
+        is_verified=True,
+        continuity=SimpleNamespace(
+            min_score=0.8,
+            max_missing_bar_pct=10.0,
+            calendar=SimpleNamespace(kind="weekday", exchange=None, timezone="UTC"),
+        ),
+        kurtosis=3.5,
+        outlier_detection=SimpleNamespace(
+            max_outlier_pct=5.0,
+            method="zscore",
+            zscore_threshold=3.0,
+        ),
+        stationarity=SimpleNamespace(
+            adf_pvalue_max=0.05,
+            kpss_pvalue_min=0.05,
+            min_points=20,
+            regime_shift=SimpleNamespace(window=30, mean_shift_max=0.25, vol_ratio_max=1.5),
+        ),
+    )
+
+    payload = BacktestRunner._serialize_data_quality_profile(data_quality)
+
+    assert list(payload.keys()) == [
+        "on_fail",
+        "min_data_points",
+        "is_verified",
+        "continuity",
+        "kurtosis",
+        "outlier_detection",
+        "stationarity",
+    ]
+    assert payload["continuity"] == {
+        "min_score": 0.8,
+        "max_missing_bar_pct": 10.0,
+        "calendar": {"kind": "weekday", "exchange": None, "timezone": "UTC"},
+    }
+    assert payload["stationarity"] == {
+        "adf_pvalue_max": 0.05,
+        "kpss_pvalue_min": 0.05,
+        "min_points": 20,
+        "regime_shift": {
+            "window": 30,
+            "mean_shift_max": 0.25,
+            "vol_ratio_max": 1.5,
+        },
+    }
+
+
+def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
+    result_consistency = SimpleNamespace(
+        min_metric=0.5,
+        min_trades=20,
+        outlier_dependency=SimpleNamespace(
+            slices=5,
+            profit_share_threshold=0.8,
+            trade_share_threshold=0.05,
+        ),
+        execution_price_variance=SimpleNamespace(price_tolerance_bps=1.0),
+        lookahead_shuffle_test=SimpleNamespace(
+            permutations=100,
+            seed=1337,
+            max_failed_permutations=2,
+        ),
+    )
+
+    payload = BacktestRunner._serialize_result_consistency_profile(result_consistency)
+
+    assert list(payload.keys()) == [
+        "min_metric",
+        "min_trades",
+        "outlier_dependency",
+        "execution_price_variance",
+        "lookahead_shuffle_test",
+    ]
+    assert payload["min_metric"] == pytest.approx(0.5)
+    assert payload["min_trades"] == 20
+    assert payload["outlier_dependency"] == {
+        "slices": 5,
+        "profit_share_threshold": 0.8,
+        "trade_share_threshold": 0.05,
+    }
+    assert payload["execution_price_variance"] == {"price_tolerance_bps": 1.0}
+    assert payload["lookahead_shuffle_test"] == {
+        "permutations": 100,
+        "pvalue_max": None,
+        "seed": 1337,
+        "max_failed_permutations": 2,
+    }
+
+
 def test_data_validation_stationarity_rejects_constant_series(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
@@ -547,7 +673,7 @@ def test_stationarity_adf_reason_returns_indeterminate_when_statsmodels_missing(
     original_adfuller = BacktestRunner._stationarity_adfuller
     try:
         BacktestRunner._stationarity_adfuller = staticmethod(lambda: None)
-        reason = BacktestRunner._stationarity_adf_reason(raw_df, stationarity_cfg)
+        _, reason, _ = BacktestRunner._stationarity_adf_assessment(raw_df, stationarity_cfg)
     finally:
         BacktestRunner._stationarity_adfuller = original_adfuller
 
@@ -671,7 +797,7 @@ def test_stationarity_adf_reason_flags_constant_returns_series():
         min_points=20,
     )
 
-    reason = BacktestRunner._stationarity_adf_reason(raw_df, stationarity_cfg)
+    _, reason, _ = BacktestRunner._stationarity_adf_assessment(raw_df, stationarity_cfg)
 
     assert reason is not None
     assert reason.startswith("stationarity_")
@@ -1083,6 +1209,7 @@ def test_run_all_cached_invalid_outcomes_remain_invalid(tmp_path, monkeypatch):
                 payload["evaluation_mode"],
                 payload["mode_config_hash"],
                 payload["validation_config_hash"],
+                payload.get("strategy_fingerprint", ""),
             )
 
         def get(self, **kwargs):
@@ -1308,6 +1435,45 @@ def test_run_all_records_fetch_failures(tmp_path, monkeypatch):
     assert failure["error"] == "boom"
 
 
+def test_run_all_evaluator_failure_surfaces_as_strategy_optimization_failure(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+
+    class _BoomEvaluator:
+        def evaluate(self, *args, **kwargs):
+            raise RuntimeError("evaluator boom")
+
+    monkeypatch.setattr(BacktestRunner, "_get_evaluator", lambda self: _BoomEvaluator())
+
+    results = runner.run_all()
+
+    assert results == []
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["stage"] == "strategy_optimization"
+    assert failure["error"] == "evaluator boom"
+
+
+def test_run_all_evaluation_cache_failure_surfaces_as_strategy_optimization_failure(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+
+    def _boom_cache_get(**kwargs):
+        raise RuntimeError("cache boom")
+
+    runner.evaluation_cache.get = _boom_cache_get  # type: ignore[assignment]
+
+    results = runner.run_all()
+
+    assert results == []
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["stage"] == "strategy_optimization"
+    assert failure["error"] == "cache boom"
+
+
 def test_run_all_skips_empty_frames(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
 
@@ -1341,12 +1507,108 @@ def _make_ohlcv(periods: int) -> pd.DataFrame:
     )
 
 
+def _make_trending_ohlcv(periods: int) -> pd.DataFrame:
+    dates = pd.date_range("2024-01-01", periods=periods, freq="D")
+    base = np.arange(1, periods + 1, dtype=float)
+    return pd.DataFrame(
+        {
+            "Open": base,
+            "High": base + 0.5,
+            "Low": base - 0.5,
+            "Close": base,
+            "Volume": np.full(periods, 100.0),
+        },
+        index=dates,
+    )
+
+
 def _patch_source_with_bars(monkeypatch, bars: int) -> None:
     class _Source:
         def fetch(self, symbol, timeframe, only_cached=False):
             return _make_ohlcv(bars)
 
     monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
+
+
+def _patch_trending_source(monkeypatch, bars: int = 25) -> None:
+    class _Source:
+        def fetch(self, symbol, timeframe, only_cached=False):
+            return _make_trending_ohlcv(bars)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
+
+
+def _lookahead_shuffle_test_config(
+    *,
+    permutations: int = 100,
+    pvalue_max: float = 0.05,
+    seed: int = 7,
+    max_failed_permutations: int | None = None,
+) -> ValidationLookaheadShuffleTestConfig:
+    return ValidationLookaheadShuffleTestConfig(
+        permutations=permutations,
+        pvalue_max=pvalue_max,
+        seed=seed,
+        max_failed_permutations=max_failed_permutations,
+    )
+
+
+def _configure_result_consistency_runner(
+    runner: BacktestRunner,
+    *,
+    strategy_name: str,
+    strategy_cls: type[BaseStrategy],
+    result_consistency: ResultConsistencyConfig,
+) -> None:
+    runner.cfg.strategies = [
+        StrategyConfig(
+            name=strategy_name,
+            module=None,
+            cls=None,
+            params={},
+        )
+    ]
+    runner.external_index = {strategy_name: strategy_cls}
+    runner.cfg.validation = ValidationConfig(result_consistency=result_consistency)
+    resolve_validation_overrides(runner.cfg)
+
+
+def _build_strategy_validation_artifacts(
+    runner: BacktestRunner,
+    *,
+    strategy_name: str,
+    raw_df: pd.DataFrame | None = None,
+    outcome: StrategyEvalOutcome | None = None,
+):
+    effective_raw_df = raw_df if raw_df is not None else _make_trending_ohlcv(25)
+    state = JobState(
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        )
+    )
+    plan = runner._strategy_create_plan(state, strategy_name)
+    validated_data = ValidatedData(
+        raw_df=effective_raw_df,
+        continuity={},
+        reliability_on_fail="skip_optimization",
+        reliability_reasons=[],
+    )
+    context_kwargs = {
+        "stage": "strategy_validation",
+        "state": state,
+        "mode": "backtest",
+        "job": state.job,
+        "validated_data": validated_data,
+    }
+    if outcome is not None:
+        context_kwargs["plan"] = plan
+        context_kwargs["outcome"] = outcome
+    context = ValidationContext(**context_kwargs)
+    policy = runner._load_lookahead_shuffle_test_policy(state.job.collection)
+    return state, plan, validated_data, context, policy
 
 
 def _patch_pybroker_simulation(monkeypatch) -> dict[str, int]:
@@ -1448,6 +1710,425 @@ def test_run_all_optimization_policy_skip_job_on_infeasible_search(tmp_path, mon
     assert len(runner.failures) == 1
     assert runner.failures[0]["stage"] == "strategy_optimization"
     assert "insufficient_bars_for_optimization" in runner.failures[0]["error"]
+
+
+def test_run_all_runtime_signal_errors_threshold_one_skips_remaining_params(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3, 4]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+            runtime_error_max_per_tuple=1,
+        )
+    )
+    runner.cfg.param_search = "grid"
+
+    results = runner.run_all()
+    assert results == []
+    assert calls["count"] == 1
+    generate_failures = [f for f in runner.failures if f.get("stage") == "generate_signals"]
+    assert len(generate_failures) == 1
+    assert any(
+        "runtime_error_threshold_exceeded(count=1, max_per_tuple=1)" in f.get("error", "")
+        for f in runner.failures
+    )
+
+
+def test_run_all_runtime_signal_errors_are_not_capped_without_optimization_policy(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3, 4]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.cfg.validation = None
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.param_search = "grid"
+
+    results = runner.run_all()
+    assert results == []
+    assert calls["count"] == 4
+    generate_failures = [f for f in runner.failures if f.get("stage") == "generate_signals"]
+    assert len(generate_failures) == 4
+    assert all("runtime_error_threshold_exceeded" not in f.get("error", "") for f in runner.failures)
+
+
+def test_load_optimization_policy_defaults_runtime_error_threshold_when_none(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    collection = CollectionConfig(
+        name="demo",
+        source="custom",
+        symbols=["AAPL"],
+        validation=ValidationConfig(
+            optimization=OptimizationPolicyConfig(
+                on_fail="baseline_only",
+                min_bars=1,
+                dof_multiplier=1,
+                runtime_error_max_per_tuple=None,
+            )
+        ),
+    )
+
+    policy = runner._load_optimization_policy(collection)
+
+    assert policy is not None
+    assert policy[3] == 1
+
+
+def test_run_all_runtime_signal_errors_threshold_n_skips_after_n(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3, 4, 5]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+            runtime_error_max_per_tuple=3,
+        )
+    )
+    runner.cfg.param_search = "grid"
+
+    results = runner.run_all()
+    assert results == []
+    assert calls["count"] == 3
+    generate_failures = [f for f in runner.failures if f.get("stage") == "generate_signals"]
+    assert len(generate_failures) == 3
+    assert any(
+        "runtime_error_threshold_exceeded(count=3, max_per_tuple=3)" in f.get("error", "")
+        for f in runner.failures
+    )
+
+
+def test_run_all_runtime_signal_error_threshold_is_tuple_isolated(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.cfg.timeframes = ["1d", "1wk"]
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+            runtime_error_max_per_tuple=1,
+        )
+    )
+    runner.cfg.param_search = "grid"
+
+    results = runner.run_all()
+    assert results == []
+    # Two tuples: (boom, AAPL, 1d) and (boom, AAPL, 1wk), each capped after first failure.
+    assert calls["count"] == 2
+
+
+def test_run_all_runtime_tuple_cap_still_records_strategy_validation_for_repeated_tuple(
+    tmp_path, monkeypatch
+):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    collections = [
+        CollectionConfig(
+            name="demo",
+            source="custom",
+            symbols=["AAPL", "AAPL"],
+            fees=0.0004,
+            slippage=0.0003,
+        )
+    ]
+    runner = _make_runner(tmp_path, monkeypatch, collections=collections)
+    runner.cfg.strategies = []
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+            runtime_error_max_per_tuple=1,
+        )
+    )
+    runner.cfg.param_search = "grid"
+
+    results = runner.run_all()
+    assert results == []
+    assert calls["count"] == 1
+    strategy_validation_failures = [
+        failure
+        for failure in runner.failures
+        if failure.get("stage") == "strategy_validation" and failure.get("error") == "no_valid_candidate"
+    ]
+    assert len(strategy_validation_failures) == 2
+    assert runner.metrics["symbols_tested"] == 2
+
+
+def test_run_all_runtime_signal_error_threshold_isolated_per_collection(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3, 4, 5]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    collections = [
+        CollectionConfig(
+            name="strict",
+            source="custom",
+            symbols=["AAPL"],
+            validation=ValidationConfig(
+                optimization=OptimizationPolicyConfig(
+                    on_fail="baseline_only",
+                    min_bars=1,
+                    dof_multiplier=1,
+                    runtime_error_max_per_tuple=1,
+                )
+            ),
+        ),
+        CollectionConfig(
+            name="lenient",
+            source="custom",
+            symbols=["AAPL"],
+            validation=ValidationConfig(
+                optimization=OptimizationPolicyConfig(
+                    on_fail="baseline_only",
+                    min_bars=1,
+                    dof_multiplier=1,
+                    runtime_error_max_per_tuple=3,
+                )
+            ),
+        ),
+    ]
+    runner = _make_runner(tmp_path, monkeypatch, collections=collections)
+    runner.cfg.strategies = []
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.param_search = "grid"
+
+    results = runner.run_all()
+    assert results == []
+    assert calls["count"] == 4
+    assert any(
+        "runtime_error_threshold_exceeded(count=1, max_per_tuple=1)" in f.get("error", "")
+        for f in runner.failures
+    )
+    assert any(
+        "runtime_error_threshold_exceeded(count=3, max_per_tuple=3)" in f.get("error", "")
+        for f in runner.failures
+    )
+
+
+def test_run_all_runtime_signal_error_threshold_resets_between_runs(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+            runtime_error_max_per_tuple=1,
+        )
+    )
+    runner.cfg.param_search = "grid"
+
+    first = runner.run_all()
+    second = runner.run_all()
+    assert first == []
+    assert second == []
+    assert calls["count"] == 2
+
+
+def test_run_all_runtime_signal_error_threshold_does_not_escalate_job(tmp_path, monkeypatch):
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": [1, 2, 3]}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.external_index = {"boom": _BoomStrategy, "dummy": _DummyStrategy}
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+            runtime_error_max_per_tuple=1,
+        )
+    )
+    runner.cfg.param_search = "grid"
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+    assert calls["count"] == 1
+    assert eval_calls["count"] >= 1
+    assert len(results) == 1
+    assert results[0].strategy == "dummy"
+    assert not any(
+        failure["stage"] == "strategy_optimization" and failure["error"] == "skip_job"
+        for failure in runner.failures
+    )
+
+
+def test_run_all_runtime_signal_error_threshold_stops_optuna_search(tmp_path, monkeypatch):
+    pytest.importorskip("optuna")
+    calls = {"count": 0}
+
+    class _BoomStrategy(BaseStrategy):
+        name = "boom"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {"window": list(range(1, 11))}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            calls["count"] += 1
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.external_index = {"boom": _BoomStrategy}
+    runner.cfg.param_search = "optuna"
+    runner.cfg.param_trials = 10
+    runner.cfg.validation = ValidationConfig(
+        optimization=OptimizationPolicyConfig(
+            on_fail="baseline_only",
+            min_bars=1,
+            dof_multiplier=1,
+            runtime_error_max_per_tuple=1,
+        )
+    )
+
+    results = runner.run_all()
+    assert results == []
+    assert calls["count"] == 1
+
+
+def test_strategy_run_baseline_skips_evaluation_when_runtime_tuple_is_capped(tmp_path, monkeypatch):
+    eval_calls = {"count": 0}
+
+    class _BaselineStrategy(BaseStrategy):
+        name = "baseline_only"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.strategies = []
+    runner.external_index = {"baseline_only": _BaselineStrategy}
+    state = JobState(
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        )
+    )
+    plan = runner._strategy_create_plan(state, "baseline_only")
+    validated_data = ValidatedData(
+        raw_df=_make_ohlcv(10),
+        continuity={},
+        reliability_on_fail="skip_optimization",
+        reliability_reasons=[],
+    )
+    prep_decision, prepared = runner._execution_context_prepare(state, validated_data)
+    assert prep_decision.passed is True
+    assert prepared is not None
+
+    def _track_eval(*args, **kwargs):
+        eval_calls["count"] += 1
+        return 0.0
+
+    monkeypatch.setattr(BacktestRunner, "_strategy_evaluation", _track_eval)
+    runner._runtime_signal_error_capped.add(runner._runtime_error_tuple_key(plan, state))
+
+    outcome = runner._strategy_run(plan, state, validated_data, prepared)
+
+    assert outcome is not None
+    assert outcome.has_valid_candidate is False
+    assert plan.optimization_skip_reason == "runtime_error_threshold_exceeded"
+    assert eval_calls["count"] == 0
 
 
 def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkeypatch):
@@ -1680,6 +2361,412 @@ def test_run_all_reliability_skip_evaluation_on_max_outlier_pct(tmp_path, monkey
     failure = runner.failures[0]
     assert failure["stage"] == "data_validation"
     assert "max_outlier_pct_exceeded" in failure["error"]
+
+
+def test_lookahead_shuffle_test_result_is_deterministic(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
+        result_consistency=_result_consistency_config(
+            lookahead_shuffle_test=_lookahead_shuffle_test_config()
+        ),
+    )
+    _, plan, _, context, policy = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="leaky_shuffle",
+    )
+    runner.metrics = {"result_cache_misses": 0}
+    reason_one, meta_one = runner._lookahead_shuffle_test_result(context, plan, policy)
+    reason_two, meta_two = runner._lookahead_shuffle_test_result(context, plan, policy)
+
+    assert reason_one == reason_two
+    assert meta_one == meta_two
+    assert meta_one is not None
+    assert meta_one["is_complete"] is True
+    assert meta_one["seed"] == meta_two["seed"]
+    assert meta_one["median_shuffled_metric"] > 0
+    assert runner.metrics["result_cache_misses"] == 0
+    assert runner.evaluation_cache.saved == []
+    assert runner._runtime_signal_error_counts == {}
+
+
+def test_strategy_validation_result_consistency_min_gates_fail_fast_before_lookahead(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
+        result_consistency=_result_consistency_config(
+            min_metric=1.0,
+            min_trades=10,
+            lookahead_shuffle_test=_lookahead_shuffle_test_config(),
+        ),
+    )
+    outcome = StrategyEvalOutcome(
+        best_val=0.2,
+        best_params={},
+        best_stats={"trades": 2},
+        has_valid_candidate=True,
+        evaluations=1,
+        skipped_reason=None,
+        strategy="leaky_shuffle",
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        ),
+    )
+    _, _, _, context, _ = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="leaky_shuffle",
+        outcome=outcome,
+    )
+
+    def _unexpected_lookahead(*_args, **_kwargs):
+        raise AssertionError("lookahead should be skipped after min gates fail")
+
+    monkeypatch.setattr(
+        runner,
+        "_lookahead_shuffle_test_result",
+        MethodType(_unexpected_lookahead, runner),
+    )
+
+    decision = runner._strategy_validate_results_common(context)
+
+    assert not decision.passed
+    assert decision.action == "reject_result"
+    assert "min_metric_not_met(required=1.0, available=0.2)" in decision.reasons
+    assert "min_trades_not_met(required=10, available=2)" in decision.reasons
+
+
+def test_lookahead_shuffle_test_rejects_on_pvalue_threshold(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
+        result_consistency=_result_consistency_config(
+            lookahead_shuffle_test=_lookahead_shuffle_test_config()
+        ),
+    )
+    _, plan, _, context, policy = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="leaky_shuffle",
+    )
+    assert policy is not None
+
+    def _stub_permutations(self, run_ctx):
+        return ([0.8] * 100), 0, None
+
+    monkeypatch.setattr(
+        runner,
+        "_run_lookahead_shuffle_permutations",
+        MethodType(_stub_permutations, runner),
+    )
+
+    reason, meta = runner._lookahead_shuffle_test_result(
+        context,
+        plan,
+        policy,
+        observed_metric=0.1,
+    )
+
+    assert reason is not None
+    assert "lookahead_shuffle_test_pvalue_exceeded" in reason
+    assert meta is not None
+    assert meta["shuffle_pvalue"] == pytest.approx(1.0)
+    assert meta["observed_metric"] == pytest.approx(0.1)
+
+
+def test_lookahead_shuffle_uses_isolated_plan_state(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
+        result_consistency=_result_consistency_config(
+            lookahead_shuffle_test=_lookahead_shuffle_test_config(pvalue_max=1.0)
+        ),
+    )
+    _, plan, _, context, policy = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="leaky_shuffle",
+    )
+    assert policy is not None
+
+    original_build_request = runner._build_evaluation_request
+
+    def _mutating_build_request(self, eval_plan, state, prepared, full_params, *, cacheable=True):
+        eval_plan.evaluations += 99
+        eval_plan.best_val = 1_234.0
+        eval_plan.best_stats = {"mutated": True}
+        return original_build_request(
+            eval_plan,
+            state,
+            prepared,
+            full_params,
+            cacheable=cacheable,
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_build_evaluation_request",
+        MethodType(_mutating_build_request, runner),
+    )
+
+    reason, meta = runner._lookahead_shuffle_test_result(context, plan, policy)
+
+    assert reason is None
+    assert meta is not None
+    assert plan.evaluations == 0
+    assert plan.best_val == float("-inf")
+    assert plan.best_stats is None
+    assert plan.best_params is None
+
+
+def test_lookahead_shuffle_requests_are_marked_non_cacheable(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
+        result_consistency=_result_consistency_config(
+            lookahead_shuffle_test=_lookahead_shuffle_test_config(pvalue_max=1.0)
+        ),
+    )
+    _, plan, _, context, policy = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="leaky_shuffle",
+    )
+    assert policy is not None
+    seen_cacheable_flags: list[bool] = []
+
+    def _capture_evaluation_request(self, request, prepared, entries, exits):
+        seen_cacheable_flags.append(request.cacheable)
+        return EvaluationOutcome(
+            metric_value=1.0,
+            stats={},
+            valid=True,
+            attempted=True,
+            simulation_executed=True,
+            metric_computed=True,
+        )
+
+    monkeypatch.setattr(
+        runner,
+        "_evaluate_strategy_outcome",
+        MethodType(_capture_evaluation_request, runner),
+    )
+
+    reason, meta = runner._lookahead_shuffle_test_result(context, plan, policy)
+
+    assert reason is None
+    assert meta is not None
+    assert seen_cacheable_flags == [False] * policy.permutations
+
+
+def test_lookahead_shuffle_test_result_does_not_track_runtime_errors(
+    tmp_path, monkeypatch
+):
+    class _BoomShuffleStrategy(BaseStrategy):
+        name = "boom_shuffle"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="boom_shuffle",
+        strategy_cls=_BoomShuffleStrategy,
+        result_consistency=_result_consistency_config(
+            lookahead_shuffle_test=_lookahead_shuffle_test_config()
+        ),
+    )
+    _, plan, _, context, policy = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="boom_shuffle",
+    )
+    runner.metrics = {"result_cache_misses": 0}
+
+    reason, meta = runner._lookahead_shuffle_test_result(context, plan, policy)
+
+    assert reason is not None
+    assert reason.startswith("lookahead_shuffle_test_indeterminate(")
+    assert meta is not None
+    assert meta["is_complete"] is False
+    assert meta["reason"] == "no_finite_metrics"
+    assert meta["failed_permutations"] == policy.permutations
+    assert meta["max_failed_permutations"] is None
+    assert runner._runtime_signal_error_counts == {}
+    assert runner.metrics["result_cache_misses"] == 0
+    assert runner.evaluation_cache.saved == []
+
+
+def test_lookahead_shuffle_test_result_limits_failed_permutations(
+    tmp_path, monkeypatch
+):
+    class _BoomShuffleStrategy(BaseStrategy):
+        name = "boom_shuffle"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            raise RuntimeError("signal boom")
+
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="boom_shuffle",
+        strategy_cls=_BoomShuffleStrategy,
+        result_consistency=_result_consistency_config(
+            lookahead_shuffle_test=_lookahead_shuffle_test_config(
+                max_failed_permutations=1
+            )
+        ),
+    )
+    _, plan, _, context, policy = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="boom_shuffle",
+    )
+    runner.metrics = {"result_cache_misses": 0}
+
+    reason, meta = runner._lookahead_shuffle_test_result(context, plan, policy)
+
+    assert reason is not None
+    assert "too_many_failed_permutations" in reason
+    assert meta is not None
+    assert meta["is_complete"] is False
+    assert meta["reason"] == "too_many_failed_permutations"
+    assert meta["failed_permutations"] == 2
+    assert meta["max_failed_permutations"] == 1
+
+
+def test_run_all_lookahead_shuffle_test_indeterminate_rejects_result(
+    tmp_path, monkeypatch
+):
+    class _ShuffleSensitiveStrategy(BaseStrategy):
+        name = "shuffle_sensitive"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            if not df["Close"].is_monotonic_increasing:
+                raise RuntimeError("signal boom")
+            entries = pd.Series(False, index=df.index)
+            exits = pd.Series(False, index=df.index)
+            entries.iloc[0] = True
+            exits.iloc[-1] = True
+            return entries, exits
+
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="shuffle_sensitive",
+        strategy_cls=_ShuffleSensitiveStrategy,
+        result_consistency=_result_consistency_config(
+            lookahead_shuffle_test=_lookahead_shuffle_test_config()
+        ),
+    )
+    _patch_trending_source(monkeypatch)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+
+    assert results == []
+    assert eval_calls["count"] == 1
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["stage"] == "strategy_validation"
+    assert failure["error"].startswith("lookahead_shuffle_test_indeterminate(")
+    assert failure["strategy"] == "shuffle_sensitive"
+    assert "result_validation" not in failure
+
+
+def test_run_all_lookahead_shuffle_test_rejects_result_in_strategy_validation(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
+        result_consistency=_result_consistency_config(
+            lookahead_shuffle_test=_lookahead_shuffle_test_config()
+        ),
+    )
+    _patch_trending_source(monkeypatch)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+
+    assert results == []
+    assert eval_calls["count"] == 1 + 100
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["stage"] == "strategy_validation"
+    assert "lookahead_shuffle_test_pvalue_exceeded" in failure["error"]
+    assert failure["strategy"] == "leaky_shuffle"
+    assert "result_validation" not in failure
+
+
+def test_run_all_lookahead_shuffle_test_attaches_post_run_meta(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
+        result_consistency=_result_consistency_config(
+            lookahead_shuffle_test=_lookahead_shuffle_test_config(pvalue_max=1.0)
+        ),
+    )
+    _patch_trending_source(monkeypatch)
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+
+    assert len(results) == 1
+    assert eval_calls["count"] == 1 + 100
+    post_run_meta = results[0].stats.get("post_run_meta")
+    assert post_run_meta is not None
+    assert post_run_meta["lookahead_shuffle_test"]["is_complete"] is True
+
+
+def test_run_all_lookahead_shuffle_test_does_not_mutate_cached_stats_payload(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch)
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
+        result_consistency=_result_consistency_config(
+            lookahead_shuffle_test=_lookahead_shuffle_test_config(pvalue_max=1.0)
+        ),
+    )
+    _patch_trending_source(monkeypatch)
+    _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+
+    assert len(results) == 1
+    assert runner.results_cache.saved
+    assert "post_run_meta" not in runner.results_cache.saved[0]["stats"]
+    post_run_meta = results[0].stats.get("post_run_meta")
+    assert post_run_meta is not None
+    assert post_run_meta["lookahead_shuffle_test"]["is_complete"] is True
 
 
 def test_run_all_reliability_not_verified_skips_job(tmp_path, monkeypatch):
@@ -2249,7 +3336,7 @@ def test_run_all_collection_cache_isolation_for_same_name_collections(tmp_path, 
 def test_run_all_rejects_result_on_outlier_dependency(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             outlier_dependency=ResultConsistencyOutlierDependencyConfig(
                 slices=5,
                 profit_share_threshold=0.80,
@@ -2433,7 +3520,7 @@ def test_collect_reliability_reasons_dispatches_outlier_reason_to_subclass():
 def test_run_all_result_consistency_skips_check_for_missing_trades_frame(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             outlier_dependency=ResultConsistencyOutlierDependencyConfig(
                 slices=5,
                 profit_share_threshold=0.80,
@@ -2478,7 +3565,7 @@ def test_run_all_result_consistency_skips_check_for_missing_trades_frame(tmp_pat
 def test_run_all_rejects_result_on_execution_price_variance(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_sim=False)
     runner.cfg.validation = ValidationConfig(
-        result_consistency=ResultConsistencyConfig(
+        result_consistency=_result_consistency_config(
             execution_price_variance=ResultConsistencyExecutionPriceVarianceConfig(
                 price_tolerance_bps=0.0
             )

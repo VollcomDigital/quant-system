@@ -30,6 +30,7 @@ def test_evaluation_cache_uses_mode_hash(tmp_path: Path):
         "slippage": 0.0,
         "evaluation_mode": "backtest",
         "validation_config_hash": "v1",
+        "strategy_fingerprint": "fp-v1",
     }
 
     cache.set(
@@ -76,6 +77,7 @@ def test_evaluation_cache_uses_validation_hash(tmp_path: Path):
         "slippage": 0.0,
         "evaluation_mode": "backtest",
         "mode_config_hash": mode_hash,
+        "strategy_fingerprint": "fp-v1",
     }
     cache.set(
         record=EvaluationCacheRecord.from_mapping(
@@ -100,6 +102,52 @@ def test_evaluation_cache_uses_validation_hash(tmp_path: Path):
 
     hit_v1 = cache.get(**common, validation_config_hash="v1")
     hit_v2 = cache.get(**common, validation_config_hash="v2")
+    assert hit_v1 is not None and hit_v2 is not None
+    assert hit_v1["metric_value"] == pytest.approx(1.0)
+    assert hit_v2["metric_value"] == pytest.approx(2.0)
+
+
+def test_evaluation_cache_uses_strategy_fingerprint(tmp_path: Path):
+    cache = EvaluationCache(tmp_path)
+    mode = EvaluationModeConfig(mode="backtest", payload={})
+    mode_hash = cache.hash_mode_config(mode)
+    common = {
+        "collection": "c",
+        "symbol": "AAPL",
+        "timeframe": "1d",
+        "strategy": "s",
+        "params": {"x": 1},
+        "metric_name": "sharpe",
+        "data_fingerprint": "fp",
+        "fees": 0.0,
+        "slippage": 0.0,
+        "evaluation_mode": "backtest",
+        "mode_config_hash": mode_hash,
+        "validation_config_hash": "v1",
+    }
+    cache.set(
+        record=EvaluationCacheRecord.from_mapping(
+            {
+                **common,
+                "strategy_fingerprint": "strategy-v1",
+                "metric_value": 1.0,
+                "stats": {"sharpe": 1.0},
+            }
+        )
+    )
+    cache.set(
+        record=EvaluationCacheRecord.from_mapping(
+            {
+                **common,
+                "strategy_fingerprint": "strategy-v2",
+                "metric_value": 2.0,
+                "stats": {"sharpe": 2.0},
+            }
+        )
+    )
+
+    hit_v1 = cache.get(**common, strategy_fingerprint="strategy-v1")
+    hit_v2 = cache.get(**common, strategy_fingerprint="strategy-v2")
     assert hit_v1 is not None and hit_v2 is not None
     assert hit_v1["metric_value"] == pytest.approx(1.0)
     assert hit_v2["metric_value"] == pytest.approx(2.0)
