@@ -209,7 +209,7 @@ class TransactionCostRobustnessRunContext:
     policy: ResultConsistencyTransactionCostRobustnessConfig
     prepared: ExecutionPreparedData
     full_params: dict[str, Any]
-    baseline_metric: float
+    baseline_metric: float | None
     baseline_profit: float | None
 
 
@@ -3740,7 +3740,7 @@ class BacktestRunner:
             policy=policy,
             prepared=context.prepared_data,
             full_params={**plan.fixed_params, **outcome.best_params},
-            baseline_metric=float(outcome.best_val),
+            baseline_metric=float(outcome.best_val) if np.isfinite(outcome.best_val) else None,
             baseline_profit=baseline_profit,
         )
         transaction_cost_reason, transaction_cost_meta = self._transaction_cost_robustness_result(
