@@ -36,6 +36,27 @@ The target implementation should explicitly enforce these execution-security con
 - MPC custodians such as Fireblocks or Fordefi should be treated as optional institutional deployment tiers, not the only supported design.
 - AI-driven execution must be bounded by hard kill-switches, model-drift controls, and human-escalation paths.
 
+## Multi-Layer Circuit Breaker Principle
+
+The target implementation should explicitly enforce a multi-layered Kill Switch architecture so catastrophic AI behavior is intercepted before, during, and after execution:
+
+- Layer 1: AI/model guardrails before order formulation
+- Layer 2: deterministic pre-trade risk engine before execution
+- Layer 3: automated panic-button workflow during execution incidents
+- Layer 4: DeFi-specific pause and allowance-revocation controls for on-chain risk
+- Layer 5: out-of-band infrastructure isolation that can revoke runtime permissions even if the main system is unresponsive
+
+## Workflow Orchestration Principle
+
+The default workflow orchestrator for this stack should be Apache Airflow because it best fits:
+
+- mixed batch ETL and dependency-heavy DAGs
+- scheduled TradFi and on-chain ingestion workloads
+- explicit operational visibility for a multi-team platform
+- long-running backfills and replay jobs
+
+Prefect and Dagster can still be evaluated for specific subdomains, but the implementation plan should assume Airflow as the primary orchestration baseline unless an ADR formally replaces it.
+
 ## Two-Speed Architecture Principle
 
 The monorepo should keep a unified research and data foundation while enforcing two separate execution paths:
@@ -183,6 +204,8 @@ Turn the current datasource layer into a reusable ingestion and feature foundati
   - backfill jobs
   - incremental updates
   - validation and retry handling
+- [ ] Standardize on Apache Airflow as the primary workflow orchestrator for ingestion, backfills, feature refresh, and cross-source dependency management.
+- [ ] Evaluate Prefect and Dagster only as secondary candidates through ADRs for narrower workflows or developer-experience tradeoffs.
 - [ ] Define dbt transformation layers for reproducible downstream analytics and feature definitions.
 - [ ] Define feature-store write/read interfaces under `data_platform/feature_store/`.
 - [ ] Make the feature store the source of truth guaranteeing that research, backtests, and live trading use the exact same data logic and identical feature definitions.
@@ -352,6 +375,8 @@ Introduce agent runtime and the first three target agents on top of stable contr
 - [ ] Add AI failure controls:
   - hallucinate detection gates before order generation
   - model drift monitoring hooks
+  - Confidence Thresholding defaults to `Do Not Trade` or `Reduce Exposure`
+  - Bounded Output Action Spaces so models cannot request unconstrained buying power
   - panic-sell / anomalous-allocation Kill Switch escalation rules
 - [ ] Add human approval boundaries for all agents.
 - [ ] Instrument agent runs with OTel GenAI conventions.
@@ -388,6 +413,11 @@ Implement a production-grade trading system for minute-to-week horizons before i
   - per-symbol limits
   - daily drawdown kill switch
   - pending-order caps
+- [ ] Add deterministic pre-trade risk-engine controls:
+  - Fat-Finger Checks on notional size and unit size
+  - max volume per hour rules
+  - Wash Trading Prevention and opposing-flow blocking
+  - `TRADING_HALTED = True` style hard stop flags for intraday drawdown breaches
 - [ ] Add AI-specific RMS controls:
   - model confidence thresholds
   - drift-triggered trading halts
@@ -410,6 +440,11 @@ Implement a production-grade trading system for minute-to-week horizons before i
   - gRPC for low-latency request/response model calls
   - Kafka or ZeroMQ for streaming signals and execution events
 - [ ] Ensure large block decisions are handed to execution algorithms that can TWAP/VWAP orders over time to minimize market impact.
+- [ ] Define automated panic-button execution playbooks:
+  - halt new AI signal intake into OMS
+  - TradFi global cancel flows such as `reqGlobalCancel()` and Alpaca `DELETE /v2/orders`
+  - DeFi stop-signing behavior for pending or future transactions
+  - Flatten or Delta-Hedge logic for emergency containment
 
 ### Deliverables
 
@@ -449,6 +484,10 @@ Create reusable connectivity layers that can be shared by both mid-frequency and
   - signing request generation
   - gas estimation
   - broadcast and confirmation handling
+- [ ] Add DeFi-specific kill-switch controls:
+  - Pausable contract or Safe-module `pause()` flows
+  - automated ERC-20 allowance revocation back to zero
+  - protocol-denylist enforcement when exploits or flash-loan attacks are detected
 - [ ] Add `trading_system/shared_gateways/fix_engine/`.
 - [ ] Add `trading_system/shared_gateways/binary_protocols/`.
 - [ ] Separate protocol parsing from order state logic.
@@ -547,6 +586,10 @@ Add deployment, orchestration, and environment separation once service boundarie
   - treasury assets can remain in a Safe or equivalent smart-contract vault
   - human multisig approval is required for exchange transfers, fiat off-ramps, or large treasury moves
 - [ ] Add automated recovery workflows for gateway/container failures, especially IB Gateway restart and reconnect handling.
+- [ ] Add out-of-band hard-kill infrastructure paths:
+  - independent AWS Lambda or equivalent control-plane isolation function
+  - IAM role revocation for compromised trading instances
+  - immediate severing of broker, KMS, and cloud execution permissions
 - [ ] Add environment boundaries:
   - local
   - research/dev
