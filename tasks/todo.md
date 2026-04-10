@@ -20,6 +20,21 @@ The target implementation should explicitly preserve these design rules througho
 - The backtest engine remains custom-code-first for market-structure realism.
 - The trading system is polyglot, with Python for research and native code for latency-critical execution.
 - CI/CD and MLOps are first-class guardrails, especially for factor promotion and model deployment.
+- TradFi broker execution and Web3 protocol execution are treated as separate gateway paradigms with different state, security, and failure models.
+
+## Execution Security and Custody Principles
+
+The target implementation should explicitly enforce these execution-security constraints:
+
+- Private keys must never live in source control, application code, or plain environment variables.
+- Programmatic on-chain signing should default to cloud HSM/KMS-backed signing flows.
+- Treasury capital should not sit in a bot-controlled hot EOA when a smart-contract vault or Safe-based control plane is available.
+- The default crypto operating model should separate:
+  - execution signer permissions
+  - treasury custody
+  - human withdrawal approval
+- MPC custodians such as Fireblocks or Fordefi should be treated as optional institutional deployment tiers, not the only supported design.
+- AI-driven execution must be bounded by hard kill-switches, model-drift controls, and human-escalation paths.
 
 ## Two-Speed Architecture Principle
 
@@ -183,6 +198,15 @@ Turn the current datasource layer into a reusable ingestion and feature foundati
   - Parquet-backed bars and factors
   - alternative data enrichment
   - query patterns optimized for Polars
+- [ ] Treat IBKR and Alpaca strictly as live execution and live market-connectivity providers, not as the primary historical training-data source.
+- [ ] Add dedicated historical/vendor data integrations for training and backtesting:
+  - Polygon.io
+  - Databento
+  - Tiingo
+- [ ] Add on-chain indexing and decoding layers for Mid-Frequency AI research:
+  - The Graph subgraph ingestion for aggregated protocol events
+  - custom ETL that decodes raw EVM logs into tabular Parquet datasets
+  - protocol-normalized schemas for swaps, lending, liquidity, and vault events
 - [ ] Add data quality checks:
   - schema validity
   - continuity checks
@@ -322,6 +346,13 @@ Introduce agent runtime and the first three target agents on top of stable contr
 - [ ] Add specialized hybrid-fund agents:
   - HFT Latency Agent for parsing native execution telemetry and detecting latency regressions
   - Mid-Freq Allocation Agent for adjusting portfolio risk posture from macro or alternative-data signals
+- [ ] Add stack-specific resilience and routing agents:
+  - On-Chain Routing Agent for gas-aware and liquidity-aware DEX routing decisions
+  - Gateway Health Agent for broker, gateway, and container health monitoring plus reconnection workflows
+- [ ] Add AI failure controls:
+  - hallucinate detection gates before order generation
+  - model drift monitoring hooks
+  - panic-sell / anomalous-allocation Kill Switch escalation rules
 - [ ] Add human approval boundaries for all agents.
 - [ ] Instrument agent runs with OTel GenAI conventions.
 
@@ -357,6 +388,15 @@ Implement a production-grade trading system for minute-to-week horizons before i
   - per-symbol limits
   - daily drawdown kill switch
   - pending-order caps
+- [ ] Add AI-specific RMS controls:
+  - model confidence thresholds
+  - drift-triggered trading halts
+  - panic-selling detection
+  - portfolio-level circuit breakers
+- [ ] Require state reconciliation before new order placement:
+  - broker positions vs local OMS
+  - exchange balances vs local ledger
+  - on-chain balances/allowances vs execution assumptions
 - [ ] Add mandatory stop-loss / take-profit / time-exit registration policies.
 - [ ] Create `trading_system/gateways/` with clean interfaces first, even if low-latency implementations come later.
 - [ ] Split the target sub-tree:
@@ -386,6 +426,29 @@ Create reusable connectivity layers that can be shared by both mid-frequency and
 
 ### Tasks
 
+- [ ] Split gateway architecture into two paradigms:
+  - TradFi gateways for broker-style order routing
+  - Web3/DeFi gateways for transaction construction, signing, and broadcast
+- [ ] Add TradFi gateway modules for:
+  - Alpaca REST/WebSocket execution and streaming
+  - IBKR execution through a locally hosted IB Gateway container
+- [ ] Containerize IB Gateway with IBC/IB Controller support.
+- [ ] Evaluate broker integration libraries such as `ib_insync` for the Python control plane while preserving a cleaner long-term native or FIX abstraction.
+- [ ] Add IBKR operational workflows for:
+  - scheduled daily restart automation
+  - safe pre-restart trading halt
+  - re-authentication and reconnect
+  - OMS reconciliation after reconnect
+- [ ] Add Web3 gateway modules for:
+  - Alchemy or Infura-backed RPC access
+  - EVM transaction construction and broadcast
+  - protocol adapter interfaces for DEXs, lending venues, and routers
+- [ ] Add a version-controlled ABI registry for on-chain protocol integration.
+- [ ] Define chain-execution flows for:
+  - transaction simulation
+  - signing request generation
+  - gas estimation
+  - broadcast and confirmation handling
 - [ ] Add `trading_system/shared_gateways/fix_engine/`.
 - [ ] Add `trading_system/shared_gateways/binary_protocols/`.
 - [ ] Separate protocol parsing from order state logic.
@@ -449,6 +512,14 @@ Add deployment, orchestration, and environment separation once service boundarie
   - object storage
   - secrets/config stores
   - observability plumbing
+- [ ] Add execution-security infrastructure for:
+  - AWS KMS-backed signing
+  - HashiCorp Vault-backed secrets and broker credentials
+  - optional Nitro Enclave or enclave-adjacent signing isolation
+- [ ] Add custody integration decision records for:
+  - AWS KMS direct signing
+  - Safe smart-contract treasury controls
+  - MPC custodian integration such as Fireblocks or Fordefi
 - [ ] Add separate infrastructure tracks:
   - bare-metal or co-located provisioning patterns for HFT
   - cloud-native Kubernetes infrastructure for mid-frequency and research workloads
@@ -471,6 +542,11 @@ Add deployment, orchestration, and environment separation once service boundarie
   - leakage and look-ahead checks
   - out-of-sample backtest validation
 - [ ] Add model deployment guardrails with registry-backed approvals using MLflow or Weights & Biases metadata.
+- [ ] Add treasury and signing guardrails so:
+  - bots cannot initiate unrestricted withdrawals
+  - treasury assets can remain in a Safe or equivalent smart-contract vault
+  - human multisig approval is required for exchange transfers, fiat off-ramps, or large treasury moves
+- [ ] Add automated recovery workflows for gateway/container failures, especially IB Gateway restart and reconnect handling.
 - [ ] Add environment boundaries:
   - local
   - research/dev
