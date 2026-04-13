@@ -2034,7 +2034,7 @@ def test_run_all_min_bars_and_dof_guard_behavior(
     if expect_skip:
         assert optimization is not None
         assert optimization["skipped"] is True
-        assert optimization["reason"] == "insufficient_bars_for_optimization"
+        assert optimization["reasons"] == ["insufficient_bars_for_optimization"]
         # search_space has one dimension (`window`) in _make_runner, so n_params=1.
         expected_min_bars = max(min_bars, dof_multiplier * 1)
         assert optimization["min_bars_required"] == expected_min_bars
@@ -2500,9 +2500,8 @@ def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkey
     assert eval_calls["count"] == 1
     optimization = results[0].stats.get("optimization")
     assert optimization is not None
-    assert optimization["reason"] == "reliability_threshold_skip_optimization"
-    reasons = optimization.get("reliability_reasons", [])
-    assert any("min_data_points_not_met" in r for r in reasons)
+    assert optimization["reasons"] == ["reliability_threshold_skip_optimization"]
+    assert "reliability_reasons" not in optimization
 
 
 def test_run_all_reliability_not_verified_skips_optimization(tmp_path, monkeypatch):
@@ -2521,9 +2520,8 @@ def test_run_all_reliability_not_verified_skips_optimization(tmp_path, monkeypat
     assert eval_calls["count"] == 1
     optimization = results[0].stats.get("optimization")
     assert optimization is not None
-    assert optimization["reason"] == "reliability_threshold_skip_optimization"
-    reasons = optimization.get("reliability_reasons", [])
-    assert "collection_not_verified" in reasons
+    assert optimization["reasons"] == ["reliability_threshold_skip_optimization"]
+    assert "reliability_reasons" not in optimization
 
 
 def test_run_all_data_quality_without_continuity_still_computes_diagnostics(
@@ -3609,9 +3607,8 @@ def test_run_all_skip_optimization_still_evaluates_each_strategy(tmp_path, monke
     for result in results:
         optimization = result.stats.get("optimization")
         assert optimization is not None
-        assert optimization["reason"] == "reliability_threshold_skip_optimization"
-        reasons = optimization.get("reliability_reasons", [])
-        assert any("min_data_points_not_met" in reason for reason in reasons)
+        assert optimization["reasons"] == ["reliability_threshold_skip_optimization"]
+        assert "reliability_reasons" not in optimization
         assert all("insufficient_bars_for_optimization" not in reason for reason in optimization["reasons"])
 
 
@@ -3752,9 +3749,8 @@ def test_run_all_collection_reliability_override_takes_precedence(tmp_path, monk
     assert eval_calls["count"] == 1
     optimization = results[0].stats.get("optimization")
     assert optimization is not None
-    assert optimization["reason"] == "reliability_threshold_skip_optimization"
-    reasons = optimization.get("reliability_reasons", [])
-    assert any("min_data_points_not_met" in reason for reason in reasons)
+    assert optimization["reasons"] == ["reliability_threshold_skip_optimization"]
+    assert "reliability_reasons" not in optimization
 
 
 def test_run_all_reliability_skip_collection_blocks_remaining_jobs_in_collection(

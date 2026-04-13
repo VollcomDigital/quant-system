@@ -1385,15 +1385,11 @@ class BacktestRunner:
     def _apply_policy_constraints_to_plan(
         self,
         state: JobState,
-        validated_data: ValidatedData,
         plan: StrategyPlan,
     ) -> None:
         if not state.policy_skip_optimization or not plan.search_space:
             return
         self._plan_add_skip_reason(plan, "reliability_threshold_skip_optimization")
-        if not isinstance(plan.optimization_details, dict):
-            plan.optimization_details = {}
-        plan.optimization_details["reliability_reasons"] = list(validated_data.reliability_reasons)
 
     def _create_job_list(self) -> list[JobContext]:
         # Expand config into executable collection/symbol/timeframe jobs.
@@ -2495,7 +2491,6 @@ class BacktestRunner:
         if not isinstance(plan.optimization_details, dict):
             plan.optimization_details = {}
         plan.optimization_details["skipped"] = True
-        plan.optimization_details["reason"] = skip_reasons[0]
         plan.optimization_details["reasons"] = skip_reasons
         if min_bars_required is not None:
             plan.optimization_details["min_bars_required"] = min_bars_required
@@ -4165,7 +4160,7 @@ class BacktestRunner:
                 self.metrics["symbols_tested"] += 1
                 # Strategy stage: create plan -> validate plan -> run -> validate results.
                 plan = self._strategy_create_plan(state, strat_name)
-                self._apply_policy_constraints_to_plan(state, validated_data, plan)
+                self._apply_policy_constraints_to_plan(state, plan)
                 plan_decision = self._strategy_validate_plan(state, validated_data, plan)
                 plan_decision = self._handle_gate_decision(
                     state,

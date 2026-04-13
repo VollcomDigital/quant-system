@@ -309,6 +309,9 @@ optimization or block execution entirely:
   collection/symbol/timeframe, and falls back to baseline evaluation where the strategy supports it.
 - `on_fail: skip_job` blocks the current collection/symbol/timeframe job.
 - `on_fail: skip_collection` blocks the rest of the jobs in that collection after the first failure.
+- when optimization is skipped by this policy, optimization metadata records only skip markers
+  (`optimization.reasons`), while detailed reliability causes remain in
+  validation gate/failure reasons.
 
 Configured data-quality reliability reasons can include:
 
