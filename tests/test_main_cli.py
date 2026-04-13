@@ -582,7 +582,8 @@ def test_package_run_rejects_path_traversal(tmp_path: Path):
     )
 
     assert result.exit_code != 0
-    assert "run_id must be a simple name" in result.stdout or "Invalid run_id" in result.stdout
+    combined_output = result.stdout + getattr(result, "stderr", "")
+    assert "run_id must be a simple name" in combined_output or "Invalid run_id" in combined_output
 
 
 def test_clean_cache_removes_old_files(tmp_path: Path):
