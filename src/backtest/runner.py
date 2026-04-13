@@ -211,6 +211,7 @@ class TransactionCostRobustnessRunContext:
     full_params: dict[str, Any]
     baseline_metric: float | None
     baseline_profit: float | None
+    aligned_signals: tuple[pd.Series, pd.Series] | None = None
 
 
 class BacktestRunner:
@@ -2714,14 +2715,16 @@ class BacktestRunner:
                 "slippage": stressed_slippage,
             }
         try:
-            entries, exits = self._generate_aligned_signals(
-                run_ctx.plan.strategy,
-                raw_df,
-                run_ctx.full_params,
-                plan=run_ctx.plan,
-                state=run_ctx.context.state,
-                track_runtime_errors=False,
-            )
+            if run_ctx.aligned_signals is None:
+                run_ctx.aligned_signals = self._generate_aligned_signals(
+                    run_ctx.plan.strategy,
+                    raw_df,
+                    run_ctx.full_params,
+                    plan=run_ctx.plan,
+                    state=run_ctx.context.state,
+                    track_runtime_errors=False,
+                )
+            entries, exits = run_ctx.aligned_signals
             request = self._build_evaluation_request(
                 run_ctx.plan,
                 run_ctx.context.state,

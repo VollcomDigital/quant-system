@@ -3043,6 +3043,36 @@ def test_transaction_cost_robustness_result_enforce_rejects_on_negative_profit(
     )
 
 
+def test_transaction_cost_robustness_scenario_reuses_aligned_signals(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _, _, _, _, run_ctx = _build_transaction_cost_validation_artifacts(
+        runner,
+        strategy_name="dummy",
+        policy=_transaction_cost_robustness_config(mode="analytics"),
+    )
+    _patch_transaction_cost_evaluator(monkeypatch)
+    signal_calls = {"count": 0}
+    original_generate_aligned_signals = runner._generate_aligned_signals
+
+    def _count_generate_aligned_signals(self, strategy, raw_df, params, **kwargs):
+        signal_calls["count"] += 1
+        return original_generate_aligned_signals(strategy, raw_df, params, **kwargs)
+
+    monkeypatch.setattr(
+        runner,
+        "_generate_aligned_signals",
+        MethodType(_count_generate_aligned_signals, runner),
+    )
+
+    first = runner._transaction_cost_robustness_scenario(run_ctx, 2.0)
+    second = runner._transaction_cost_robustness_scenario(run_ctx, 5.0)
+
+    assert first["is_complete"] is True
+    assert second["is_complete"] is True
+    assert signal_calls["count"] == 1
+    assert run_ctx.aligned_signals is not None
+
+
 @pytest.mark.parametrize(
     ("breakeven_cfg", "policy", "expected_status"),
     [
