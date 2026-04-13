@@ -3001,9 +3001,10 @@ class BacktestRunner:
         run_ctx: TransactionCostRobustnessRunContext,
         stress_scenarios: list[dict[str, Any]],
     ) -> dict[str, Any]:
+        is_complete = all(bool(scenario.get("is_complete")) for scenario in stress_scenarios)
         return {
-            "is_complete": all(bool(scenario.get("is_complete")) for scenario in stress_scenarios),
-            "status": "complete",
+            "is_complete": is_complete,
+            "status": "complete" if is_complete else "indeterminate",
             "mode": run_ctx.policy.mode,
             "metric_name": self.cfg.metric,
             "baseline_metric": run_ctx.baseline_metric,
