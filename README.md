@@ -206,15 +206,20 @@ See new collection examples under `config/collections/` for FX intraday via Finn
   - `min_data_points` is optional: minimum number of bars required
   - `is_verified` is optional: set `false` to mark a collection as manually unverified and
     emit `collection_not_verified`
+  - `calendar` is optional and controls continuity expectations:
+    - `kind: auto | crypto_24_7 | weekday | exchange`
+    - `timezone: UTC or UTC±HH:MM`
+    - `auto` resolves to `crypto_24_7` for crypto sources and `weekday` otherwise
+    - `exchange` uses `exchange_calendars` for daily session-aware continuity (holidays excluded)
+    - non-daily checks use fixed-delta continuity (not weekday filtering)
   - `continuity` is optional:
     - `min_score` minimum continuity score (0..1)
     - `max_missing_bar_pct` maximum missing bars percentage across expected bars
-    - `calendar` is optional and controls continuity expectations:
-      - `kind: auto | crypto_24_7 | weekday | exchange`
-      - `timezone: UTC or UTC±HH:MM`
-      - `auto` resolves to `crypto_24_7` for crypto sources and `weekday` otherwise
-      - `exchange` uses `exchange_calendars` for daily session-aware continuity (holidays excluded)
-      - non-daily checks use fixed-delta continuity (not weekday filtering)
+  - `ohlc_integrity` (optional module; active when configured):
+    - `max_invalid_bar_pct` (optional, default `0.0`): maximum percent of bars allowed to violate OHLC invariants
+    - `allow_negative_price` (optional, default `false`)
+    - `allow_negative_volume` (optional, default `false`)
+    - fixed-action: emit `ohlc_integrity_invalid_bar_pct_exceeded(...)` when threshold is breached
   - `kurtosis` is optional: maximum kurtosis of close-to-close returns
   - `outlier_detection` (optional module; active when configured):
     - `max_outlier_pct` (required): maximum percentage of return bars classified as outliers
@@ -232,6 +237,8 @@ See new collection examples under `config/collections/` for FX intraday via Finn
       are treated as an explicit indeterminate reliability reason. If ADF and KPSS disagree,
       a stationarity conflict reason is emitted.
   - continuity diagnostics are always computed.
+  - continuity diagnostics run on canonicalized bars; duplicate bars removed during canonicalization
+    are included in continuity duplicate-bar scoring.
   - when `validation.data_quality` is configured, continuity precondition failures
     (for example fewer than 2 bars) fail data validation (`skip_job`).
   - when `validation.data_quality` is unset, continuity diagnostics are best-effort and
@@ -307,6 +314,7 @@ Configured data-quality reliability reasons can include:
 
 - `collection_not_verified` when `validation.data_quality.is_verified: false`
 - `max_missing_bar_pct_exceeded(...)` when `continuity.max_missing_bar_pct` is breached
+- `ohlc_integrity_invalid_bar_pct_exceeded(...)` when `ohlc_integrity.max_invalid_bar_pct` is breached
 - `max_kurtosis_exceeded(...)` when `kurtosis` is breached
 - stationarity or outlier reasons when those modules are configured
 

@@ -16,13 +16,18 @@ validation:
   data_quality:
     min_data_points: 1000
     is_verified: true  # set false to force `collection_not_verified`
+    calendar:
+      kind: auto  # auto | crypto_24_7 | weekday | exchange
+      # exchange: XNYS
+      # timezone: UTC-05:00
     continuity:
       min_score: 0.98
       max_missing_bar_pct: 0.1  # config-driven gap threshold for reliable collections
-      calendar:
-        kind: auto  # auto | crypto_24_7 | weekday | exchange
-        # exchange: XNYS
-        # timezone: UTC-05:00
+      # continuity scoring runs on canonicalized bars and includes duplicate bars removed upstream
+    ohlc_integrity:
+      max_invalid_bar_pct: 0.0
+      allow_negative_price: false
+      allow_negative_volume: false
     kurtosis: 10.0  # config-driven max kurtosis of close-to-close returns
     outlier_detection:
       max_outlier_pct: 2.0  # max percent of return bars flagged as outliers
@@ -106,9 +111,15 @@ collections:
     #   data_quality:
     #     min_data_points: 1500
     #     is_verified: true
+    #     calendar:
+    #       kind: auto
     #     continuity:
     #       min_score: 0.99
     #       max_missing_bar_pct: 0.1
+    #     ohlc_integrity:
+    #       max_invalid_bar_pct: 0.0
+    #       allow_negative_price: false
+    #       allow_negative_volume: false
     #     kurtosis: 8.0
     #     outlier_detection:
     #       max_outlier_pct: 1.0

@@ -54,8 +54,10 @@ class ValidationCalendarConfig:
 @dataclass
 class ValidationDataQualityConfig:
     min_data_points: int | None = None
+    calendar: ValidationCalendarConfig | None = None
     continuity: "ValidationContinuityConfig | None" = None
     kurtosis: float | None = None
+    ohlc_integrity: "ValidationOHLCIntegrityConfig | None" = None
     outlier_detection: "ValidationOutlierDetectionConfig | None" = None
     stationarity: "ValidationStationarityConfig | None" = None
     is_verified: bool | None = None
@@ -66,7 +68,13 @@ class ValidationDataQualityConfig:
 class ValidationContinuityConfig:
     min_score: float | None = None
     max_missing_bar_pct: float | None = None
-    calendar: ValidationCalendarConfig | None = None
+
+
+@dataclass
+class ValidationOHLCIntegrityConfig:
+    max_invalid_bar_pct: float | None = None
+    allow_negative_price: bool | None = None
+    allow_negative_volume: bool | None = None
 
 
 @dataclass
@@ -208,6 +216,7 @@ OPTIMIZATION_RUNTIME_ERROR_MAX_PER_TUPLE_MIN = 1
 RESULT_CONSISTENCY_OUTLIER_DEPENDENCY_SLICES_MIN = 2
 RESULT_CONSISTENCY_MIN_TRADES_MIN = 1
 OUTLIER_DETECTION_ZSCORE_THRESHOLD_MIN_EXCLUSIVE = 0.0
+OHLC_INTEGRITY_INVALID_BAR_PCT_DEFAULT = 0.0
 
 
 def _merged_field(base: Any, override: Any, field: str) -> Any:
@@ -326,13 +335,20 @@ def _normalize_data_quality_config(
         kurtosis = float(kurtosis)
         if kurtosis < VALIDATION_NON_NEGATIVE_FLOAT_MIN:
             raise ValueError(f"`{prefix}.kurtosis` must be >= {VALIDATION_NON_NEGATIVE_FLOAT_MIN}")
+    continuity = _normalize_continuity_config(
+        getattr(cfg, "continuity", None),
+        f"{prefix}.continuity",
+    )
+    calendar = _normalize_calendar_config(getattr(cfg, "calendar", None), f"{prefix}.calendar")
     return ValidationDataQualityConfig(
         min_data_points=min_data_points,
-        continuity=_normalize_continuity_config(
-            getattr(cfg, "continuity", None),
-            f"{prefix}.continuity",
-        ),
+        calendar=calendar,
+        continuity=continuity,
         kurtosis=kurtosis,
+        ohlc_integrity=_normalize_ohlc_integrity_config(
+            getattr(cfg, "ohlc_integrity", None),
+            f"{prefix}.ohlc_integrity",
+        ),
         outlier_detection=_normalize_outlier_detection_config(
             getattr(cfg, "outlier_detection", None),
             f"{prefix}.outlier_detection",
@@ -349,8 +365,14 @@ def _normalize_data_quality_config(
 def _apply_data_quality_defaults(cfg: ValidationDataQualityConfig) -> ValidationDataQualityConfig:
     return ValidationDataQualityConfig(
         min_data_points=cfg.min_data_points,
+        calendar=_apply_calendar_defaults(cfg.calendar) if cfg.calendar is not None else None,
         continuity=_apply_continuity_defaults(cfg.continuity) if cfg.continuity is not None else None,
         kurtosis=cfg.kurtosis,
+        ohlc_integrity=(
+            _apply_ohlc_integrity_defaults(cfg.ohlc_integrity)
+            if cfg.ohlc_integrity is not None
+            else None
+        ),
         outlier_detection=(
             _apply_outlier_detection_defaults(cfg.outlier_detection)
             if cfg.outlier_detection is not None
@@ -387,7 +409,6 @@ def _normalize_continuity_config(
     return ValidationContinuityConfig(
         min_score=min_score,
         max_missing_bar_pct=max_missing_bar_pct,
-        calendar=_normalize_calendar_config(getattr(cfg, "calendar", None), f"{prefix}.calendar"),
     )
 
 
@@ -395,7 +416,43 @@ def _apply_continuity_defaults(cfg: ValidationContinuityConfig) -> ValidationCon
     return ValidationContinuityConfig(
         min_score=cfg.min_score,
         max_missing_bar_pct=cfg.max_missing_bar_pct,
-        calendar=_apply_calendar_defaults(cfg.calendar) if cfg.calendar is not None else None,
+    )
+
+
+def _normalize_ohlc_integrity_config(
+    cfg: ValidationOHLCIntegrityConfig | None,
+    prefix: str,
+) -> ValidationOHLCIntegrityConfig | None:
+    if cfg is None:
+        return None
+    max_invalid_bar_pct = getattr(cfg, "max_invalid_bar_pct", None)
+    if max_invalid_bar_pct is not None:
+        max_invalid_bar_pct = float(max_invalid_bar_pct)
+        if max_invalid_bar_pct < VALIDATION_PERCENT_MIN or max_invalid_bar_pct > VALIDATION_PERCENT_MAX:
+            raise ValueError(
+                f"`{prefix}.max_invalid_bar_pct` must be between {VALIDATION_PERCENT_MIN} and {VALIDATION_PERCENT_MAX}"
+            )
+    return ValidationOHLCIntegrityConfig(
+        max_invalid_bar_pct=max_invalid_bar_pct,
+        allow_negative_price=getattr(cfg, "allow_negative_price", None),
+        allow_negative_volume=getattr(cfg, "allow_negative_volume", None),
+    )
+
+
+def _apply_ohlc_integrity_defaults(
+    cfg: ValidationOHLCIntegrityConfig,
+) -> ValidationOHLCIntegrityConfig:
+    max_invalid_bar_pct = (
+        float(cfg.max_invalid_bar_pct)
+        if cfg.max_invalid_bar_pct is not None
+        else OHLC_INTEGRITY_INVALID_BAR_PCT_DEFAULT
+    )
+    allow_negative_price = bool(cfg.allow_negative_price) if cfg.allow_negative_price is not None else False
+    allow_negative_volume = bool(cfg.allow_negative_volume) if cfg.allow_negative_volume is not None else False
+    return ValidationOHLCIntegrityConfig(
+        max_invalid_bar_pct=max_invalid_bar_pct,
+        allow_negative_price=allow_negative_price,
+        allow_negative_volume=allow_negative_volume,
     )
 
 
@@ -899,11 +956,19 @@ def _merge_data_quality_config(
     normalized = _normalize_data_quality_config(
         ValidationDataQualityConfig(
             min_data_points=_merged_field(base, override, "min_data_points"),
+            calendar=_merge_calendar_config(
+                getattr(base, "calendar", None),
+                getattr(override, "calendar", None),
+            ),
             continuity=_merge_continuity_config(
                 getattr(base, "continuity", None),
                 getattr(override, "continuity", None),
             ),
             kurtosis=_merged_field(base, override, "kurtosis"),
+            ohlc_integrity=_merge_ohlc_integrity_config(
+                getattr(base, "ohlc_integrity", None),
+                getattr(override, "ohlc_integrity", None),
+            ),
             outlier_detection=_merge_outlier_detection_config(
                 getattr(base, "outlier_detection", None),
                 getattr(override, "outlier_detection", None),
@@ -1063,10 +1128,19 @@ def _merge_continuity_config(
     return ValidationContinuityConfig(
         min_score=_merged_field(base, override, "min_score"),
         max_missing_bar_pct=_merged_field(base, override, "max_missing_bar_pct"),
-        calendar=_merge_calendar_config(
-            getattr(base, "calendar", None),
-            getattr(override, "calendar", None),
-        ),
+    )
+
+
+def _merge_ohlc_integrity_config(
+    base: ValidationOHLCIntegrityConfig | None,
+    override: ValidationOHLCIntegrityConfig | None,
+) -> ValidationOHLCIntegrityConfig | None:
+    if base is None and override is None:
+        return None
+    return ValidationOHLCIntegrityConfig(
+        max_invalid_bar_pct=_merged_field(base, override, "max_invalid_bar_pct"),
+        allow_negative_price=_merged_field(base, override, "allow_negative_price"),
+        allow_negative_volume=_merged_field(base, override, "allow_negative_volume"),
     )
 
 
@@ -1596,11 +1670,15 @@ def _parse_validation_data_quality(
     min_data_points_cfg = parse_optional_int(
         parsed_raw, prefix, "min_data_points", min_value=VALIDATION_NON_NEGATIVE_INT_MIN
     )
+    calendar_cfg = _parse_validation_calendar(parsed_raw.get("calendar"), f"{prefix}.calendar")
     continuity_cfg = _parse_continuity(
         parsed_raw.get("continuity"), f"{prefix}.continuity"
     )
     kurtosis_cfg = parse_optional_float(
         parsed_raw, prefix, "kurtosis", min_value=VALIDATION_NON_NEGATIVE_FLOAT_MIN
+    )
+    ohlc_integrity_cfg = _parse_ohlc_integrity(
+        parsed_raw.get("ohlc_integrity"), f"{prefix}.ohlc_integrity"
     )
     outlier_detection_cfg = _parse_outlier_detection(
         parsed_raw.get("outlier_detection"), f"{prefix}.outlier_detection"
@@ -1613,8 +1691,10 @@ def _parse_validation_data_quality(
     return _normalize_data_quality_config(
         ValidationDataQualityConfig(
             min_data_points=min_data_points_cfg,
+            calendar=calendar_cfg,
             continuity=continuity_cfg,
             kurtosis=kurtosis_cfg,
+            ohlc_integrity=ohlc_integrity_cfg,
             outlier_detection=outlier_detection_cfg,
             stationarity=stationarity_cfg,
             is_verified=is_verified,
@@ -1630,6 +1710,10 @@ def _parse_continuity(
     if raw is None:
         return None
     parsed_raw = require_mapping(raw, prefix)
+    if "calendar" in parsed_raw:
+        raise ValueError(
+            f"Invalid `{prefix}.calendar`: configure calendar under `validation.data_quality.calendar`"
+        )
     min_score = parse_optional_float(
         parsed_raw,
         prefix,
@@ -1644,11 +1728,32 @@ def _parse_continuity(
         min_value=VALIDATION_PERCENT_MIN,
         max_value=VALIDATION_PERCENT_MAX,
     )
-    calendar_cfg = _parse_validation_calendar(parsed_raw.get("calendar"), f"{prefix}.calendar")
     return ValidationContinuityConfig(
         min_score=min_score,
         max_missing_bar_pct=max_missing,
-        calendar=calendar_cfg,
+    )
+
+
+def _parse_ohlc_integrity(
+    raw: Any,
+    prefix: str,
+) -> ValidationOHLCIntegrityConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    max_invalid_bar_pct = parse_optional_float(
+        parsed_raw,
+        prefix,
+        "max_invalid_bar_pct",
+        min_value=VALIDATION_PERCENT_MIN,
+        max_value=VALIDATION_PERCENT_MAX,
+    )
+    allow_negative_price = parse_optional_bool(parsed_raw, prefix, "allow_negative_price")
+    allow_negative_volume = parse_optional_bool(parsed_raw, prefix, "allow_negative_volume")
+    return ValidationOHLCIntegrityConfig(
+        max_invalid_bar_pct=max_invalid_bar_pct,
+        allow_negative_price=allow_negative_price,
+        allow_negative_volume=allow_negative_volume,
     )
 
 def _parse_outlier_detection(

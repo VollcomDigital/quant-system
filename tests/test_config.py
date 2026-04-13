@@ -887,11 +887,10 @@ metric: sharpe
 validation:
   data_quality:
     on_fail: skip_job
-    continuity:
-      calendar:
-        kind: exchange
-        exchange: XNYS
-        timezone: UTC-05:00
+    calendar:
+      kind: exchange
+      exchange: XNYS
+      timezone: UTC-05:00
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -899,11 +898,10 @@ validation:
     cfg = load_config(path)
     assert cfg.validation is not None
     assert cfg.validation.data_quality is not None
-    assert cfg.validation.data_quality.continuity is not None
-    assert cfg.validation.data_quality.continuity.calendar is not None
-    assert cfg.validation.data_quality.continuity.calendar.kind == "exchange"
-    assert cfg.validation.data_quality.continuity.calendar.exchange == "XNYS"
-    assert cfg.validation.data_quality.continuity.calendar.timezone == "UTC-05:00"
+    assert cfg.validation.data_quality.calendar is not None
+    assert cfg.validation.data_quality.calendar.kind == "exchange"
+    assert cfg.validation.data_quality.calendar.exchange == "XNYS"
+    assert cfg.validation.data_quality.calendar.timezone == "UTC-05:00"
 
 
 def test_load_config_data_quality_calendar_invalid_kind(tmp_path: Path):
@@ -917,9 +915,8 @@ metric: sharpe
 validation:
   data_quality:
     on_fail: skip_job
-    continuity:
-      calendar:
-        kind: invalid
+    calendar:
+      kind: invalid
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -939,15 +936,36 @@ metric: sharpe
 validation:
   data_quality:
     on_fail: skip_job
-    continuity:
-      calendar:
-        kind: exchange
-        timezone: America/New_York
+    calendar:
+      kind: exchange
+      timezone: America/New_York
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
 
     with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_data_quality_rejects_legacy_continuity_calendar_location(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    continuity:
+      calendar:
+        kind: exchange
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"validation\.data_quality\.continuity\.calendar"):
         load_config(path)
 
 
@@ -971,8 +989,35 @@ validation:
     cfg = load_config(path)
     assert cfg.validation is not None
     assert cfg.validation.data_quality is not None
-    assert cfg.validation.data_quality.continuity is not None
-    assert cfg.validation.data_quality.continuity.calendar is None
+    assert cfg.validation.data_quality.calendar is None
+
+
+def test_load_config_data_quality_ohlc_integrity_defaults(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    ohlc_integrity: {}
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.collections[0].validation is not None
+    effective_dq = cfg.collections[0].validation.data_quality
+    assert effective_dq is not None
+    assert effective_dq.ohlc_integrity is not None
+    assert effective_dq.ohlc_integrity.max_invalid_bar_pct == pytest.approx(0.0)
+    assert effective_dq.ohlc_integrity.allow_negative_price is False
+    assert effective_dq.ohlc_integrity.allow_negative_volume is False
 
 
 def test_load_config_data_quality_calendar_defaults_are_applied_at_effective_stage(tmp_path: Path):
@@ -986,8 +1031,7 @@ metric: sharpe
 validation:
   data_quality:
     on_fail: skip_job
-    continuity:
-      calendar: {}
+    calendar: {}
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -995,14 +1039,40 @@ validation:
     cfg = load_config(path)
     assert cfg.validation is not None
     assert cfg.validation.data_quality is not None
-    assert cfg.validation.data_quality.continuity is not None
-    assert cfg.validation.data_quality.continuity.calendar is not None
-    assert cfg.validation.data_quality.continuity.calendar.kind is None
+    assert cfg.validation.data_quality.calendar is not None
+    assert cfg.validation.data_quality.calendar.kind is None
     assert cfg.collections[0].validation is not None
     assert cfg.collections[0].validation.data_quality is not None
-    assert cfg.collections[0].validation.data_quality.continuity is not None
-    assert cfg.collections[0].validation.data_quality.continuity.calendar is not None
-    assert cfg.collections[0].validation.data_quality.continuity.calendar.kind == "auto"
+    assert cfg.collections[0].validation.data_quality.calendar is not None
+    assert cfg.collections[0].validation.data_quality.calendar.kind == "auto"
+
+
+def test_load_config_data_quality_ohlc_integrity_settings(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    ohlc_integrity:
+      max_invalid_bar_pct: 1.5
+      allow_negative_price: true
+      allow_negative_volume: false
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.ohlc_integrity is not None
+    assert cfg.validation.data_quality.ohlc_integrity.max_invalid_bar_pct == pytest.approx(1.5)
+    assert cfg.validation.data_quality.ohlc_integrity.allow_negative_price is True
+    assert cfg.validation.data_quality.ohlc_integrity.allow_negative_volume is False
 
 
 def test_load_config_data_quality_outlier_settings(tmp_path: Path):

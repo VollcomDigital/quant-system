@@ -121,25 +121,25 @@ CONTRACT_CASES = [
     },
     {
         "id": "calendar.kind",
-        "parse_path": "data_quality.continuity.calendar.kind",
-        "effective_path": "data_quality.continuity.calendar.kind",
+        "parse_path": "data_quality.calendar.kind",
+        "effective_path": "data_quality.calendar.kind",
         "global_for_default": {
             "data_quality": {
                 "on_fail": "skip_job",
-                "continuity": {"calendar": {}},
+                "calendar": {},
             }
         },
         "default_value": "auto",
         "global_for_inherit": {
             "data_quality": {
                 "on_fail": "skip_job",
-                "continuity": {"calendar": {"kind": "exchange", "exchange": "XNYS"}},
+                "calendar": {"kind": "exchange", "exchange": "XNYS"},
             }
         },
         "collection_for_inherit": {
             "data_quality": {
                 "on_fail": "skip_job",
-                "continuity": {"min_score": 0.95, "calendar": {}},
+                "continuity": {"min_score": 0.95},
             }
         },
         "inherit_value": "exchange",
