@@ -932,14 +932,12 @@ class BacktestRunner:
         timeframe: str,
         calendar_kind: str = "crypto_24_7",
         exchange_calendar: str | None = None,
-        calendar_timezone: str | None = None,
         duplicate_bars: int = 0,
     ) -> dict[str, float | int]:
-        raw_idx = pd.DatetimeIndex(pd.to_datetime(df.index)).sort_values()
-        idx = cls._normalize_for_calendar_timezone(raw_idx, calendar_timezone).sort_values()
-        duplicate_bars = max(0, int(duplicate_bars))
+        idx = pd.DatetimeIndex(pd.to_datetime(df.index)).sort_values()
         if idx.has_duplicates:
-            idx = idx[~idx.duplicated(keep="first")]
+            raise ValueError("duplicate_index_for_continuity: canonicalize_before_scoring")
+        duplicate_bars = max(0, int(duplicate_bars))
         unique_bars = int(len(idx))
         actual_bars = unique_bars + duplicate_bars
 
@@ -1569,13 +1567,6 @@ class BacktestRunner:
             return GateDecision(False, "skip_job", ["missing_fetched_data"], "data_validation"), None
         if fetched_data.raw_df.empty:
             return GateDecision(False, "skip_job", ["empty_dataframe"], "data_validation"), None
-        try:
-            canonical_raw_df, canonicalization_meta = self._canonicalize_validation_frame(
-                fetched_data.raw_df
-            )
-        except ValueError as exc:
-            return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
-
         (
             reliability_on_fail,
             min_data_points_cfg,
@@ -1588,9 +1579,14 @@ class BacktestRunner:
             calendar_kind,
             calendar_exchange,
             calendar_timezone,
-        ) = (
-            self._load_data_quality_policy(context.job.collection)
-        )
+        ) = self._load_data_quality_policy(context.job.collection)
+        try:
+            canonical_raw_df, canonicalization_meta = self._canonicalize_validation_frame(
+                fetched_data.raw_df,
+                calendar_timezone=calendar_timezone,
+            )
+        except ValueError as exc:
+            return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
         # `on_fail` is required by config whenever a data-quality policy exists,
         # so `reliability_on_fail is None` means data-quality policy is unset.
         if reliability_on_fail is None:
@@ -1632,7 +1628,6 @@ class BacktestRunner:
                 context.job.timeframe,
                 calendar_kind=continuity_calendar_kind,
                 exchange_calendar=continuity_calendar_exchange,
-                calendar_timezone=calendar_timezone,
                 duplicate_bars=canonicalization_meta.get("duplicate_bars_removed", 0),
             )
         except ValueError as exc:
@@ -1872,8 +1867,12 @@ class BacktestRunner:
             normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
         return normalized
 
-    @staticmethod
-    def _canonicalize_datetime_index(raw_df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
+    @classmethod
+    def _canonicalize_datetime_index(
+        cls,
+        raw_df: pd.DataFrame,
+        calendar_timezone: str | None = None,
+    ) -> tuple[pd.DataFrame, dict[str, int]]:
         normalized = raw_df.copy()
         original_rows = int(len(normalized))
         idx = pd.to_datetime(normalized.index, errors="coerce", utc=True)
@@ -1884,7 +1883,12 @@ class BacktestRunner:
             idx = idx[valid_mask]
         if len(normalized) == 0:
             raise ValueError("empty_dataframe_after_timestamp_normalization")
-        dt_idx = pd.DatetimeIndex(idx).tz_convert(None)
+        dt_idx_utc = pd.DatetimeIndex(idx)
+        dt_idx = (
+            dt_idx_utc.tz_convert(None)
+            if calendar_timezone is None
+            else cls._normalize_for_calendar_timezone(dt_idx_utc, calendar_timezone)
+        )
         normalized.index = dt_idx
         if not normalized.index.is_monotonic_increasing:
             normalized = normalized.sort_index()
@@ -1905,9 +1909,13 @@ class BacktestRunner:
         return normalized, diagnostics
 
     @classmethod
-    def _canonicalize_validation_frame(cls, raw_df: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int]]:
+    def _canonicalize_validation_frame(
+        cls,
+        raw_df: pd.DataFrame,
+        calendar_timezone: str | None = None,
+    ) -> tuple[pd.DataFrame, dict[str, int]]:
         canonical = cls._canonicalize_price_columns(raw_df)
-        return cls._canonicalize_datetime_index(canonical)
+        return cls._canonicalize_datetime_index(canonical, calendar_timezone=calendar_timezone)
 
     @staticmethod
     def _ohlc_integrity_reason(

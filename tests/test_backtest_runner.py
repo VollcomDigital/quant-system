@@ -354,8 +354,8 @@ def test_compute_outlier_mask_rejects_unsupported_method():
             },
         ),
         (
-            pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-02", "2024-01-03"]),
-            [1, 2, 2, 3],
+            pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"]),
+            [1, 2, 3],
             1,
             {
                 "missing_bars": 0,
@@ -365,7 +365,7 @@ def test_compute_outlier_mask_rejects_unsupported_method():
             },
         ),
     ],
-    ids=["complete_series", "missing_internal_bars", "deduplicated_index"],
+    ids=["complete_series", "missing_internal_bars", "canonical_with_duplicate_meta"],
 )
 def test_compute_continuity_score_scenarios(idx, values, duplicate_bars, expected):
     df = pd.DataFrame({"Close": values}, index=idx)
@@ -396,8 +396,16 @@ def test_compute_continuity_score_scenarios(idx, values, duplicate_bars, expecte
             "1quarter",
             "unsupported_timeframe_for_continuity",
         ),
+        (
+            pd.DataFrame(
+                {"Close": [1, 2, 2, 3]},
+                index=pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-02", "2024-01-03"]),
+            ),
+            "1d",
+            "duplicate_index_for_continuity",
+        ),
     ],
-    ids=["empty_frame", "single_bar", "unsupported_timeframe"],
+    ids=["empty_frame", "single_bar", "unsupported_timeframe", "duplicate_index"],
 )
 def test_compute_continuity_score_invalid_inputs(df, timeframe, error_match):
     with pytest.raises(ValueError, match=error_match):
@@ -506,6 +514,8 @@ def test_data_validation_calendar_timezone_changes_weekday_continuity(tmp_path, 
 
     assert decision.passed
     assert validated_data is not None
+    assert validated_data.raw_df.index[0] == pd.Timestamp("2024-01-05 19:30:00")
+    assert validated_data.raw_df.index[1] == pd.Timestamp("2024-01-08 19:30:00")
     assert validated_data.continuity["missing_bars"] == 0
 
 
