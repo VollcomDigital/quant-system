@@ -799,6 +799,25 @@ def test_data_validation_canonicalizes_index_and_price_columns(tmp_path, monkeyp
     assert len(validated_data.raw_df) == 3
 
 
+def test_canonicalize_price_columns_deduplicates_columns_after_rename():
+    raw_df = pd.DataFrame(
+        {
+            "Open": [1.0, 2.0],
+            "High": [2.0, 3.0],
+            "Low": [0.5, 1.5],
+            "Close": [10.0, 11.0],
+            "close": [20.0, 21.0],
+        },
+        index=pd.date_range("2024-01-01", periods=2, freq="D"),
+    )
+
+    normalized = BacktestRunner._canonicalize_price_columns(raw_df)
+
+    assert normalized.columns.is_unique
+    assert list(normalized.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert normalized["Close"].tolist() == [20.0, 21.0]
+
+
 def test_data_validation_ohlc_integrity_rejects_invalid_bars(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(

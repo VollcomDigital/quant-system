@@ -1861,6 +1861,8 @@ class BacktestRunner:
             if original is not None:
                 rename_map[original] = target
         normalized = normalized.rename(columns=rename_map)
+        if normalized.columns.has_duplicates:
+            normalized = normalized.loc[:, ~normalized.columns.duplicated(keep="last")]
         if "Volume" not in normalized.columns:
             normalized["Volume"] = 0.0
         for column in ("Open", "High", "Low", "Close", "Volume"):
