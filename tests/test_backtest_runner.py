@@ -2987,6 +2987,10 @@ def test_transaction_cost_robustness_result_attaches_meta_without_cache_pollutio
     assert meta["status"] == "complete"
     assert meta["stress_multipliers"] == [2.0, 5.0]
     assert meta["stress_scenarios"][0]["multiplier"] == pytest.approx(2.0)
+    assert any(
+        "transaction_cost_robustness_negative_profit" in reason
+        for reason in meta["breach_reasons"]
+    )
     assert runner.evaluation_cache.retrieved == []
     assert runner.results_cache.saved == []
 
@@ -3140,6 +3144,55 @@ def test_transaction_cost_breakeven_statuses(
     assert meta is not None
     assert meta["status"] == expected_status
     assert meta["enabled"] is True
+
+
+def test_transaction_cost_breakeven_binary_search_uses_strict_threshold_partition(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _, _, _, _, run_ctx = _build_transaction_cost_validation_artifacts(
+        runner,
+        strategy_name="dummy",
+        policy=_transaction_cost_robustness_config(mode="analytics", max_metric_drop_pct=0.1),
+    )
+    epsilon = runner._TRANSACTION_COST_ROBUSTNESS_DROP_EPSILON
+    threshold = float(run_ctx.policy.max_metric_drop_pct)
+    midpoint_drop = threshold + (epsilon / 2.0)
+
+    def _scenario_with_midpoint_boundary(self, _run_ctx, multiplier):
+        if np.isclose(float(multiplier), 2.0):
+            metric_drop_pct = midpoint_drop
+        elif float(multiplier) < 2.0:
+            metric_drop_pct = 0.05
+        else:
+            metric_drop_pct = 0.2
+        return {
+            "is_complete": True,
+            "metric_drop_pct": metric_drop_pct,
+        }
+
+    monkeypatch.setattr(
+        runner,
+        "_transaction_cost_robustness_scenario",
+        MethodType(_scenario_with_midpoint_boundary, runner),
+    )
+    min_result = runner._transaction_cost_robustness_scenario(run_ctx, 1.0)
+    max_result = runner._transaction_cost_robustness_scenario(run_ctx, 3.0)
+    meta = runner._transaction_cost_breakeven_binary_search(
+        run_ctx,
+        min_multiplier=1.0,
+        max_multiplier=3.0,
+        threshold=threshold,
+        max_iterations=1,
+        tolerance=0.0,
+        min_result=min_result,
+        max_result=max_result,
+        base_meta=runner._transaction_cost_breakeven_base_meta(run_ctx),
+    )
+
+    assert meta["upper_multiplier"] == pytest.approx(2.0)
+    assert meta["lower_multiplier"] == pytest.approx(1.0)
+    assert meta["metric_drop_pct"] == pytest.approx(midpoint_drop)
 
 
 def test_transaction_cost_breakeven_is_indeterminate_for_invalid_baseline_metric(

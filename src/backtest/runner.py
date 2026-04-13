@@ -2800,6 +2800,15 @@ class BacktestRunner:
             return False
         return float(metric_drop_pct) > float(threshold) + self._TRANSACTION_COST_ROBUSTNESS_DROP_EPSILON
 
+    @staticmethod
+    def _transaction_cost_drop_exceeds_threshold_strict(
+        metric_drop_pct: float | None,
+        threshold: float | None,
+    ) -> bool:
+        if metric_drop_pct is None or threshold is None:
+            return False
+        return float(metric_drop_pct) > float(threshold)
+
     def _transaction_cost_breakeven_base_meta(
         self,
         run_ctx: TransactionCostRobustnessRunContext,
@@ -2916,7 +2925,7 @@ class BacktestRunner:
                 )
             latest_result = mid_result
             iterations += 1
-            if self._transaction_cost_drop_exceeds_threshold(float(mid_drop), threshold):
+            if self._transaction_cost_drop_exceeds_threshold_strict(float(mid_drop), threshold):
                 high_multiplier = mid_multiplier
                 high_drop = float(mid_drop)
             else:
@@ -2925,7 +2934,7 @@ class BacktestRunner:
         estimated_multiplier = (low_multiplier + high_multiplier) / 2.0
         estimated_drop = (
             high_drop
-            if self._transaction_cost_drop_exceeds_threshold(high_drop, threshold)
+            if self._transaction_cost_drop_exceeds_threshold_strict(high_drop, threshold)
             else low_drop
         )
         return {
@@ -3113,7 +3122,9 @@ class BacktestRunner:
                 breach_reasons.append(
                     "transaction_cost_robustness_indeterminate(reason=incomplete_scenario_evaluation)"
                 )
+            meta["breach_reasons"] = list(breach_reasons)
             return breach_reasons[0], meta
+        meta["breach_reasons"] = list(breach_reasons)
         if breach_reasons and run_ctx.policy.mode == "enforce":
             return breach_reasons[0], meta
         return None, meta
