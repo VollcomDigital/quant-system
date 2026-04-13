@@ -651,7 +651,7 @@ def _normalize_transaction_cost_stress_multipliers(
             raise ValueError(
                 f"`{prefix}.stress_multipliers[{idx}]` must be >= {TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN}"
             )
-        if previous is not None and multiplier < previous:
+        if previous is not None and multiplier <= previous:
             raise ValueError(f"`{prefix}.stress_multipliers` must be sorted in ascending order")
         normalized_multipliers.append(multiplier)
         previous = multiplier
