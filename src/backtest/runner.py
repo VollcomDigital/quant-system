@@ -1873,7 +1873,7 @@ class BacktestRunner:
         raw_df: pd.DataFrame,
         calendar_timezone: str | None = None,
     ) -> tuple[pd.DataFrame, dict[str, int]]:
-        normalized = raw_df
+        normalized = raw_df.copy()
         original_rows = int(len(normalized))
         idx = pd.to_datetime(normalized.index, errors="coerce", utc=True)
         valid_mask = pd.notna(idx)
