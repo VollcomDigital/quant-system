@@ -1846,15 +1846,17 @@ class BacktestRunner:
         optional = {
             "volume": "Volume",
         }
-        existing_lookup = {str(column).strip().lower(): column for column in normalized.columns}
-        missing = [name for name in required if name not in existing_lookup]
+        existing_keys = {str(column).strip().lower() for column in normalized.columns}
+        missing = [name for name in required if name not in existing_keys]
         if missing:
             missing_cols = ", ".join(sorted(missing))
             raise ValueError(f"missing_price_columns({missing_cols})")
+        canonical_names = {**required, **optional}
         rename_map: dict[Any, str] = {}
-        for source, target in {**required, **optional}.items():
-            original = existing_lookup.get(source)
-            if original is not None:
+        for original in normalized.columns:
+            source = str(original).strip().lower()
+            target = canonical_names.get(source)
+            if target is not None:
                 rename_map[original] = target
         normalized = normalized.rename(columns=rename_map)
         if normalized.columns.has_duplicates:
