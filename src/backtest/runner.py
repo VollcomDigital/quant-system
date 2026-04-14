@@ -3756,7 +3756,26 @@ class BacktestRunner:
         reasons: list[str],
     ) -> None:
         policy = self._load_transaction_cost_robustness_policy(context.job.collection)
-        if policy is None or context.prepared_data is None or context.validated_data is None:
+        if policy is None:
+            return
+        if context.prepared_data is None or context.validated_data is None:
+            missing_inputs: list[str] = []
+            if context.prepared_data is None:
+                missing_inputs.append("prepared_data")
+            if context.validated_data is None:
+                missing_inputs.append("validated_data")
+            transaction_cost_meta = {
+                "status": "indeterminate",
+                "reason": "missing_transaction_cost_robustness_inputs",
+                "missing_inputs": missing_inputs,
+            }
+            self._attach_post_run_meta(
+                outcome,
+                "transaction_cost_robustness",
+                transaction_cost_meta,
+            )
+            if policy.mode == "enforce":
+                reasons.append("transaction_cost_robustness_indeterminate")
             return
         if not isinstance(outcome.best_params, dict):
             return
