@@ -2180,7 +2180,7 @@ def load_config(path: str | Path) -> Config:
         param_trials=_coerce_int(raw.get("param_trials", raw.get("opt_trials", 25)), "param_trials"),
         max_workers=_coerce_int(raw.get("max_workers", raw.get("asset_workers", 1)), "max_workers"),
         asset_workers=_coerce_int(raw.get("asset_workers", raw.get("max_workers", 1)), "asset_workers"),
-        param_workers=_coerce_int(raw.get("param_workers", 1), f"param_workers"),
+        param_workers=_coerce_int(raw.get("param_workers", 1), "param_workers"),
         max_fetch_concurrency=_coerce_int(raw.get("max_fetch_concurrency", 2), "max_fetch_concurrency"),
         fees=_coerce_float(raw.get("fees", 0.0), "fees"),
         slippage=_coerce_float(raw.get("slippage", 0.0), "slippage"),
