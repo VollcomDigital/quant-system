@@ -3060,7 +3060,7 @@ def test_transaction_cost_robustness_result_enforce_rejects_on_larger_multiplier
         policy=_transaction_cost_robustness_config(mode="enforce", max_metric_drop_pct=0.3),
     )
 
-    def _scenario_drop_only_on_larger_multiplier(self, _run_ctx, multiplier):
+    def _scenario_drop_only_on_larger_multiplier(self, run_ctx, multiplier):
         if np.isclose(float(multiplier), 2.0):
             metric_value = 0.7
             profit = 0.05

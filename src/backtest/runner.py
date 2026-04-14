@@ -3771,6 +3771,7 @@ class BacktestRunner:
             if context.validated_data is None:
                 missing_inputs.append("validated_data")
             transaction_cost_meta = {
+                "is_complete": False,
                 "status": "indeterminate",
                 "reason": "missing_transaction_cost_robustness_inputs",
                 "missing_inputs": missing_inputs,
@@ -3785,6 +3786,7 @@ class BacktestRunner:
             return
         if not isinstance(outcome.best_params, dict):
             transaction_cost_meta = {
+                "is_complete": False,
                 "status": "indeterminate",
                 "reason": "missing_transaction_cost_robustness_params",
                 "best_params_type": type(outcome.best_params).__name__,
