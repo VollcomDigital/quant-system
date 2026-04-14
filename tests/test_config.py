@@ -17,6 +17,7 @@ from src.config import (
     ValidationStationarityConfig,
     ValidationStationarityRegimeShiftConfig,
     load_config,
+    parse_optional_float_list,
     resolve_validation_overrides,
 )
 
@@ -276,6 +277,32 @@ def test_load_config_transaction_cost_robustness_requires_breakeven_fields(tmp_p
                     )
                 )
             },
+        )
+
+
+def test_load_config_transaction_cost_robustness_rejects_nan_max_metric_drop_pct(tmp_path: Path):
+    with pytest.raises(
+        ValueError,
+        match=r"validation\.result_consistency\.transaction_cost_robustness\.max_metric_drop_pct` must be finite",
+    ):
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    transaction_cost_robustness=_transaction_cost_robustness_block(
+                        max_metric_drop_pct=float("nan")
+                    )
+                )
+            },
+        )
+
+
+def test_parse_optional_float_list_rejects_non_finite_values():
+    with pytest.raises(ValueError, match=r"`sample.values\[0\]` must be finite"):
+        parse_optional_float_list(
+            {"values": [float("inf")]},
+            "sample",
+            "values",
         )
 
 

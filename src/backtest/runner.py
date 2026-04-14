@@ -2739,7 +2739,9 @@ class BacktestRunner:
             return {
                 "is_complete": False,
                 "status": "indeterminate",
-                "reason": str(exc),
+                "reason": "evaluation_exception",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
                 "metric_name": self.cfg.metric,
                 "multiplier": float(multiplier),
                 "fees": stressed_fees,

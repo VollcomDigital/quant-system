@@ -665,6 +665,8 @@ def _normalize_transaction_cost_max_metric_drop_pct(
     if max_metric_drop_pct_raw is None:
         return None
     max_metric_drop_pct = float(max_metric_drop_pct_raw)
+    if not math.isfinite(max_metric_drop_pct):
+        raise ValueError(f"`{prefix}.max_metric_drop_pct` must be finite")
     if (
         max_metric_drop_pct < TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MIN
         or max_metric_drop_pct > TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MAX
@@ -786,6 +788,11 @@ def _apply_transaction_cost_robustness_defaults(
         raise ValueError(
             "Invalid `validation.result_consistency.transaction_cost_robustness`: "
             "missing required field(s): max_metric_drop_pct"
+        )
+    if not math.isfinite(cfg.max_metric_drop_pct):
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness`: "
+            "max_metric_drop_pct must be finite"
         )
     if cfg.max_metric_drop_pct < TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MIN or (
         cfg.max_metric_drop_pct > TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MAX
@@ -1475,6 +1482,8 @@ def parse_optional_float_list(
     parsed: list[float] = []
     for idx, item in enumerate(value):
         parsed_item = float(item)
+        if not math.isfinite(parsed_item):
+            raise ValueError(f"`{prefix}.{key}[{idx}]` must be finite")
         if min_value is not None and parsed_item < min_value:
             raise ValueError(f"`{prefix}.{key}[{idx}]` must be >= {min_value}")
         if max_value is not None and parsed_item > max_value:

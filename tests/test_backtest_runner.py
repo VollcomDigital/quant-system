@@ -3097,6 +3097,37 @@ def test_transaction_cost_robustness_scenario_non_positive_baseline_is_indetermi
     assert scenario["metric_drop_exceeded"] is False
 
 
+def test_transaction_cost_robustness_scenario_uses_stable_evaluation_exception_reason(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _, _, _, _, run_ctx = _build_transaction_cost_validation_artifacts(
+        runner,
+        strategy_name="dummy",
+        policy=_transaction_cost_robustness_config(mode="analytics"),
+    )
+    index = run_ctx.context.validated_data.raw_df.index
+    entries = np.zeros(len(index), dtype=int)
+    exits = np.zeros(len(index), dtype=int)
+    run_ctx.aligned_signals = (
+        pd.Series(entries, index=index),
+        pd.Series(exits, index=index),
+    )
+
+    def _raise_eval_error(*_args, **_kwargs):
+        raise RuntimeError("transient eval failure")
+
+    monkeypatch.setattr(runner, "_evaluate_strategy_outcome", _raise_eval_error)
+
+    scenario = runner._transaction_cost_robustness_scenario(run_ctx, 2.0)
+
+    assert scenario["is_complete"] is False
+    assert scenario["status"] == "indeterminate"
+    assert scenario["reason"] == "evaluation_exception"
+    assert scenario["exception_type"] == "RuntimeError"
+    assert scenario["exception_message"] == "transient eval failure"
+
+
 @pytest.mark.parametrize(
     ("breakeven_cfg", "policy", "expected_status"),
     [
