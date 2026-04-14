@@ -804,7 +804,7 @@ def _apply_transaction_cost_robustness_defaults(
     if not math.isfinite(cfg.max_metric_drop_pct):
         raise ValueError(
             "Invalid `validation.result_consistency.transaction_cost_robustness`: "
-            "max_metric_drop_pct must be finite"
+            "`validation.result_consistency.transaction_cost_robustness.max_metric_drop_pct` must be finite"
         )
     if cfg.max_metric_drop_pct < TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MIN or (
         cfg.max_metric_drop_pct > TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MAX
