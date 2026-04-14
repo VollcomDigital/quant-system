@@ -2878,7 +2878,7 @@ class BacktestRunner:
                 "missing_boundary_metric_drop",
                 boundary_results=[min_result, max_result],
             )
-        if self._transaction_cost_drop_exceeds_threshold(float(min_drop), threshold):
+        if self._transaction_cost_drop_exceeds_threshold_strict(float(min_drop), threshold):
             return {
                 **base_meta,
                 "status": "below_range",
@@ -2886,7 +2886,7 @@ class BacktestRunner:
                 "metric_drop_pct": float(min_drop),
                 "boundary_results": [min_result, max_result],
             }
-        if not self._transaction_cost_drop_exceeds_threshold(float(max_drop), threshold):
+        if not self._transaction_cost_drop_exceeds_threshold_strict(float(max_drop), threshold):
             return {
                 **base_meta,
                 "status": "above_range",
