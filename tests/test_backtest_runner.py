@@ -797,6 +797,7 @@ def test_data_validation_canonicalizes_index_and_price_columns(tmp_path, monkeyp
     assert validated_data.raw_df.index.is_monotonic_increasing
     assert validated_data.raw_df.index.is_unique
     assert len(validated_data.raw_df) == 3
+    assert validated_data.raw_df.loc[pd.Timestamp("2024-01-01"), "Close"] == pytest.approx(1.6)
 
 
 def test_data_validation_canonicalization_failure_has_structured_reason(tmp_path, monkeypatch):

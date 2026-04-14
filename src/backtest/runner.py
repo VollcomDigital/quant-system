@@ -1896,13 +1896,15 @@ class BacktestRunner:
             else cls._normalize_for_calendar_timezone(dt_idx_utc, calendar_timezone)
         )
         normalized.index = dt_idx
-        if not normalized.index.is_monotonic_increasing:
-            normalized = normalized.sort_index()
         rows_after_timestamp = int(len(normalized))
         duplicate_bars_removed = 0
         if normalized.index.has_duplicates:
-            duplicate_bars_removed = int(normalized.index.duplicated(keep="last").sum())
-            normalized = normalized[~normalized.index.duplicated(keep="last")]
+            # Keep the last fetched row for each duplicate timestamp before sorting.
+            duplicate_mask = normalized.index.duplicated(keep="last")
+            duplicate_bars_removed = int(duplicate_mask.sum())
+            normalized = normalized[~duplicate_mask]
+        if not normalized.index.is_monotonic_increasing:
+            normalized = normalized.sort_index(kind="mergesort")
         if len(normalized) == 0:
             raise ValueError("empty_dataframe_after_deduplication")
         diagnostics = {
