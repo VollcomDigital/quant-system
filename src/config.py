@@ -447,8 +447,8 @@ def _apply_ohlc_integrity_defaults(
         if cfg.max_invalid_bar_pct is not None
         else OHLC_INTEGRITY_INVALID_BAR_PCT_DEFAULT
     )
-    allow_negative_price = bool(cfg.allow_negative_price) if cfg.allow_negative_price is not None else False
-    allow_negative_volume = bool(cfg.allow_negative_volume) if cfg.allow_negative_volume is not None else False
+    allow_negative_price = cfg.allow_negative_price if cfg.allow_negative_price is not None else False
+    allow_negative_volume = cfg.allow_negative_volume if cfg.allow_negative_volume is not None else False
     return ValidationOHLCIntegrityConfig(
         max_invalid_bar_pct=max_invalid_bar_pct,
         allow_negative_price=allow_negative_price,
@@ -1198,8 +1198,8 @@ def _normalize_stationarity_regime_shift_config(
         raise ValueError(f"`{prefix}.vol_ratio_max` must be >= {STATIONARITY_REGIME_SHIFT_VOL_RATIO_MIN}")
     return ValidationStationarityRegimeShiftConfig(
         window=window,
-        mean_shift_max=mean_shift_max,
-        vol_ratio_max=vol_ratio_max,
+        mean_shift_max=float(mean_shift_max),
+        vol_ratio_max=float(vol_ratio_max),
     )
 
 
@@ -1481,6 +1481,33 @@ def require_mapping(raw: Any, prefix: str) -> dict[str, Any]:
     return cast(dict[str, Any], raw)
 
 
+def _coerce_int(value: Any, field_path: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid `{field_path}`: expected an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            raise ValueError(f"Invalid `{field_path}`: expected an integer")
+        return int(value)
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid `{field_path}`: expected an integer") from exc
+
+
+def _coerce_float(value: Any, field_path: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid `{field_path}`: expected a number")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid `{field_path}`: expected a number") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"`{field_path}` must be finite")
+    return parsed
+
+
 def parse_optional_int(
     raw: dict[str, Any],
     prefix: str,
@@ -1492,7 +1519,7 @@ def parse_optional_int(
     value = raw.get(key)
     if value is None:
         return None
-    parsed = int(value)
+    parsed = _coerce_int(value, f"{prefix}.{key}")
     if min_value is not None and parsed < min_value:
         raise ValueError(f"`{prefix}.{key}` must be >= {min_value}")
     if max_value is not None and parsed > max_value:
@@ -1525,7 +1552,7 @@ def parse_optional_float(
     value = raw.get(key)
     if value is None:
         return None
-    parsed = float(value)
+    parsed = _coerce_float(value, f"{prefix}.{key}")
     if min_value is not None and parsed < min_value:
         raise ValueError(f"`{prefix}.{key}` must be >= {min_value}")
     if max_value is not None and parsed > max_value:
@@ -1548,7 +1575,7 @@ def parse_optional_float_list(
         raise ValueError(f"Invalid `{prefix}.{key}`: expected a list")
     parsed: list[float] = []
     for idx, item in enumerate(value):
-        parsed_item = float(item)
+        parsed_item = _coerce_float(item, f"{prefix}.{key}[{idx}]")
         if min_value is not None and parsed_item < min_value:
             raise ValueError(f"`{prefix}.{key}[{idx}]` must be >= {min_value}")
         if max_value is not None and parsed_item > max_value:
@@ -1611,6 +1638,19 @@ def parse_optional_bool(
         normalized = value.strip().lower()
         if normalized in {"true", "false"}:
             return normalized == "true"
+    raise ValueError(f"Invalid `{prefix}.{key}`: expected a boolean")
+
+
+def parse_optional_strict_bool(
+    raw: dict[str, Any],
+    prefix: str,
+    key: str,
+) -> bool | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
     raise ValueError(f"Invalid `{prefix}.{key}`: expected a boolean")
 
 
@@ -1748,8 +1788,8 @@ def _parse_ohlc_integrity(
         min_value=VALIDATION_PERCENT_MIN,
         max_value=VALIDATION_PERCENT_MAX,
     )
-    allow_negative_price = parse_optional_bool(parsed_raw, prefix, "allow_negative_price")
-    allow_negative_volume = parse_optional_bool(parsed_raw, prefix, "allow_negative_volume")
+    allow_negative_price = parse_optional_strict_bool(parsed_raw, prefix, "allow_negative_price")
+    allow_negative_volume = parse_optional_strict_bool(parsed_raw, prefix, "allow_negative_volume")
     return ValidationOHLCIntegrityConfig(
         max_invalid_bar_pct=max_invalid_bar_pct,
         allow_negative_price=allow_negative_price,
@@ -1812,8 +1852,8 @@ def _parse_stationarity_regime_shift(
     )
     return ValidationStationarityRegimeShiftConfig(
         window=window,
-        mean_shift_max=float(mean_shift_max),
-        vol_ratio_max=float(vol_ratio_max),
+        mean_shift_max=mean_shift_max,
+        vol_ratio_max=vol_ratio_max,
     )
 
 
@@ -2184,6 +2224,8 @@ def load_config(path: str | Path) -> Config:
     collections: list[CollectionConfig] = []
     for idx, c in enumerate(raw["collections"]):
         collection_validation = _parse_validation(c.get("validation"), f"collections[{idx}].validation")
+        collection_fees_raw = c.get("fees")
+        collection_slippage_raw = c.get("slippage")
         collections.append(
             CollectionConfig(
                 name=c["name"],
@@ -2192,8 +2234,16 @@ def load_config(path: str | Path) -> Config:
                 exchange=c.get("exchange"),
                 currency=c.get("currency"),
                 quote=c.get("quote"),
-                fees=c.get("fees"),
-                slippage=c.get("slippage"),
+                fees=(
+                    _coerce_float(collection_fees_raw, f"collections[{idx}].fees")
+                    if collection_fees_raw is not None
+                    else None
+                ),
+                slippage=(
+                    _coerce_float(collection_slippage_raw, f"collections[{idx}].slippage")
+                    if collection_slippage_raw is not None
+                    else None
+                ),
                 validation=collection_validation,
             )
         )
@@ -2214,10 +2264,15 @@ def load_config(path: str | Path) -> Config:
         slack_raw = notifications_raw.get("slack")
         slack_cfg = None
         if isinstance(slack_raw, dict) and slack_raw.get("webhook_url"):
+            threshold_raw = slack_raw.get("threshold")
             slack_cfg = SlackNotificationConfig(
                 webhook_url=slack_raw["webhook_url"],
                 metric=slack_raw.get("metric", raw.get("metric", "sharpe")),
-                threshold=slack_raw.get("threshold"),
+                threshold=(
+                    _coerce_float(threshold_raw, "notifications.slack.threshold")
+                    if threshold_raw is not None
+                    else None
+                ),
                 channel=slack_raw.get("channel"),
                 username=slack_raw.get("username"),
             )
@@ -2233,6 +2288,15 @@ def load_config(path: str | Path) -> Config:
             f"Invalid `evaluation_mode`: expected one of {sorted(allowed_modes)}, got '{evaluation_mode}'"
         )
 
+    param_trials = _coerce_int(raw.get("param_trials", raw.get("opt_trials", 25)), "param_trials")
+    max_workers = _coerce_int(raw.get("max_workers", raw.get("asset_workers", 1)), "max_workers")
+    asset_workers = _coerce_int(raw.get("asset_workers", raw.get("max_workers", 1)), "asset_workers")
+    param_workers = _coerce_int(raw.get("param_workers", 1), "param_workers")
+    max_fetch_concurrency = _coerce_int(raw.get("max_fetch_concurrency", 2), "max_fetch_concurrency")
+    fees = _coerce_float(raw.get("fees", 0.0), "fees")
+    slippage = _coerce_float(raw.get("slippage", 0.0), "slippage")
+    risk_free_rate = _coerce_float(raw.get("risk_free_rate", 0.0), "risk_free_rate")
+
     cfg = Config(
         collections=collections,
         timeframes=raw["timeframes"],
@@ -2240,14 +2304,14 @@ def load_config(path: str | Path) -> Config:
         strategies=strategies,
         engine=str(raw.get("engine", "pybroker")).lower(),
         param_search=str(raw.get("param_search", raw.get("param_optimizer", "grid"))).lower(),
-        param_trials=int(raw.get("param_trials", raw.get("opt_trials", 25))),
-        max_workers=int(raw.get("max_workers", raw.get("asset_workers", 1))),
-        asset_workers=int(raw.get("asset_workers", raw.get("max_workers", 1))),
-        param_workers=int(raw.get("param_workers", 1)),
-        max_fetch_concurrency=int(raw.get("max_fetch_concurrency", 2)),
-        fees=float(raw.get("fees", 0.0)),
-        slippage=float(raw.get("slippage", 0.0)),
-        risk_free_rate=float(raw.get("risk_free_rate", 0.0)),
+        param_trials=param_trials,
+        max_workers=max_workers,
+        asset_workers=asset_workers,
+        param_workers=param_workers,
+        max_fetch_concurrency=max_fetch_concurrency,
+        fees=fees,
+        slippage=slippage,
+        risk_free_rate=risk_free_rate,
         cache_dir=raw.get("cache_dir", ".cache/data"),
         evaluation_mode=evaluation_mode,
         notifications=notifications_cfg,

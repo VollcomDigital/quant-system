@@ -17,6 +17,8 @@ from src.config import (
     ValidationStationarityConfig,
     ValidationStationarityRegimeShiftConfig,
     load_config,
+    parse_optional_float,
+    parse_optional_int,
     resolve_validation_overrides,
 )
 
@@ -63,6 +65,19 @@ def _transaction_cost_robustness_block(**overrides):
     return block
 
 
+def test_parse_optional_float_rejects_non_finite_values():
+    with pytest.raises(ValueError, match=r"must be finite"):
+        parse_optional_float({"threshold": "nan"}, "validation.result_consistency", "threshold")
+
+    with pytest.raises(ValueError, match=r"must be finite"):
+        parse_optional_float({"threshold": "inf"}, "validation.result_consistency", "threshold")
+
+
+def test_parse_optional_int_rejects_boolean_values():
+    with pytest.raises(ValueError, match=r"expected an integer"):
+        parse_optional_int({"permutations": True}, "validation.result_consistency", "permutations")
+
+
 def test_load_config_allows_missing_strategies(tmp_path: Path):
     config_text = """
 collections:
@@ -78,6 +93,23 @@ metric: sharpe
     cfg = load_config(path)
     assert cfg.strategies == []
     assert cfg.evaluation_mode == "backtest"
+
+
+def test_load_config_rejects_non_finite_top_level_numeric_values(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+fees: .inf
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"`fees` must be finite"):
+        load_config(path)
 
 
 def test_load_config_accepts_evaluation_mode(tmp_path: Path):
@@ -1073,6 +1105,27 @@ validation:
     assert cfg.validation.data_quality.ohlc_integrity.max_invalid_bar_pct == pytest.approx(1.5)
     assert cfg.validation.data_quality.ohlc_integrity.allow_negative_price is True
     assert cfg.validation.data_quality.ohlc_integrity.allow_negative_volume is False
+
+
+def test_load_config_data_quality_ohlc_integrity_rejects_string_booleans(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    ohlc_integrity:
+      allow_negative_price: "false"
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"validation\.data_quality\.ohlc_integrity\.allow_negative_price"):
+        load_config(path)
 
 
 def test_load_config_data_quality_outlier_settings(tmp_path: Path):
