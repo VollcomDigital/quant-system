@@ -1436,21 +1436,15 @@ def require_mapping(raw: Any, prefix: str) -> dict[str, Any]:
 
 
 def _coerce_int(value: Any, field_path: str) -> int:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"Invalid `{field_path}`: expected an integer")
-    try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Invalid `{field_path}`: expected an integer") from exc
+    return value
 
 
 def _coerce_float(value: Any, field_path: str) -> float:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"Invalid `{field_path}`: expected a number")
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Invalid `{field_path}`: expected a number") from exc
+    parsed = float(value)
     if not math.isfinite(parsed):
         raise ValueError(f"`{field_path}` must be finite")
     return parsed

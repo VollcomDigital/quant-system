@@ -315,6 +315,55 @@ def test_parse_optional_float_list_rejects_non_numeric_values_with_field_context
         )
 
 
+def test_load_config_rejects_string_int_fields(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    min_trades: "20"
+    outlier_dependency:
+      slices: 5
+      profit_share_threshold: 0.6
+      trade_share_threshold: 0.6
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"validation\.result_consistency\.min_trades"):
+        load_config(path)
+
+
+def test_load_config_rejects_string_float_fields(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    min_trades: 20
+    transaction_cost_robustness:
+      mode: analytics
+      stress_multipliers: [2.0, 5.0]
+      max_metric_drop_pct: "0.3"
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(
+        ValueError,
+        match=r"validation\.result_consistency\.transaction_cost_robustness\.max_metric_drop_pct",
+    ):
+        load_config(path)
+
+
 def test_load_config_collection_reliability_thresholds_override(tmp_path: Path):
     config_text = """
 collections:
@@ -1660,4 +1709,49 @@ def test_resolve_validation_overrides_rejects_programmatic_transaction_cost_brea
         ValueError,
         match=r"validation\.result_consistency\.transaction_cost_robustness\.breakeven\.max_iterations",
     ):
+        resolve_validation_overrides(cfg)
+
+
+def test_load_config_rejects_fractional_min_trades(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    min_trades: 1.9
+    outlier_dependency:
+      slices: 5
+      profit_share_threshold: 0.6
+      trade_share_threshold: 0.6
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"validation\.result_consistency\.min_trades"):
+        load_config(path)
+
+
+def test_resolve_validation_overrides_rejects_programmatic_fractional_int(tmp_path: Path):
+    cfg = _load_from_blocks(
+        tmp_path,
+        validation_block={
+            "result_consistency": _result_consistency_block(
+                outlier_dependency={
+                    "slices": 5,
+                    "profit_share_threshold": 0.6,
+                    "trade_share_threshold": 0.6,
+                }
+            )
+        },
+    )
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.result_consistency is not None
+
+    cfg.collections[0].validation.result_consistency.min_trades = 1.9
+
+    with pytest.raises(ValueError, match=r"validation\.result_consistency\.min_trades"):
         resolve_validation_overrides(cfg)
