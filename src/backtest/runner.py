@@ -2703,7 +2703,7 @@ class BacktestRunner:
         run_ctx: TransactionCostRobustnessRunContext,
         multiplier: float,
     ) -> dict[str, Any]:
-        stressed_prepared = replace(
+        stressed_prepared: ExecutionPreparedData = replace(
             run_ctx.prepared,
             fees=float(run_ctx.prepared.fees) * float(multiplier),
             slippage=float(run_ctx.prepared.slippage) * float(multiplier),
