@@ -2991,8 +2991,8 @@ def test_transaction_cost_robustness_result_attaches_meta_without_cache_pollutio
     assert meta["stress_multipliers"] == [2.0, 5.0]
     assert meta["stress_scenarios"][0]["multiplier"] == pytest.approx(2.0)
     assert any(
-        "transaction_cost_robustness_negative_profit" in reason
-        for reason in meta["breach_reasons"]
+        "transaction_cost_robustness_negative_profit" in breach_reason
+        for breach_reason in meta["breach_reasons"]
     )
     assert runner.evaluation_cache.retrieved == []
     assert runner.results_cache.saved == []
