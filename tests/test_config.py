@@ -1604,3 +1604,60 @@ validation:
 
     with pytest.raises(ValueError, match="max_outlier_pct"):
         resolve_validation_overrides(cfg)
+
+
+def test_resolve_validation_overrides_rejects_programmatic_transaction_cost_bool_numeric(
+    tmp_path: Path,
+):
+    cfg = _load_from_blocks(
+        tmp_path,
+        validation_block={
+            "result_consistency": _result_consistency_block(
+                transaction_cost_robustness=_transaction_cost_robustness_block()
+            )
+        },
+    )
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.result_consistency is not None
+    assert cfg.collections[0].validation.result_consistency.transaction_cost_robustness is not None
+
+    cfg.collections[0].validation.result_consistency.transaction_cost_robustness.max_metric_drop_pct = True
+
+    with pytest.raises(
+        ValueError,
+        match=r"validation\.result_consistency\.transaction_cost_robustness\.max_metric_drop_pct",
+    ):
+        resolve_validation_overrides(cfg)
+
+
+def test_resolve_validation_overrides_rejects_programmatic_transaction_cost_breakeven_bool_int(
+    tmp_path: Path,
+):
+    cfg = _load_from_blocks(
+        tmp_path,
+        validation_block={
+            "result_consistency": _result_consistency_block(
+                transaction_cost_robustness=_transaction_cost_robustness_block(
+                    breakeven={
+                        "enabled": True,
+                        "min_multiplier": 1.0,
+                        "max_multiplier": 5.0,
+                        "max_iterations": 8,
+                        "tolerance": 0.05,
+                    }
+                )
+            )
+        },
+    )
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.result_consistency is not None
+    assert cfg.collections[0].validation.result_consistency.transaction_cost_robustness is not None
+    assert cfg.collections[0].validation.result_consistency.transaction_cost_robustness.breakeven is not None
+
+    cfg.collections[0].validation.result_consistency.transaction_cost_robustness.breakeven.max_iterations = True
+
+    with pytest.raises(
+        ValueError,
+        match=r"validation\.result_consistency\.transaction_cost_robustness\.breakeven\.max_iterations",
+    ):
+        resolve_validation_overrides(cfg)
