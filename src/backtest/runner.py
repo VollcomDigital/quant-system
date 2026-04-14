@@ -3778,6 +3778,18 @@ class BacktestRunner:
                 reasons.append("transaction_cost_robustness_indeterminate")
             return
         if not isinstance(outcome.best_params, dict):
+            transaction_cost_meta = {
+                "status": "indeterminate",
+                "reason": "missing_transaction_cost_robustness_params",
+                "best_params_type": type(outcome.best_params).__name__,
+            }
+            self._attach_post_run_meta(
+                outcome,
+                "transaction_cost_robustness",
+                transaction_cost_meta,
+            )
+            if policy.mode == "enforce":
+                reasons.append("transaction_cost_robustness_indeterminate")
             return
         baseline_profit = (
             self._safe_float_stat(outcome.best_stats, "profit")

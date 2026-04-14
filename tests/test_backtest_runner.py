@@ -3332,6 +3332,54 @@ def test_run_all_transaction_cost_robustness_rejects_in_enforce_mode(
     )
 
 
+def test_strategy_validation_transaction_cost_robustness_enforce_rejects_non_dict_best_params(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="dummy",
+        strategy_cls=_DummyStrategy,
+        result_consistency=_result_consistency_config(
+            transaction_cost_robustness=_transaction_cost_robustness_config(mode="enforce")
+        ),
+    )
+    outcome = StrategyEvalOutcome(
+        best_val=0.85,
+        best_params=None,
+        best_stats={"profit": 0.15, "trades": 2},
+        has_valid_candidate=True,
+        evaluations=1,
+        skipped_reason=None,
+        strategy="dummy",
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        ),
+    )
+    _, _, _, context, _ = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="dummy",
+        prepared_data=_make_prepared_data(),
+        outcome=outcome,
+    )
+
+    decision = runner._strategy_validate_results_common(context)
+
+    assert decision.passed is False
+    assert decision.action == "reject_result"
+    assert "transaction_cost_robustness_indeterminate" in decision.reasons
+    post_run_meta = outcome.best_stats.get("post_run_meta")
+    assert post_run_meta is not None
+    assert post_run_meta["transaction_cost_robustness"] == {
+        "status": "indeterminate",
+        "reason": "missing_transaction_cost_robustness_params",
+        "best_params_type": "NoneType",
+    }
+
+
 def test_run_all_reliability_not_verified_skips_job(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
