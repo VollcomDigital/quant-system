@@ -3104,10 +3104,13 @@ class BacktestRunner:
     ) -> tuple[str | None, dict[str, Any] | None]:
         stress_scenarios = self._transaction_cost_robustness_stress_scenarios(run_ctx)
         if not stress_scenarios:
-            return self._transaction_cost_robustness_indeterminate(
+            indeterminate_reason, indeterminate_meta = self._transaction_cost_robustness_indeterminate(
                 "missing_stress_multipliers",
                 policy=run_ctx.policy,
             )
+            if run_ctx.policy.mode == "enforce":
+                return indeterminate_reason, indeterminate_meta
+            return None, indeterminate_meta
         meta = self._transaction_cost_robustness_meta(run_ctx, stress_scenarios)
         breach_reasons: list[str] = []
         smallest_breach = self._transaction_cost_robustness_smallest_drop_breach_reason(

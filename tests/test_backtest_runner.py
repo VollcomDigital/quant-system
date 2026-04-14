@@ -2681,6 +2681,63 @@ def test_lookahead_shuffle_test_rejects_on_pvalue_threshold(tmp_path, monkeypatc
     assert meta["observed_metric"] == pytest.approx(0.1)
 
 
+def test_strategy_validation_skips_transaction_cost_robustness_after_lookahead_rejection(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
+        result_consistency=_result_consistency_config(
+            lookahead_shuffle_test=_lookahead_shuffle_test_config(),
+            transaction_cost_robustness=_transaction_cost_robustness_config(mode="enforce"),
+        ),
+    )
+    outcome = StrategyEvalOutcome(
+        best_val=0.85,
+        best_params={},
+        best_stats={"profit": 0.15, "trades": 2},
+        has_valid_candidate=True,
+        evaluations=1,
+        skipped_reason=None,
+        strategy="leaky_shuffle",
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        ),
+    )
+    _, _, _, context, _ = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="leaky_shuffle",
+        outcome=outcome,
+    )
+
+    def _mock_lookahead(_context, _plan, _outcome, reasons):
+        reasons.append("lookahead_shuffle_test_pvalue_exceeded(pvalue=1.0, threshold=0.05)")
+
+    def _unexpected_transaction_cost(*_args, **_kwargs):
+        raise AssertionError("transaction cost robustness should be skipped")
+
+    monkeypatch.setattr(runner, "_run_lookahead_shuffle_validation", _mock_lookahead)
+    monkeypatch.setattr(
+        runner,
+        "_run_transaction_cost_robustness_validation",
+        _unexpected_transaction_cost,
+    )
+
+    decision = runner._strategy_validate_results_common(context)
+
+    assert decision.passed is False
+    assert decision.action == "reject_result"
+    assert (
+        "lookahead_shuffle_test_pvalue_exceeded(pvalue=1.0, threshold=0.05)"
+        in decision.reasons
+    )
+
+
 def test_lookahead_shuffle_uses_isolated_plan_state(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
     _configure_result_consistency_runner(
@@ -2996,6 +3053,27 @@ def test_transaction_cost_robustness_result_attaches_meta_without_cache_pollutio
     )
     assert runner.evaluation_cache.retrieved == []
     assert runner.results_cache.saved == []
+
+
+def test_transaction_cost_robustness_result_analytics_missing_stress_multipliers_returns_no_reason(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _, _, _, _, run_ctx = _build_transaction_cost_validation_artifacts(
+        runner,
+        strategy_name="dummy",
+        policy=_transaction_cost_robustness_config(mode="analytics", stress_multipliers=[]),
+    )
+
+    reason, meta = runner._transaction_cost_robustness_result(run_ctx)
+
+    assert reason is None
+    assert meta is not None
+    assert meta["is_complete"] is False
+    assert meta["status"] == "indeterminate"
+    assert meta["reason"] == "missing_stress_multipliers"
+    assert meta["mode"] == "analytics"
+    assert meta["stress_multipliers"] == []
 
 
 def test_transaction_cost_robustness_result_enforce_rejects_on_metric_drop_boundary(
