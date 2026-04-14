@@ -2926,7 +2926,7 @@ class BacktestRunner:
             if not bool(mid_result.get("is_complete")):
                 return self._transaction_cost_breakeven_indeterminate(
                     base_meta,
-                    str(mid_result.get("reason", "incomplete_midpoint_evaluation")),
+                    mid_result.get("reason") or "incomplete_midpoint_evaluation",
                     boundary_results=[min_result, max_result],
                     iterations=iterations + 1,
                 )
