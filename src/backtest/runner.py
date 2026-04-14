@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib
 import inspect
@@ -2703,7 +2704,7 @@ class BacktestRunner:
         run_ctx: TransactionCostRobustnessRunContext,
         multiplier: float,
     ) -> dict[str, Any]:
-        stressed_prepared = run_ctx.prepared
+        stressed_prepared = copy.copy(run_ctx.prepared)
         stressed_prepared.fees = float(stressed_prepared.fees) * float(multiplier)
         stressed_prepared.slippage = float(stressed_prepared.slippage) * float(multiplier)
         raw_df = run_ctx.context.validated_data.raw_df if run_ctx.context.validated_data else None
