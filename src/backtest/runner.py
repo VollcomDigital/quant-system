@@ -3710,6 +3710,8 @@ class BacktestRunner:
             # Fail fast on cheap result-consistency gates before expensive shuffle checks.
             return self._strategy_validation_reject_or_continue(reasons)
         self._run_lookahead_shuffle_validation(context, plan, outcome, reasons)
+        if reasons:
+            return self._strategy_validation_reject_or_continue(reasons)
         self._run_transaction_cost_robustness_validation(context, plan, outcome, reasons)
         return self._strategy_validation_reject_or_continue(reasons)
 
