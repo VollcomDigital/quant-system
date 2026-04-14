@@ -840,6 +840,22 @@ def test_canonicalize_price_columns_deduplicates_columns_after_rename_lowercase_
     assert normalized["Close"].tolist() == [10.0, 11.0]
 
 
+def test_canonicalize_price_columns_allows_close_only_input():
+    raw_df = pd.DataFrame(
+        {
+            "Close": [10.0, 11.0],
+        },
+        index=pd.date_range("2024-01-01", periods=2, freq="D"),
+    )
+
+    normalized = BacktestRunner._canonicalize_price_columns(raw_df)
+
+    assert normalized.columns.is_unique
+    assert list(normalized.columns) == ["Close", "Volume"]
+    assert normalized["Close"].tolist() == [10.0, 11.0]
+    assert normalized["Volume"].tolist() == [0.0, 0.0]
+
+
 def test_data_validation_ohlc_integrity_rejects_invalid_bars(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
@@ -873,6 +889,37 @@ def test_data_validation_ohlc_integrity_rejects_invalid_bars(tmp_path, monkeypat
     assert any(
         reason.startswith("ohlc_integrity_invalid_bar_pct_exceeded")
         for reason in validated_data.reliability_reasons
+    )
+
+
+def test_data_validation_ohlc_integrity_rejects_missing_ohl_columns(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            on_fail="skip_job",
+            ohlc_integrity=ValidationOHLCIntegrityConfig(max_invalid_bar_pct=0.0),
+        )
+    )
+    resolve_validation_overrides(runner.cfg)
+    idx = pd.date_range("2024-01-01", periods=3, freq="D")
+    df = pd.DataFrame(
+        {
+            "Close": [100.5, 100.2, 102.2],
+        },
+        index=idx,
+    )
+    context = SimpleNamespace(
+        job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
+        fetched_data=SimpleNamespace(raw_df=df),
+    )
+
+    decision, validated_data = runner._data_validation_common(context)
+
+    assert not decision.passed
+    assert decision.action == "skip_job"
+    assert validated_data is not None
+    assert "ohlc_integrity_indeterminate(reason=missing_price_columns(open,high,low))" in (
+        validated_data.reliability_reasons
     )
 
 

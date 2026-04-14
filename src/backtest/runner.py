@@ -1838,12 +1838,12 @@ class BacktestRunner:
     def _canonicalize_price_columns(raw_df: pd.DataFrame) -> pd.DataFrame:
         normalized = raw_df.copy()
         required = {
-            "open": "Open",
-            "high": "High",
-            "low": "Low",
             "close": "Close",
         }
         optional = {
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
             "volume": "Volume",
         }
         existing_keys = {str(column).strip().lower() for column in normalized.columns}
@@ -1864,7 +1864,8 @@ class BacktestRunner:
         if "Volume" not in normalized.columns:
             normalized["Volume"] = 0.0
         for column in ("Open", "High", "Low", "Close", "Volume"):
-            normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+            if column in normalized.columns:
+                normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
         return normalized
 
     @classmethod
@@ -1926,6 +1927,11 @@ class BacktestRunner:
             return None
         if raw_df.empty:
             return "ohlc_integrity_indeterminate(reason=empty_dataframe)"
+        required_columns = ("Open", "High", "Low", "Close", "Volume")
+        missing_columns = [name.lower() for name in required_columns if name not in raw_df.columns]
+        if missing_columns:
+            missing = ",".join(missing_columns)
+            return f"ohlc_integrity_indeterminate(reason=missing_price_columns({missing}))"
         open_values = raw_df["Open"].to_numpy(dtype=float)
         high_values = raw_df["High"].to_numpy(dtype=float)
         low_values = raw_df["Low"].to_numpy(dtype=float)
