@@ -1656,7 +1656,7 @@ def _build_strategy_validation_artifacts(
     *,
     strategy_name: str,
     raw_df: pd.DataFrame | None = None,
-    prepared_data=None,
+    prepared_data: ExecutionPreparedData | None = None,
     outcome: StrategyEvalOutcome | None = None,
 ):
     effective_raw_df = raw_df if raw_df is not None else _make_trending_ohlcv(25)
@@ -3324,7 +3324,8 @@ def test_transaction_cost_breakeven_binary_search_uses_strict_threshold_partitio
 
     assert meta["upper_multiplier"] == pytest.approx(2.0)
     assert meta["lower_multiplier"] == pytest.approx(1.0)
-    assert meta["metric_drop_pct"] == pytest.approx(midpoint_drop)
+    expected_estimated_drop = (float(min_result["metric_drop_pct"]) + midpoint_drop) / 2.0
+    assert meta["metric_drop_pct"] == pytest.approx(expected_estimated_drop)
 
 
 def test_transaction_cost_breakeven_is_indeterminate_for_invalid_baseline_metric(

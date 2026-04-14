@@ -2949,7 +2949,21 @@ class BacktestRunner:
                 low_multiplier = mid_multiplier
                 low_drop = float(mid_drop)
         estimated_multiplier = (low_multiplier + high_multiplier) / 2.0
-        estimated_drop = (low_drop + high_drop) / 2.0
+        estimated_result = self._transaction_cost_robustness_scenario(run_ctx, estimated_multiplier)
+        estimated_drop_raw = (
+            estimated_result.get("metric_drop_pct")
+            if bool(estimated_result.get("is_complete"))
+            else None
+        )
+        if estimated_drop_raw is not None:
+            estimated_drop = float(estimated_drop_raw)
+            latest_result = estimated_result
+        else:
+            estimated_drop = (
+                high_drop
+                if self._transaction_cost_drop_exceeds_threshold_strict(high_drop, threshold)
+                else low_drop
+            )
         return {
             **base_meta,
             "status": "found",
