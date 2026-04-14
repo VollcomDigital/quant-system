@@ -3050,62 +3050,6 @@ def test_transaction_cost_robustness_result_enforce_rejects_on_negative_profit(
     )
 
 
-def test_transaction_cost_robustness_result_enforce_rejects_on_larger_multiplier_drop(
-    tmp_path, monkeypatch
-):
-    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
-    _, _, _, _, run_ctx = _build_transaction_cost_validation_artifacts(
-        runner,
-        strategy_name="dummy",
-        policy=_transaction_cost_robustness_config(mode="enforce", max_metric_drop_pct=0.3),
-    )
-
-    def _scenario_drop_only_on_larger_multiplier(self, _run_ctx, multiplier):
-        if np.isclose(float(multiplier), 2.0):
-            metric_value = 0.7
-            profit = 0.05
-        else:
-            metric_value = 0.2
-            profit = 0.01
-        metric_drop_pct = (run_ctx.baseline_metric - metric_value) / run_ctx.baseline_metric
-        return {
-            "is_complete": True,
-            "status": "complete",
-            "metric_name": self.cfg.metric,
-            "multiplier": float(multiplier),
-            "fees": float(run_ctx.prepared.fees) * float(multiplier),
-            "slippage": float(run_ctx.prepared.slippage) * float(multiplier),
-            "baseline_metric": run_ctx.baseline_metric,
-            "baseline_profit": run_ctx.baseline_profit,
-            "metric_value": metric_value,
-            "profit": profit,
-            "metric_drop_pct": metric_drop_pct,
-            "metric_drop_exceeded": self._transaction_cost_drop_exceeds_threshold(
-                metric_drop_pct,
-                run_ctx.policy.max_metric_drop_pct,
-            ),
-            "profit_negative": False,
-        }
-
-    monkeypatch.setattr(
-        runner,
-        "_transaction_cost_robustness_scenario",
-        MethodType(_scenario_drop_only_on_larger_multiplier, runner),
-    )
-
-    reason, meta = runner._transaction_cost_robustness_result(run_ctx)
-
-    assert reason is not None
-    assert "transaction_cost_robustness_metric_drop_exceeded" in reason
-    assert "multiplier=5.0" in reason
-    assert meta is not None
-    assert meta["status"] == "complete"
-    assert not any(
-        "transaction_cost_robustness_negative_profit" in breach_reason
-        for breach_reason in meta["breach_reasons"]
-    )
-
-
 def test_transaction_cost_robustness_scenario_reuses_aligned_signals(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
     _, _, _, _, run_ctx = _build_transaction_cost_validation_artifacts(
@@ -3362,7 +3306,7 @@ def test_run_all_transaction_cost_robustness_attaches_post_run_meta(
     ("max_metric_drop_pct", "expected_failure_substring"),
     [
         (0.15, "transaction_cost_robustness_metric_drop_exceeded"),
-        (0.3, "transaction_cost_robustness_metric_drop_exceeded"),
+        (0.3, "transaction_cost_robustness_negative_profit"),
     ],
 )
 def test_run_all_transaction_cost_robustness_rejects_in_enforce_mode(

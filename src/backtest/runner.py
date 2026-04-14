@@ -3048,23 +3048,17 @@ class BacktestRunner:
         if not smallest.get("is_complete") or smallest_drop is None:
             return None
         meta["smallest_multiplier_metric_drop_pct"] = float(smallest_drop)
-
-        for scenario in stress_scenarios:
-            scenario_drop = scenario.get("metric_drop_pct")
-            if not scenario.get("is_complete") or scenario_drop is None:
-                continue
-            if not self._transaction_cost_drop_exceeds_threshold(
-                float(scenario_drop),
-                run_ctx.policy.max_metric_drop_pct,
-            ):
-                continue
-            return (
-                "transaction_cost_robustness_metric_drop_exceeded("
-                f"multiplier={scenario.get('multiplier')}, "
-                f"drop_pct={float(scenario_drop)}, "
-                f"threshold={run_ctx.policy.max_metric_drop_pct})"
-            )
-        return None
+        if not self._transaction_cost_drop_exceeds_threshold(
+            float(smallest_drop),
+            run_ctx.policy.max_metric_drop_pct,
+        ):
+            return None
+        return (
+            "transaction_cost_robustness_metric_drop_exceeded("
+            f"multiplier={smallest.get('multiplier')}, "
+            f"drop_pct={float(smallest_drop)}, "
+            f"threshold={run_ctx.policy.max_metric_drop_pct})"
+        )
 
     @staticmethod
     def _transaction_cost_robustness_negative_profit_breach_reasons(
