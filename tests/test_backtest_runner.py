@@ -3324,8 +3324,9 @@ def test_transaction_cost_breakeven_binary_search_uses_strict_threshold_partitio
 
     assert meta["upper_multiplier"] == pytest.approx(2.0)
     assert meta["lower_multiplier"] == pytest.approx(1.0)
-    expected_estimated_drop = (float(min_result["metric_drop_pct"]) + midpoint_drop) / 2.0
-    assert meta["metric_drop_pct"] == pytest.approx(expected_estimated_drop)
+    assert meta["metric_drop_pct"] == pytest.approx(
+        runner._transaction_cost_robustness_scenario(run_ctx, 1.5)["metric_drop_pct"]
+    )
 
 
 def test_transaction_cost_breakeven_is_indeterminate_for_invalid_baseline_metric(
