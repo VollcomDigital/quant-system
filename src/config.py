@@ -2048,7 +2048,6 @@ def _parse_result_consistency_transaction_cost_robustness(
         parsed_raw,
         prefix,
         "stress_multipliers",
-        min_value=TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN,
     )
     return ResultConsistencyTransactionCostRobustnessConfig(
         mode=parse_optional_str(parsed_raw, "mode"),
