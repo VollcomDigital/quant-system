@@ -2703,9 +2703,9 @@ class BacktestRunner:
         run_ctx: TransactionCostRobustnessRunContext,
         multiplier: float,
     ) -> dict[str, Any]:
-        prepared = run_ctx.prepared
-        stressed_fees = float(prepared.fees) * float(multiplier)
-        stressed_slippage = float(prepared.slippage) * float(multiplier)
+        stressed_prepared = run_ctx.prepared
+        stressed_prepared.fees = float(stressed_prepared.fees) * float(multiplier)
+        stressed_prepared.slippage = float(stressed_prepared.slippage) * float(multiplier)
         raw_df = run_ctx.context.validated_data.raw_df if run_ctx.context.validated_data else None
         if raw_df is None:
             return {
@@ -2714,8 +2714,8 @@ class BacktestRunner:
                 "reason": "missing_validated_data",
                 "metric_name": self.cfg.metric,
                 "multiplier": float(multiplier),
-                "fees": stressed_fees,
-                "slippage": stressed_slippage,
+                "fees": stressed_prepared.fees,
+                "slippage": stressed_prepared.slippage,
             }
         try:
             if run_ctx.aligned_signals is None:
@@ -2731,13 +2731,13 @@ class BacktestRunner:
             request = self._build_evaluation_request(
                 run_ctx.plan,
                 run_ctx.context.state,
-                prepared,
+                stressed_prepared,
                 run_ctx.full_params,
                 cacheable=False,
-                fees=stressed_fees,
-                slippage=stressed_slippage,
+                fees=stressed_prepared.fees,
+                slippage=stressed_prepared.slippage,
             )
-            outcome = self._evaluate_strategy_outcome(request, prepared, entries, exits)
+            outcome = self._evaluate_strategy_outcome(request, stressed_prepared, entries, exits)
         except Exception as exc:
             return {
                 "is_complete": False,
@@ -2747,8 +2747,8 @@ class BacktestRunner:
                 "exception_message": str(exc),
                 "metric_name": self.cfg.metric,
                 "multiplier": float(multiplier),
-                "fees": stressed_fees,
-                "slippage": stressed_slippage,
+                "fees": stressed_prepared.fees,
+                "slippage": stressed_prepared.slippage,
             }
 
         metric_value = None
@@ -2776,8 +2776,8 @@ class BacktestRunner:
             "status": "complete" if is_complete else "indeterminate",
             "metric_name": self.cfg.metric,
             "multiplier": float(multiplier),
-            "fees": stressed_fees,
-            "slippage": stressed_slippage,
+            "fees": stressed_prepared.fees,
+            "slippage": stressed_prepared.slippage,
             "baseline_metric": run_ctx.baseline_metric,
             "baseline_profit": run_ctx.baseline_profit,
             "metric_value": metric_value,
