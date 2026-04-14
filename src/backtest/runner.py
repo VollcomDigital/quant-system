@@ -3102,16 +3102,6 @@ class BacktestRunner:
         self,
         run_ctx: TransactionCostRobustnessRunContext,
     ) -> tuple[str | None, dict[str, Any] | None]:
-        if run_ctx.context.validated_data is None:
-            return self._transaction_cost_robustness_indeterminate(
-                "missing_validated_data",
-                policy=run_ctx.policy,
-            )
-        if run_ctx.context.prepared_data is None:
-            return self._transaction_cost_robustness_indeterminate(
-                "missing_prepared_data",
-                policy=run_ctx.policy,
-            )
         stress_scenarios = self._transaction_cost_robustness_stress_scenarios(run_ctx)
         if not stress_scenarios:
             return self._transaction_cost_robustness_indeterminate(
