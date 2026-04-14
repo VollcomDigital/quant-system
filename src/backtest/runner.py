@@ -3761,38 +3761,24 @@ class BacktestRunner:
         policy = self._load_transaction_cost_robustness_policy(context.job.collection)
         if policy is None:
             return
-        if context.prepared_data is None or context.validated_data is None:
-            missing_inputs: list[str] = []
-            if context.prepared_data is None:
-                missing_inputs.append("prepared_data")
-            if context.validated_data is None:
-                missing_inputs.append("validated_data")
-            transaction_cost_reason, transaction_cost_meta = self._transaction_cost_robustness_indeterminate(
-                "missing_transaction_cost_robustness_inputs",
-                policy=policy,
+        missing_inputs = self._transaction_cost_missing_inputs(context)
+        if missing_inputs is not None:
+            self._attach_transaction_cost_indeterminate_meta(
+                outcome,
+                reasons,
+                policy,
+                reason="missing_transaction_cost_robustness_inputs",
                 details={"missing_inputs": missing_inputs},
             )
-            self._attach_post_run_meta(
-                outcome,
-                "transaction_cost_robustness",
-                transaction_cost_meta,
-            )
-            if policy.mode == "enforce":
-                reasons.append(transaction_cost_reason)
             return
         if not isinstance(outcome.best_params, dict):
-            transaction_cost_reason, transaction_cost_meta = self._transaction_cost_robustness_indeterminate(
-                "missing_transaction_cost_robustness_params",
-                policy=policy,
+            self._attach_transaction_cost_indeterminate_meta(
+                outcome,
+                reasons,
+                policy,
+                reason="missing_transaction_cost_robustness_params",
                 details={"best_params_type": type(outcome.best_params).__name__},
             )
-            self._attach_post_run_meta(
-                outcome,
-                "transaction_cost_robustness",
-                transaction_cost_meta,
-            )
-            if policy.mode == "enforce":
-                reasons.append(transaction_cost_reason)
             return
         baseline_profit = (
             self._safe_float_stat(outcome.best_stats, "profit")
@@ -3817,6 +3803,37 @@ class BacktestRunner:
             transaction_cost_meta,
         )
         if policy.mode == "enforce" and transaction_cost_reason is not None:
+            reasons.append(transaction_cost_reason)
+
+    @staticmethod
+    def _transaction_cost_missing_inputs(context: ValidationContext) -> list[str] | None:
+        missing_inputs: list[str] = []
+        if context.prepared_data is None:
+            missing_inputs.append("prepared_data")
+        if context.validated_data is None:
+            missing_inputs.append("validated_data")
+        return missing_inputs if missing_inputs else None
+
+    def _attach_transaction_cost_indeterminate_meta(
+        self,
+        outcome: StrategyEvalOutcome,
+        reasons: list[str],
+        policy: ResultConsistencyTransactionCostRobustnessConfig,
+        *,
+        reason: str,
+        details: dict[str, Any],
+    ) -> None:
+        transaction_cost_reason, transaction_cost_meta = self._transaction_cost_robustness_indeterminate(
+            reason,
+            policy=policy,
+            details=details,
+        )
+        self._attach_post_run_meta(
+            outcome,
+            "transaction_cost_robustness",
+            transaction_cost_meta,
+        )
+        if policy.mode == "enforce":
             reasons.append(transaction_cost_reason)
 
     @staticmethod
