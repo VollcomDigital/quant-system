@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib
 import inspect
 import itertools
 import json
 from collections.abc import Iterable
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
@@ -2703,11 +2704,9 @@ class BacktestRunner:
         run_ctx: TransactionCostRobustnessRunContext,
         multiplier: float,
     ) -> dict[str, Any]:
-        stressed_prepared: ExecutionPreparedData = replace(
-            run_ctx.prepared,
-            fees=float(run_ctx.prepared.fees) * float(multiplier),
-            slippage=float(run_ctx.prepared.slippage) * float(multiplier),
-        )
+        stressed_prepared = copy.copy(run_ctx.prepared)
+        stressed_prepared.fees = float(stressed_prepared.fees) * float(multiplier)
+        stressed_prepared.slippage = float(stressed_prepared.slippage) * float(multiplier)
         raw_df = run_ctx.context.validated_data.raw_df if run_ctx.context.validated_data else None
         if raw_df is None:
             return {
