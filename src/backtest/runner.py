@@ -2949,11 +2949,7 @@ class BacktestRunner:
                 low_multiplier = mid_multiplier
                 low_drop = float(mid_drop)
         estimated_multiplier = (low_multiplier + high_multiplier) / 2.0
-        estimated_drop = (
-            high_drop
-            if self._transaction_cost_drop_exceeds_threshold_strict(high_drop, threshold)
-            else low_drop
-        )
+        estimated_drop = (low_drop + high_drop) / 2.0
         return {
             **base_meta,
             "status": "found",
