@@ -799,6 +799,30 @@ def test_data_validation_canonicalizes_index_and_price_columns(tmp_path, monkeyp
     assert len(validated_data.raw_df) == 3
 
 
+def test_data_validation_canonicalization_failure_has_structured_reason(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    idx = pd.date_range("2024-01-01", periods=2, freq="D")
+    df = pd.DataFrame(
+        {
+            "Open": [1.0, 2.0],
+            "High": [1.1, 2.1],
+            "Low": [0.9, 1.9],
+        },
+        index=idx,
+    )
+    context = SimpleNamespace(
+        job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
+        fetched_data=SimpleNamespace(raw_df=df),
+    )
+
+    decision, validated_data = runner._data_validation_common(context)
+
+    assert not decision.passed
+    assert decision.action == "skip_job"
+    assert decision.reasons == ["canonicalization_failed(reason=missing_price_columns(close))"]
+    assert validated_data is None
+
+
 def test_canonicalize_price_columns_deduplicates_columns_after_rename():
     raw_df = pd.DataFrame(
         {

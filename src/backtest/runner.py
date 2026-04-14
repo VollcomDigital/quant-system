@@ -1582,7 +1582,8 @@ class BacktestRunner:
                 calendar_timezone=calendar_timezone,
             )
         except ValueError as exc:
-            return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
+            reason = self._canonicalization_failure_reason(str(exc))
+            return GateDecision(False, "skip_job", [reason], "data_validation"), None
         # `on_fail` is required by config whenever a data-quality policy exists,
         # so `reliability_on_fail is None` means data-quality policy is unset.
         if reliability_on_fail is None:
@@ -1656,6 +1657,10 @@ class BacktestRunner:
             canonicalization=canonicalization_meta,
         )
         return decision, validated_data
+
+    @staticmethod
+    def _canonicalization_failure_reason(reason: str) -> str:
+        return f"canonicalization_failed(reason={reason})"
 
     def _load_data_quality_policy(
         self, collection: CollectionConfig
