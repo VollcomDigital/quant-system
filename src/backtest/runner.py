@@ -2973,7 +2973,7 @@ class BacktestRunner:
             return None
         base_meta = self._transaction_cost_breakeven_base_meta(run_ctx)
         if not base_meta["enabled"]:
-            return self._transaction_cost_breakeven_indeterminate(base_meta, "disabled")
+            return None
         if (
             run_ctx.baseline_metric is None
             or run_ctx.baseline_metric <= 0.0
