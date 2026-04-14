@@ -306,6 +306,15 @@ def test_parse_optional_float_list_rejects_non_finite_values():
         )
 
 
+def test_parse_optional_float_list_rejects_non_numeric_values_with_field_context():
+    with pytest.raises(ValueError, match=r"Invalid `sample.values\[0\]`: expected a number"):
+        parse_optional_float_list(
+            {"values": ["abc"]},
+            "sample",
+            "values",
+        )
+
+
 def test_load_config_collection_reliability_thresholds_override(tmp_path: Path):
     config_text = """
 collections:

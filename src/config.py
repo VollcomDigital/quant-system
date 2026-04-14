@@ -1414,6 +1414,27 @@ def require_mapping(raw: Any, prefix: str) -> dict[str, Any]:
     return cast(dict[str, Any], raw)
 
 
+def _coerce_int(value: Any, field_path: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid `{field_path}`: expected an integer")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid `{field_path}`: expected an integer") from exc
+
+
+def _coerce_float(value: Any, field_path: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"Invalid `{field_path}`: expected a number")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid `{field_path}`: expected a number") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"`{field_path}` must be finite")
+    return parsed
+
+
 def parse_optional_int(
     raw: dict[str, Any],
     prefix: str,
@@ -1425,7 +1446,7 @@ def parse_optional_int(
     value = raw.get(key)
     if value is None:
         return None
-    parsed = int(value)
+    parsed = _coerce_int(value, f"{prefix}.{key}")
     if min_value is not None and parsed < min_value:
         raise ValueError(f"`{prefix}.{key}` must be >= {min_value}")
     if max_value is not None and parsed > max_value:
@@ -1458,7 +1479,7 @@ def parse_optional_float(
     value = raw.get(key)
     if value is None:
         return None
-    parsed = float(value)
+    parsed = _coerce_float(value, f"{prefix}.{key}")
     if min_value is not None and parsed < min_value:
         raise ValueError(f"`{prefix}.{key}` must be >= {min_value}")
     if max_value is not None and parsed > max_value:
@@ -1481,9 +1502,7 @@ def parse_optional_float_list(
         raise ValueError(f"Invalid `{prefix}.{key}`: expected a list")
     parsed: list[float] = []
     for idx, item in enumerate(value):
-        parsed_item = float(item)
-        if not math.isfinite(parsed_item):
-            raise ValueError(f"`{prefix}.{key}[{idx}]` must be finite")
+        parsed_item = _coerce_float(item, f"{prefix}.{key}[{idx}]")
         if min_value is not None and parsed_item < min_value:
             raise ValueError(f"`{prefix}.{key}[{idx}]` must be >= {min_value}")
         if max_value is not None and parsed_item > max_value:
