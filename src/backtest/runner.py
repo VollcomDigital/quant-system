@@ -2678,6 +2678,7 @@ class BacktestRunner:
         policy: ResultConsistencyTransactionCostRobustnessConfig | None = None,
         stress_scenarios: list[dict[str, Any]] | None = None,
         breakeven: dict[str, Any] | None = None,
+        details: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         diagnostics: dict[str, Any] = {
             "is_complete": False,
@@ -2693,6 +2694,8 @@ class BacktestRunner:
             diagnostics["stress_scenarios"] = stress_scenarios
         if breakeven is not None:
             diagnostics["breakeven"] = breakeven
+        if details is not None:
+            diagnostics.update(details)
         return f"transaction_cost_robustness_indeterminate(reason={reason})", diagnostics
 
     def _transaction_cost_robustness_scenario(
@@ -3764,32 +3767,32 @@ class BacktestRunner:
                 missing_inputs.append("prepared_data")
             if context.validated_data is None:
                 missing_inputs.append("validated_data")
-            transaction_cost_meta = {
-                "status": "indeterminate",
-                "reason": "missing_transaction_cost_robustness_inputs",
-                "missing_inputs": missing_inputs,
-            }
+            transaction_cost_reason, transaction_cost_meta = self._transaction_cost_robustness_indeterminate(
+                "missing_transaction_cost_robustness_inputs",
+                policy=policy,
+                details={"missing_inputs": missing_inputs},
+            )
             self._attach_post_run_meta(
                 outcome,
                 "transaction_cost_robustness",
                 transaction_cost_meta,
             )
             if policy.mode == "enforce":
-                reasons.append("transaction_cost_robustness_indeterminate")
+                reasons.append(transaction_cost_reason)
             return
         if not isinstance(outcome.best_params, dict):
-            transaction_cost_meta = {
-                "status": "indeterminate",
-                "reason": "missing_transaction_cost_robustness_params",
-                "best_params_type": type(outcome.best_params).__name__,
-            }
+            transaction_cost_reason, transaction_cost_meta = self._transaction_cost_robustness_indeterminate(
+                "missing_transaction_cost_robustness_params",
+                policy=policy,
+                details={"best_params_type": type(outcome.best_params).__name__},
+            )
             self._attach_post_run_meta(
                 outcome,
                 "transaction_cost_robustness",
                 transaction_cost_meta,
             )
             if policy.mode == "enforce":
-                reasons.append("transaction_cost_robustness_indeterminate")
+                reasons.append(transaction_cost_reason)
             return
         baseline_profit = (
             self._safe_float_stat(outcome.best_stats, "profit")

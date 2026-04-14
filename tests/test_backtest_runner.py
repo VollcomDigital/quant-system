@@ -3370,12 +3370,20 @@ def test_strategy_validation_transaction_cost_robustness_enforce_rejects_non_dic
 
     assert decision.passed is False
     assert decision.action == "reject_result"
-    assert "transaction_cost_robustness_indeterminate" in decision.reasons
+    assert (
+        "transaction_cost_robustness_indeterminate(reason=missing_transaction_cost_robustness_params)"
+        in decision.reasons
+    )
     post_run_meta = outcome.best_stats.get("post_run_meta")
     assert post_run_meta is not None
     assert post_run_meta["transaction_cost_robustness"] == {
+        "is_complete": False,
         "status": "indeterminate",
         "reason": "missing_transaction_cost_robustness_params",
+        "metric_name": runner.cfg.metric,
+        "mode": "enforce",
+        "stress_multipliers": [2.0, 5.0],
+        "max_metric_drop_pct": 0.3,
         "best_params_type": "NoneType",
     }
 
