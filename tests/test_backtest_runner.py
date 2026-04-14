@@ -1656,7 +1656,7 @@ def _build_strategy_validation_artifacts(
     *,
     strategy_name: str,
     raw_df: pd.DataFrame | None = None,
-    prepared_data=None,
+    prepared_data: ExecutionPreparedData | None = None,
     outcome: StrategyEvalOutcome | None = None,
 ):
     effective_raw_df = raw_df if raw_df is not None else _make_trending_ohlcv(25)
