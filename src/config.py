@@ -1486,23 +1486,15 @@ def _coerce_int(value: Any, field_path: str) -> int:
         raise ValueError(f"Invalid `{field_path}`: expected an integer")
     if isinstance(value, int):
         return value
-    if isinstance(value, float):
-        if not math.isfinite(value) or not value.is_integer():
-            raise ValueError(f"Invalid `{field_path}`: expected an integer")
-        return int(value)
-    try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Invalid `{field_path}`: expected an integer") from exc
+    raise ValueError(f"Invalid `{field_path}`: expected an integer")
 
 
 def _coerce_float(value: Any, field_path: str) -> float:
     if isinstance(value, bool):
         raise ValueError(f"Invalid `{field_path}`: expected a number")
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"Invalid `{field_path}`: expected a number") from exc
+    if not isinstance(value, (int, float)):
+        raise ValueError(f"Invalid `{field_path}`: expected a number")
+    parsed = float(value)
     if not math.isfinite(parsed):
         raise ValueError(f"`{field_path}` must be finite")
     return parsed
@@ -1625,23 +1617,6 @@ def parse_required_str(
 
 
 def parse_optional_bool(
-    raw: dict[str, Any],
-    prefix: str,
-    key: str,
-) -> bool | None:
-    value = raw.get(key)
-    if value is None:
-        return None
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"true", "false"}:
-            return normalized == "true"
-    raise ValueError(f"Invalid `{prefix}.{key}`: expected a boolean")
-
-
-def parse_optional_strict_bool(
     raw: dict[str, Any],
     prefix: str,
     key: str,
@@ -1788,8 +1763,8 @@ def _parse_ohlc_integrity(
         min_value=VALIDATION_PERCENT_MIN,
         max_value=VALIDATION_PERCENT_MAX,
     )
-    allow_negative_price = parse_optional_strict_bool(parsed_raw, prefix, "allow_negative_price")
-    allow_negative_volume = parse_optional_strict_bool(parsed_raw, prefix, "allow_negative_volume")
+    allow_negative_price = parse_optional_bool(parsed_raw, prefix, "allow_negative_price")
+    allow_negative_volume = parse_optional_bool(parsed_raw, prefix, "allow_negative_volume")
     return ValidationOHLCIntegrityConfig(
         max_invalid_bar_pct=max_invalid_bar_pct,
         allow_negative_price=allow_negative_price,

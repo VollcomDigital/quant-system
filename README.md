@@ -266,14 +266,13 @@ See new collection examples under `config/collections/` for FX intraday via Finn
       after applying tolerance.
     - missing/truncated fill metadata is non-blocking (`continue`); diagnostics are marked incomplete.
   - `lookahead_shuffle_test` (optional module; active when configured):
-    - `permutations` (optional, default `20`): number of deterministic OHLCV bar shuffles to evaluate
-    - `threshold` (optional, default `0.0`): median shuffled metric above this value is suspicious
+    - `permutations` (required, must be `>= 100`): number of deterministic OHLCV bar shuffles to evaluate
+    - `pvalue_max` (required, `0..1`): maximum allowed p-value from shuffle diagnostics
     - `seed` (optional, default `1337`): base seed combined with collection/symbol/timeframe/strategy
     - `max_failed_permutations` (optional, default unset): max allowed failed permutation
       evaluations before the module returns an indeterminate rejection
     - the runner permutes whole bars and reruns the selected strategy result after backtest
-      evaluation to detect look-ahead style behavior when the median shuffled metric remains above
-      the threshold
+      evaluation to detect look-ahead style behavior
   - `transaction_cost_robustness` (optional module; active when configured):
     - `mode` (required): `analytics | enforce`
       - `analytics`: compute diagnostics and attach metadata, but do not reject
@@ -299,6 +298,12 @@ Structured logs reflect this directly via gate actions:
 - `strategy_optimization_gate` can emit `baseline_only` (strategy-level baseline fallback) or `skip_job`.
 - `strategy_validation_gate` can emit `reject_result` for outlier dependency,
   execution price variance, and lookahead shuffle testing.
+
+Numeric config parsing follows `src/config.py` coercion helpers:
+- numeric fields are strict types: use YAML numbers, not quoted numeric strings
+- booleans are rejected for numeric fields (for example `true` is invalid for `int`/`float` fields)
+- non-finite values (`nan`, `inf`) are rejected
+- boolean fields are strict booleans only (`true`/`false` in YAML); quoted strings like `"true"` are rejected
 
 ### Optimization Only on Reliable Collections
 

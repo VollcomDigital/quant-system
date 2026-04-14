@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from pathlib import Path
 
 import pytest
@@ -67,15 +68,28 @@ def _transaction_cost_robustness_block(**overrides):
 
 def test_parse_optional_float_rejects_non_finite_values():
     with pytest.raises(ValueError, match=r"must be finite"):
-        parse_optional_float({"threshold": "nan"}, "validation.result_consistency", "threshold")
+        parse_optional_float({"threshold": math.nan}, "validation.result_consistency", "threshold")
 
     with pytest.raises(ValueError, match=r"must be finite"):
-        parse_optional_float({"threshold": "inf"}, "validation.result_consistency", "threshold")
+        parse_optional_float({"threshold": math.inf}, "validation.result_consistency", "threshold")
 
 
 def test_parse_optional_int_rejects_boolean_values():
     with pytest.raises(ValueError, match=r"expected an integer"):
         parse_optional_int({"permutations": True}, "validation.result_consistency", "permutations")
+
+
+def test_parse_optional_int_rejects_numeric_strings_and_floats():
+    with pytest.raises(ValueError, match=r"expected an integer"):
+        parse_optional_int({"permutations": "100"}, "validation.result_consistency", "permutations")
+
+    with pytest.raises(ValueError, match=r"expected an integer"):
+        parse_optional_int({"permutations": 100.0}, "validation.result_consistency", "permutations")
+
+
+def test_parse_optional_float_rejects_numeric_strings():
+    with pytest.raises(ValueError, match=r"expected a number"):
+        parse_optional_float({"threshold": "0.25"}, "validation.result_consistency", "threshold")
 
 
 def test_load_config_allows_missing_strategies(tmp_path: Path):
@@ -195,6 +209,26 @@ validation:
     assert cfg.validation.data_quality.is_verified is False
 
 
+def test_load_config_reliability_thresholds_rejects_string_is_verified(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    is_verified: "false"
+    on_fail: skip_job
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"validation\.data_quality\.is_verified"):
+        load_config(path)
+
+
 def test_load_config_lookahead_shuffle_test_defaults(tmp_path: Path):
     cfg = _load_from_blocks(
         tmp_path,
@@ -292,6 +326,31 @@ def test_load_config_transaction_cost_robustness_requires_mode(tmp_path: Path):
                         "stress_multipliers": [2.0, 5.0],
                         "max_metric_drop_pct": 0.3,
                     }
+                )
+            },
+        )
+
+
+def test_load_config_transaction_cost_robustness_rejects_string_breakeven_enabled(
+    tmp_path: Path,
+):
+    with pytest.raises(
+        ValueError,
+        match=r"validation\.result_consistency\.transaction_cost_robustness\.breakeven\.enabled",
+    ):
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    transaction_cost_robustness=_transaction_cost_robustness_block(
+                        breakeven={
+                            "enabled": "true",
+                            "min_multiplier": 1.0,
+                            "max_multiplier": 5.0,
+                            "max_iterations": 8,
+                            "tolerance": 0.05,
+                        },
+                    )
                 )
             },
         )
