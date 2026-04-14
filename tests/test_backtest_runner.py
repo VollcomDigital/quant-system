@@ -1740,7 +1740,10 @@ def _fake_transaction_cost_scenario(
         "metric_value": metric_value,
         "profit": profit,
         "metric_drop_pct": metric_drop_pct,
-        "metric_drop_exceeded": metric_drop_pct > run_ctx.policy.max_metric_drop_pct,
+        "metric_drop_exceeded": self._transaction_cost_drop_exceeds_threshold(
+            metric_drop_pct,
+            run_ctx.policy.max_metric_drop_pct,
+        ),
         "profit_negative": profit < 0.0,
     }
 
