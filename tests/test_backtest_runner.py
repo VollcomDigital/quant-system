@@ -3077,6 +3077,26 @@ def test_transaction_cost_robustness_scenario_reuses_aligned_signals(tmp_path, m
     assert run_ctx.aligned_signals is not None
 
 
+def test_transaction_cost_robustness_scenario_non_positive_baseline_is_indeterminate(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _, _, _, _, run_ctx = _build_transaction_cost_validation_artifacts(
+        runner,
+        strategy_name="dummy",
+        policy=_transaction_cost_robustness_config(mode="analytics"),
+        baseline_metric=0.0,
+    )
+    _patch_transaction_cost_evaluator(monkeypatch)
+
+    scenario = runner._transaction_cost_robustness_scenario(run_ctx, 2.0)
+
+    assert scenario["metric_drop_pct"] is None
+    assert scenario["is_complete"] is False
+    assert scenario["status"] == "indeterminate"
+    assert scenario["metric_drop_exceeded"] is False
+
+
 @pytest.mark.parametrize(
     ("breakeven_cfg", "policy", "expected_status"),
     [

@@ -2746,16 +2746,26 @@ class BacktestRunner:
                 "slippage": stressed_slippage,
             }
 
-        metric_value = self._safe_float_stat(
-            {"metric_value": outcome.metric_value},
-            "metric_value",
-        )
+        metric_value = None
+        if outcome.metric_value is not None:
+            try:
+                parsed_metric_value = float(outcome.metric_value)
+            except (TypeError, ValueError):
+                parsed_metric_value = None
+            if parsed_metric_value is not None and np.isfinite(parsed_metric_value):
+                metric_value = parsed_metric_value
         profit = self._safe_float_stat(outcome.stats, "profit") if isinstance(outcome.stats, dict) else None
         metric_drop_pct = self._transaction_cost_metric_drop_pct(
             run_ctx.baseline_metric,
             metric_value,
         )
-        is_complete = bool(outcome.valid and outcome.metric_computed and metric_value is not None and profit is not None)
+        is_complete = bool(
+            outcome.valid
+            and outcome.metric_computed
+            and metric_value is not None
+            and profit is not None
+            and metric_drop_pct is not None
+        )
         scenario: dict[str, Any] = {
             "is_complete": is_complete,
             "status": "complete" if is_complete else "indeterminate",
