@@ -433,15 +433,21 @@ def _normalize_ohlc_integrity_config(
         return None
     max_invalid_bar_pct = getattr(cfg, "max_invalid_bar_pct", None)
     if max_invalid_bar_pct is not None:
-        max_invalid_bar_pct = float(max_invalid_bar_pct)
+        max_invalid_bar_pct = _coerce_float(max_invalid_bar_pct, f"{prefix}.max_invalid_bar_pct")
         if max_invalid_bar_pct < VALIDATION_PERCENT_MIN or max_invalid_bar_pct > VALIDATION_PERCENT_MAX:
             raise ValueError(
                 f"`{prefix}.max_invalid_bar_pct` must be between {VALIDATION_PERCENT_MIN} and {VALIDATION_PERCENT_MAX}"
             )
+    allow_negative_price = getattr(cfg, "allow_negative_price", None)
+    if allow_negative_price is not None and not isinstance(allow_negative_price, bool):
+        raise ValueError(f"`{prefix}.allow_negative_price` must be a boolean or null")
+    allow_negative_volume = getattr(cfg, "allow_negative_volume", None)
+    if allow_negative_volume is not None and not isinstance(allow_negative_volume, bool):
+        raise ValueError(f"`{prefix}.allow_negative_volume` must be a boolean or null")
     return ValidationOHLCIntegrityConfig(
         max_invalid_bar_pct=max_invalid_bar_pct,
-        allow_negative_price=getattr(cfg, "allow_negative_price", None),
-        allow_negative_volume=getattr(cfg, "allow_negative_volume", None),
+        allow_negative_price=allow_negative_price,
+        allow_negative_volume=allow_negative_volume,
     )
 
 
