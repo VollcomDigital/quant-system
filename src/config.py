@@ -433,7 +433,7 @@ def _normalize_ohlc_integrity_config(
         return None
     max_invalid_bar_pct = getattr(cfg, "max_invalid_bar_pct", None)
     if max_invalid_bar_pct is not None:
-        max_invalid_bar_pct = float(max_invalid_bar_pct)
+        max_invalid_bar_pct = _coerce_float(max_invalid_bar_pct, f"{prefix}.max_invalid_bar_pct")
         if max_invalid_bar_pct < VALIDATION_PERCENT_MIN or max_invalid_bar_pct > VALIDATION_PERCENT_MAX:
             raise ValueError(
                 f"`{prefix}.max_invalid_bar_pct` must be between {VALIDATION_PERCENT_MIN} and {VALIDATION_PERCENT_MAX}"
