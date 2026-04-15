@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib
 import inspect
@@ -2866,6 +2867,7 @@ class BacktestRunner:
         policy: ResultConsistencyTransactionCostRobustnessConfig | None = None,
         stress_scenarios: list[dict[str, Any]] | None = None,
         breakeven: dict[str, Any] | None = None,
+        details: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
         diagnostics: dict[str, Any] = {
             "is_complete": False,
@@ -2881,6 +2883,8 @@ class BacktestRunner:
             diagnostics["stress_scenarios"] = stress_scenarios
         if breakeven is not None:
             diagnostics["breakeven"] = breakeven
+        if details is not None:
+            diagnostics.update(details)
         return f"transaction_cost_robustness_indeterminate(reason={reason})", diagnostics
 
     def _transaction_cost_robustness_scenario(
@@ -2888,9 +2892,9 @@ class BacktestRunner:
         run_ctx: TransactionCostRobustnessRunContext,
         multiplier: float,
     ) -> dict[str, Any]:
-        prepared = run_ctx.prepared
-        stressed_fees = float(prepared.fees) * float(multiplier)
-        stressed_slippage = float(prepared.slippage) * float(multiplier)
+        stressed_prepared = copy.copy(run_ctx.prepared)
+        stressed_prepared.fees = float(stressed_prepared.fees) * float(multiplier)
+        stressed_prepared.slippage = float(stressed_prepared.slippage) * float(multiplier)
         raw_df = run_ctx.context.validated_data.raw_df if run_ctx.context.validated_data else None
         if raw_df is None:
             return {
@@ -2899,8 +2903,8 @@ class BacktestRunner:
                 "reason": "missing_validated_data",
                 "metric_name": self.cfg.metric,
                 "multiplier": float(multiplier),
-                "fees": stressed_fees,
-                "slippage": stressed_slippage,
+                "fees": stressed_prepared.fees,
+                "slippage": stressed_prepared.slippage,
             }
         try:
             if run_ctx.aligned_signals is None:
@@ -2916,41 +2920,53 @@ class BacktestRunner:
             request = self._build_evaluation_request(
                 run_ctx.plan,
                 run_ctx.context.state,
-                prepared,
+                stressed_prepared,
                 run_ctx.full_params,
                 cacheable=False,
-                fees=stressed_fees,
-                slippage=stressed_slippage,
+                fees=stressed_prepared.fees,
+                slippage=stressed_prepared.slippage,
             )
-            outcome = self._evaluate_strategy_outcome(request, prepared, entries, exits)
+            outcome = self._evaluate_strategy_outcome(request, stressed_prepared, entries, exits)
         except Exception as exc:
             return {
                 "is_complete": False,
                 "status": "indeterminate",
-                "reason": str(exc),
+                "reason": "evaluation_exception",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
                 "metric_name": self.cfg.metric,
                 "multiplier": float(multiplier),
-                "fees": stressed_fees,
-                "slippage": stressed_slippage,
+                "fees": stressed_prepared.fees,
+                "slippage": stressed_prepared.slippage,
             }
 
-        metric_value = self._safe_float_stat(
-            {"metric_value": outcome.metric_value},
-            "metric_value",
-        )
+        metric_value = None
+        if outcome.metric_value is not None:
+            try:
+                parsed_metric_value = float(outcome.metric_value)
+            except (TypeError, ValueError):
+                parsed_metric_value = None
+            if parsed_metric_value is not None and np.isfinite(parsed_metric_value):
+                metric_value = parsed_metric_value
         profit = self._safe_float_stat(outcome.stats, "profit") if isinstance(outcome.stats, dict) else None
         metric_drop_pct = self._transaction_cost_metric_drop_pct(
             run_ctx.baseline_metric,
             metric_value,
         )
-        is_complete = bool(outcome.valid and outcome.metric_computed and metric_value is not None and profit is not None)
+        is_complete = bool(
+            outcome.valid
+            and outcome.metric_computed
+            and metric_value is not None
+            and profit is not None
+            and metric_drop_pct is not None
+        )
         scenario: dict[str, Any] = {
             "is_complete": is_complete,
             "status": "complete" if is_complete else "indeterminate",
             "metric_name": self.cfg.metric,
             "multiplier": float(multiplier),
-            "fees": stressed_fees,
-            "slippage": stressed_slippage,
+            "fees": stressed_prepared.fees,
+            "slippage": stressed_prepared.slippage,
             "baseline_metric": run_ctx.baseline_metric,
             "baseline_profit": run_ctx.baseline_profit,
             "metric_value": metric_value,
@@ -3056,7 +3072,7 @@ class BacktestRunner:
                 "missing_boundary_metric_drop",
                 boundary_results=[min_result, max_result],
             )
-        if self._transaction_cost_drop_exceeds_threshold(float(min_drop), threshold):
+        if self._transaction_cost_drop_exceeds_threshold_strict(float(min_drop), threshold):
             return {
                 **base_meta,
                 "status": "below_range",
@@ -3064,7 +3080,7 @@ class BacktestRunner:
                 "metric_drop_pct": float(min_drop),
                 "boundary_results": [min_result, max_result],
             }
-        if not self._transaction_cost_drop_exceeds_threshold(float(max_drop), threshold):
+        if not self._transaction_cost_drop_exceeds_threshold_strict(float(max_drop), threshold):
             return {
                 **base_meta,
                 "status": "above_range",
@@ -3099,7 +3115,7 @@ class BacktestRunner:
             if not bool(mid_result.get("is_complete")):
                 return self._transaction_cost_breakeven_indeterminate(
                     base_meta,
-                    str(mid_result.get("reason", "incomplete_midpoint_evaluation")),
+                    mid_result.get("reason") or "incomplete_midpoint_evaluation",
                     boundary_results=[min_result, max_result],
                     iterations=iterations + 1,
                 )
@@ -3120,11 +3136,21 @@ class BacktestRunner:
                 low_multiplier = mid_multiplier
                 low_drop = float(mid_drop)
         estimated_multiplier = (low_multiplier + high_multiplier) / 2.0
-        estimated_drop = (
-            high_drop
-            if self._transaction_cost_drop_exceeds_threshold_strict(high_drop, threshold)
-            else low_drop
+        estimated_result = self._transaction_cost_robustness_scenario(run_ctx, estimated_multiplier)
+        estimated_drop_raw = (
+            estimated_result.get("metric_drop_pct")
+            if bool(estimated_result.get("is_complete"))
+            else None
         )
+        if estimated_drop_raw is not None:
+            estimated_drop = float(estimated_drop_raw)
+            latest_result = estimated_result
+        else:
+            estimated_drop = (
+                high_drop
+                if self._transaction_cost_drop_exceeds_threshold_strict(high_drop, threshold)
+                else low_drop
+            )
         return {
             **base_meta,
             "status": "found",
@@ -3146,7 +3172,7 @@ class BacktestRunner:
             return None
         base_meta = self._transaction_cost_breakeven_base_meta(run_ctx)
         if not base_meta["enabled"]:
-            return self._transaction_cost_breakeven_indeterminate(base_meta, "disabled")
+            return None
         if (
             run_ctx.baseline_metric is None
             or run_ctx.baseline_metric <= 0.0
@@ -3275,22 +3301,15 @@ class BacktestRunner:
         self,
         run_ctx: TransactionCostRobustnessRunContext,
     ) -> tuple[str | None, dict[str, Any] | None]:
-        if run_ctx.context.validated_data is None:
-            return self._transaction_cost_robustness_indeterminate(
-                "missing_validated_data",
-                policy=run_ctx.policy,
-            )
-        if run_ctx.context.prepared_data is None:
-            return self._transaction_cost_robustness_indeterminate(
-                "missing_prepared_data",
-                policy=run_ctx.policy,
-            )
         stress_scenarios = self._transaction_cost_robustness_stress_scenarios(run_ctx)
         if not stress_scenarios:
-            return self._transaction_cost_robustness_indeterminate(
+            indeterminate_reason, indeterminate_meta = self._transaction_cost_robustness_indeterminate(
                 "missing_stress_multipliers",
                 policy=run_ctx.policy,
             )
+            if run_ctx.policy.mode == "enforce":
+                return indeterminate_reason, indeterminate_meta
+            return None, indeterminate_meta
         meta = self._transaction_cost_robustness_meta(run_ctx, stress_scenarios)
         breach_reasons: list[str] = []
         smallest_breach = self._transaction_cost_robustness_smallest_drop_breach_reason(
@@ -3889,6 +3908,8 @@ class BacktestRunner:
             # Fail fast on cheap result-consistency gates before expensive shuffle checks.
             return self._strategy_validation_reject_or_continue(reasons)
         self._run_lookahead_shuffle_validation(context, plan, outcome, reasons)
+        if reasons:
+            return self._strategy_validation_reject_or_continue(reasons)
         self._run_transaction_cost_robustness_validation(context, plan, outcome, reasons)
         return self._strategy_validation_reject_or_continue(reasons)
 
@@ -3932,9 +3953,26 @@ class BacktestRunner:
         reasons: list[str],
     ) -> None:
         policy = self._load_transaction_cost_robustness_policy(context.job.collection)
-        if policy is None or context.prepared_data is None or context.validated_data is None:
+        if policy is None:
+            return
+        missing_inputs = self._transaction_cost_missing_inputs(context)
+        if missing_inputs is not None:
+            self._attach_transaction_cost_indeterminate_meta(
+                outcome,
+                reasons,
+                policy,
+                reason="missing_transaction_cost_robustness_inputs",
+                details={"missing_inputs": missing_inputs},
+            )
             return
         if not isinstance(outcome.best_params, dict):
+            self._attach_transaction_cost_indeterminate_meta(
+                outcome,
+                reasons,
+                policy,
+                reason="missing_transaction_cost_robustness_params",
+                details={"best_params_type": type(outcome.best_params).__name__},
+            )
             return
         baseline_profit = (
             self._safe_float_stat(outcome.best_stats, "profit")
@@ -3959,6 +3997,37 @@ class BacktestRunner:
             transaction_cost_meta,
         )
         if policy.mode == "enforce" and transaction_cost_reason is not None:
+            reasons.append(transaction_cost_reason)
+
+    @staticmethod
+    def _transaction_cost_missing_inputs(context: ValidationContext) -> list[str] | None:
+        missing_inputs: list[str] = []
+        if context.prepared_data is None:
+            missing_inputs.append("prepared_data")
+        if context.validated_data is None:
+            missing_inputs.append("validated_data")
+        return missing_inputs if missing_inputs else None
+
+    def _attach_transaction_cost_indeterminate_meta(
+        self,
+        outcome: StrategyEvalOutcome,
+        reasons: list[str],
+        policy: ResultConsistencyTransactionCostRobustnessConfig,
+        *,
+        reason: str,
+        details: dict[str, Any],
+    ) -> None:
+        transaction_cost_reason, transaction_cost_meta = self._transaction_cost_robustness_indeterminate(
+            reason,
+            policy=policy,
+            details=details,
+        )
+        self._attach_post_run_meta(
+            outcome,
+            "transaction_cost_robustness",
+            transaction_cost_meta,
+        )
+        if policy.mode == "enforce":
             reasons.append(transaction_cost_reason)
 
     @staticmethod

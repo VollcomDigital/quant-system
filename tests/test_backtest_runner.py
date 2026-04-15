@@ -1816,11 +1816,11 @@ def _make_prepared_data(
     dates = pd.date_range("2024-01-01", periods=5, freq="D")
     data_frame = pd.DataFrame(
         {
-            "open": [10.0, 11.0, 12.0, 13.0, 14.0],
-            "high": [10.5, 11.5, 12.5, 13.5, 14.5],
-            "low": [9.5, 10.5, 11.5, 12.5, 13.5],
-            "close": [10.0, 11.0, 12.0, 13.0, 14.0],
-            "volume": [100.0] * 5,
+            "Open": [10.0, 11.0, 12.0, 13.0, 14.0],
+            "High": [10.5, 11.5, 12.5, 13.5, 14.5],
+            "Low": [9.5, 10.5, 11.5, 12.5, 13.5],
+            "Close": [10.0, 11.0, 12.0, 13.0, 14.0],
+            "Volume": [100.0] * 5,
         },
         index=dates,
     )
@@ -1906,7 +1906,7 @@ def _build_strategy_validation_artifacts(
     *,
     strategy_name: str,
     raw_df: pd.DataFrame | None = None,
-    prepared_data=None,
+    prepared_data: ExecutionPreparedData | None = None,
     outcome: StrategyEvalOutcome | None = None,
 ):
     effective_raw_df = raw_df if raw_df is not None else _make_trending_ohlcv(25)
@@ -1991,7 +1991,10 @@ def _fake_transaction_cost_scenario(
         "metric_value": metric_value,
         "profit": profit,
         "metric_drop_pct": metric_drop_pct,
-        "metric_drop_exceeded": metric_drop_pct > run_ctx.policy.max_metric_drop_pct,
+        "metric_drop_exceeded": self._transaction_cost_drop_exceeds_threshold(
+            metric_drop_pct,
+            run_ctx.policy.max_metric_drop_pct,
+        ),
         "profit_negative": profit < 0.0,
     }
 
@@ -2928,6 +2931,63 @@ def test_lookahead_shuffle_test_rejects_on_pvalue_threshold(tmp_path, monkeypatc
     assert meta["observed_metric"] == pytest.approx(0.1)
 
 
+def test_strategy_validation_skips_transaction_cost_robustness_after_lookahead_rejection(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="leaky_shuffle",
+        strategy_cls=_LeakyShuffleStrategy,
+        result_consistency=_result_consistency_config(
+            lookahead_shuffle_test=_lookahead_shuffle_test_config(),
+            transaction_cost_robustness=_transaction_cost_robustness_config(mode="enforce"),
+        ),
+    )
+    outcome = StrategyEvalOutcome(
+        best_val=0.85,
+        best_params={},
+        best_stats={"profit": 0.15, "trades": 2},
+        has_valid_candidate=True,
+        evaluations=1,
+        skipped_reason=None,
+        strategy="leaky_shuffle",
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        ),
+    )
+    _, _, _, context, _ = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="leaky_shuffle",
+        outcome=outcome,
+    )
+
+    def _mock_lookahead(_context, _plan, _outcome, reasons):
+        reasons.append("lookahead_shuffle_test_pvalue_exceeded(pvalue=1.0, threshold=0.05)")
+
+    def _unexpected_transaction_cost(*_args, **_kwargs):
+        raise AssertionError("transaction cost robustness should be skipped")
+
+    monkeypatch.setattr(runner, "_run_lookahead_shuffle_validation", _mock_lookahead)
+    monkeypatch.setattr(
+        runner,
+        "_run_transaction_cost_robustness_validation",
+        _unexpected_transaction_cost,
+    )
+
+    decision = runner._strategy_validate_results_common(context)
+
+    assert decision.passed is False
+    assert decision.action == "reject_result"
+    assert (
+        "lookahead_shuffle_test_pvalue_exceeded(pvalue=1.0, threshold=0.05)"
+        in decision.reasons
+    )
+
+
 def test_lookahead_shuffle_uses_isolated_plan_state(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
     _configure_result_consistency_runner(
@@ -3238,11 +3298,32 @@ def test_transaction_cost_robustness_result_attaches_meta_without_cache_pollutio
     assert meta["stress_multipliers"] == [2.0, 5.0]
     assert meta["stress_scenarios"][0]["multiplier"] == pytest.approx(2.0)
     assert any(
-        "transaction_cost_robustness_negative_profit" in reason
-        for reason in meta["breach_reasons"]
+        "transaction_cost_robustness_negative_profit" in breach_reason
+        for breach_reason in meta["breach_reasons"]
     )
     assert runner.evaluation_cache.retrieved == []
     assert runner.results_cache.saved == []
+
+
+def test_transaction_cost_robustness_result_analytics_missing_stress_multipliers_returns_no_reason(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _, _, _, _, run_ctx = _build_transaction_cost_validation_artifacts(
+        runner,
+        strategy_name="dummy",
+        policy=_transaction_cost_robustness_config(mode="analytics", stress_multipliers=[]),
+    )
+
+    reason, meta = runner._transaction_cost_robustness_result(run_ctx)
+
+    assert reason is None
+    assert meta is not None
+    assert meta["is_complete"] is False
+    assert meta["status"] == "indeterminate"
+    assert meta["reason"] == "missing_stress_multipliers"
+    assert meta["mode"] == "analytics"
+    assert meta["stress_multipliers"] == []
 
 
 def test_transaction_cost_robustness_result_enforce_rejects_on_metric_drop_boundary(
@@ -3325,6 +3406,57 @@ def test_transaction_cost_robustness_scenario_reuses_aligned_signals(tmp_path, m
     assert second["is_complete"] is True
     assert signal_calls["count"] == 1
     assert run_ctx.aligned_signals is not None
+
+
+def test_transaction_cost_robustness_scenario_non_positive_baseline_is_indeterminate(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _, _, _, _, run_ctx = _build_transaction_cost_validation_artifacts(
+        runner,
+        strategy_name="dummy",
+        policy=_transaction_cost_robustness_config(mode="analytics"),
+        baseline_metric=0.0,
+    )
+    _patch_transaction_cost_evaluator(monkeypatch)
+
+    scenario = runner._transaction_cost_robustness_scenario(run_ctx, 2.0)
+
+    assert scenario["metric_drop_pct"] is None
+    assert scenario["is_complete"] is False
+    assert scenario["status"] == "indeterminate"
+    assert scenario["metric_drop_exceeded"] is False
+
+
+def test_transaction_cost_robustness_scenario_uses_stable_evaluation_exception_reason(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _, _, _, _, run_ctx = _build_transaction_cost_validation_artifacts(
+        runner,
+        strategy_name="dummy",
+        policy=_transaction_cost_robustness_config(mode="analytics"),
+    )
+    index = run_ctx.context.validated_data.raw_df.index
+    entries = np.zeros(len(index), dtype=int)
+    exits = np.zeros(len(index), dtype=int)
+    run_ctx.aligned_signals = (
+        pd.Series(entries, index=index),
+        pd.Series(exits, index=index),
+    )
+
+    def _raise_eval_error(*_args, **_kwargs):
+        raise RuntimeError("transient eval failure")
+
+    monkeypatch.setattr(runner, "_evaluate_strategy_outcome", _raise_eval_error)
+
+    scenario = runner._transaction_cost_robustness_scenario(run_ctx, 2.0)
+
+    assert scenario["is_complete"] is False
+    assert scenario["status"] == "indeterminate"
+    assert scenario["reason"] == "evaluation_exception"
+    assert scenario["exception_type"] == "RuntimeError"
+    assert scenario["exception_message"] == "transient eval failure"
 
 
 @pytest.mark.parametrize(
@@ -3442,7 +3574,9 @@ def test_transaction_cost_breakeven_binary_search_uses_strict_threshold_partitio
 
     assert meta["upper_multiplier"] == pytest.approx(2.0)
     assert meta["lower_multiplier"] == pytest.approx(1.0)
-    assert meta["metric_drop_pct"] == pytest.approx(midpoint_drop)
+    assert meta["metric_drop_pct"] == pytest.approx(
+        runner._transaction_cost_robustness_scenario(run_ctx, 1.5)["metric_drop_pct"]
+    )
 
 
 def test_transaction_cost_breakeven_is_indeterminate_for_invalid_baseline_metric(
@@ -3526,6 +3660,62 @@ def test_run_all_transaction_cost_robustness_rejects_in_enforce_mode(
         and expected_failure_substring in failure["error"]
         for failure in runner.failures
     )
+
+
+def test_strategy_validation_transaction_cost_robustness_enforce_rejects_non_dict_best_params(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    _configure_result_consistency_runner(
+        runner,
+        strategy_name="dummy",
+        strategy_cls=_DummyStrategy,
+        result_consistency=_result_consistency_config(
+            transaction_cost_robustness=_transaction_cost_robustness_config(mode="enforce")
+        ),
+    )
+    outcome = StrategyEvalOutcome(
+        best_val=0.85,
+        best_params=None,
+        best_stats={"profit": 0.15, "trades": 2},
+        has_valid_candidate=True,
+        evaluations=1,
+        skipped_reason=None,
+        strategy="dummy",
+        job=JobContext(
+            collection=runner.cfg.collections[0],
+            symbol="AAPL",
+            timeframe="1d",
+            source="custom",
+        ),
+    )
+    _, _, _, context, _ = _build_strategy_validation_artifacts(
+        runner,
+        strategy_name="dummy",
+        prepared_data=_make_prepared_data(),
+        outcome=outcome,
+    )
+
+    decision = runner._strategy_validate_results_common(context)
+
+    assert decision.passed is False
+    assert decision.action == "reject_result"
+    assert (
+        "transaction_cost_robustness_indeterminate(reason=missing_transaction_cost_robustness_params)"
+        in decision.reasons
+    )
+    post_run_meta = outcome.best_stats.get("post_run_meta")
+    assert post_run_meta is not None
+    assert post_run_meta["transaction_cost_robustness"] == {
+        "is_complete": False,
+        "status": "indeterminate",
+        "reason": "missing_transaction_cost_robustness_params",
+        "metric_name": runner.cfg.metric,
+        "mode": "enforce",
+        "stress_multipliers": [2.0, 5.0],
+        "max_metric_drop_pct": 0.3,
+        "best_params_type": "NoneType",
+    }
 
 
 def test_run_all_reliability_not_verified_skips_job(tmp_path, monkeypatch):
