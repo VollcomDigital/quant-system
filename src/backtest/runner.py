@@ -20,6 +20,7 @@ from ..config import (
     CollectionConfig,
     Config,
     ResultConsistencyConfig,
+    ResultConsistencyDataIntegrityAuditConfig,
     ResultConsistencyExecutionPriceVarianceConfig,
     ResultConsistencyTransactionCostBreakevenConfig,
     ResultConsistencyTransactionCostRobustnessConfig,
@@ -235,6 +236,7 @@ class BacktestRunner:
         "result_consistency.outlier_dependency",
         "result_consistency.execution_price_variance",
         "result_consistency.lookahead_shuffle_test",
+        "result_consistency.data_integrity_audit",
         "result_consistency.transaction_cost_robustness",
     )
 
@@ -452,6 +454,20 @@ class BacktestRunner:
         }
 
     @staticmethod
+    def _serialize_data_integrity_audit_profile(
+        data_integrity_audit: Any,
+    ) -> dict[str, Any] | None:
+        if data_integrity_audit is None:
+            return None
+        return {
+            "min_overlap_ratio": getattr(data_integrity_audit, "min_overlap_ratio", None),
+            "max_median_ohlc_diff_bps": getattr(
+                data_integrity_audit, "max_median_ohlc_diff_bps", None
+            ),
+            "max_p95_ohlc_diff_bps": getattr(data_integrity_audit, "max_p95_ohlc_diff_bps", None),
+        }
+
+    @staticmethod
     def _serialize_transaction_cost_breakeven_profile(
         breakeven: Any,
     ) -> dict[str, Any] | None:
@@ -561,6 +577,9 @@ class BacktestRunner:
             "lookahead_shuffle_test": BacktestRunner._serialize_lookahead_shuffle_test_profile(
                 getattr(result_consistency, "lookahead_shuffle_test", None)
             ),
+            "data_integrity_audit": BacktestRunner._serialize_data_integrity_audit_profile(
+                getattr(result_consistency, "data_integrity_audit", None)
+            ),
             "transaction_cost_robustness": BacktestRunner._serialize_transaction_cost_robustness_profile(
                 getattr(result_consistency, "transaction_cost_robustness", None)
             ),
@@ -613,6 +632,8 @@ class BacktestRunner:
             active.add("result_consistency.execution_price_variance")
         if getattr(result_consistency, "lookahead_shuffle_test", None) is not None:
             active.add("result_consistency.lookahead_shuffle_test")
+        if getattr(result_consistency, "data_integrity_audit", None) is not None:
+            active.add("result_consistency.data_integrity_audit")
         if getattr(result_consistency, "transaction_cost_robustness", None) is not None:
             active.add("result_consistency.transaction_cost_robustness")
         return active
@@ -1725,6 +1746,19 @@ class BacktestRunner:
         if resolved_rc is not None:
             return getattr(resolved_rc, "lookahead_shuffle_test", None)
         return None
+
+    def _load_data_integrity_audit_policy(
+        self, collection: CollectionConfig
+    ) -> ResultConsistencyDataIntegrityAuditConfig | None:
+        if not collection.reference_source:
+            return None
+        collection_validation = getattr(collection, "validation", None)
+        resolved_rc: ResultConsistencyConfig | None = (
+            getattr(collection_validation, "result_consistency", None) if collection_validation else None
+        )
+        if resolved_rc is None:
+            return None
+        return getattr(resolved_rc, "data_integrity_audit", None)
 
     def _load_transaction_cost_robustness_policy(
         self, collection: CollectionConfig
@@ -3910,6 +3944,9 @@ class BacktestRunner:
         self._run_lookahead_shuffle_validation(context, plan, outcome, reasons)
         if reasons:
             return self._strategy_validation_reject_or_continue(reasons)
+        self._run_data_integrity_audit_validation(context, outcome, reasons)
+        if reasons:
+            return self._strategy_validation_reject_or_continue(reasons)
         self._run_transaction_cost_robustness_validation(context, plan, outcome, reasons)
         return self._strategy_validation_reject_or_continue(reasons)
 
@@ -3944,6 +3981,198 @@ class BacktestRunner:
         self._attach_post_run_meta(outcome, "lookahead_shuffle_test", lookahead_meta)
         if lookahead_reason is not None:
             reasons.append(lookahead_reason)
+
+    def _run_data_integrity_audit_validation(
+        self,
+        context: ValidationContext,
+        outcome: StrategyEvalOutcome,
+        reasons: list[str],
+    ) -> None:
+        policy = self._load_data_integrity_audit_policy(context.job.collection)
+        if policy is None:
+            return
+        audit_reason, audit_meta = self._data_integrity_audit_result(context, policy)
+        self._attach_post_run_meta(outcome, "data_integrity_audit", audit_meta)
+        if audit_reason is not None:
+            reasons.append(audit_reason)
+
+    @staticmethod
+    def _data_integrity_audit_indeterminate(
+        reason: str,
+        *,
+        collection: CollectionConfig,
+        policy: ResultConsistencyDataIntegrityAuditConfig,
+        details: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        meta: dict[str, Any] = {
+            "is_complete": False,
+            "status": "indeterminate",
+            "reason": reason,
+            "source": collection.source,
+            "reference_source": collection.reference_source,
+            "min_overlap_ratio": policy.min_overlap_ratio,
+            "max_median_ohlc_diff_bps": policy.max_median_ohlc_diff_bps,
+            "max_p95_ohlc_diff_bps": policy.max_p95_ohlc_diff_bps,
+        }
+        if details:
+            meta.update(details)
+        return f"data_integrity_audit_indeterminate(reason={reason})", meta
+
+    @staticmethod
+    def _data_integrity_audit_reference_collection(collection: CollectionConfig) -> CollectionConfig | None:
+        if not collection.reference_source:
+            return None
+        return CollectionConfig(
+            name=collection.name,
+            source=collection.reference_source,
+            symbols=list(collection.symbols),
+            reference_source=collection.reference_source,
+            exchange=collection.exchange,
+            currency=collection.currency,
+            quote=collection.quote,
+            fees=collection.fees,
+            slippage=collection.slippage,
+            validation=collection.validation,
+        )
+
+    @staticmethod
+    def _data_integrity_ohlc_diff_metrics(
+        primary: pd.DataFrame,
+        reference: pd.DataFrame,
+    ) -> dict[str, float]:
+        eps = 1e-12
+        columns = ["Open", "High", "Low", "Close"]
+        diffs: list[np.ndarray] = []
+        for column in columns:
+            lhs = primary[column].to_numpy(dtype=float)
+            rhs = reference[column].to_numpy(dtype=float)
+            rel = np.abs(lhs - rhs) / np.maximum(np.abs(rhs), eps)
+            diffs.append(rel * 10000.0)
+        all_diffs = np.concatenate(diffs) if diffs else np.array([], dtype=float)
+        if all_diffs.size == 0:
+            return {
+                "median_ohlc_diff_bps": float("nan"),
+                "p95_ohlc_diff_bps": float("nan"),
+                "max_ohlc_diff_bps": float("nan"),
+            }
+        return {
+            "median_ohlc_diff_bps": float(np.nanmedian(all_diffs)),
+            "p95_ohlc_diff_bps": float(np.nanpercentile(all_diffs, 95)),
+            "max_ohlc_diff_bps": float(np.nanmax(all_diffs)),
+        }
+
+    def _data_integrity_audit_result(
+        self,
+        context: ValidationContext,
+        policy: ResultConsistencyDataIntegrityAuditConfig,
+    ) -> tuple[str | None, dict[str, Any]]:
+        validated_data = context.validated_data
+        if validated_data is None:
+            return self._data_integrity_audit_indeterminate(
+                "missing_validated_data",
+                collection=context.job.collection,
+                policy=policy,
+            )
+        reference_collection = self._data_integrity_audit_reference_collection(context.job.collection)
+        if reference_collection is None:
+            return self._data_integrity_audit_indeterminate(
+                "missing_reference_source",
+                collection=context.job.collection,
+                policy=policy,
+            )
+        _, _, _, _, _, _, _, _, _, _, calendar_timezone = self._load_data_quality_policy(
+            context.job.collection
+        )
+        try:
+            reference_source = self._make_source(reference_collection)
+            reference_raw_df = reference_source.fetch(context.job.symbol, context.job.timeframe, only_cached=False)
+            reference_df, reference_canonicalization = self._canonicalize_validation_frame(
+                reference_raw_df,
+                calendar_timezone=calendar_timezone,
+            )
+        except Exception as exc:
+            return self._data_integrity_audit_indeterminate(
+                "reference_fetch_failed",
+                collection=context.job.collection,
+                policy=policy,
+                details={"error": str(exc)},
+            )
+        primary_df = validated_data.raw_df
+        if primary_df.empty or reference_df.empty:
+            return self._data_integrity_audit_indeterminate(
+                "empty_frame",
+                collection=context.job.collection,
+                policy=policy,
+                details={
+                    "primary_bars": int(len(primary_df)),
+                    "reference_bars": int(len(reference_df)),
+                },
+            )
+        required_columns = ["Open", "High", "Low", "Close"]
+        missing_columns = [
+            name
+            for name in required_columns
+            if name not in primary_df.columns or name not in reference_df.columns
+        ]
+        if missing_columns:
+            return self._data_integrity_audit_indeterminate(
+                "missing_ohlc_columns",
+                collection=context.job.collection,
+                policy=policy,
+                details={"missing_columns": missing_columns},
+            )
+        overlap_index = primary_df.index.intersection(reference_df.index)
+        primary_bars = int(len(primary_df))
+        reference_bars = int(len(reference_df))
+        overlap_bars = int(len(overlap_index))
+        overlap_ratio = float(overlap_bars / primary_bars) if primary_bars > 0 else 0.0
+        missing_primary_bar_pct = float((1.0 - overlap_ratio) * 100.0)
+        overlap_primary = primary_df.loc[overlap_index, required_columns]
+        overlap_reference = reference_df.loc[overlap_index, required_columns]
+        divergence = self._data_integrity_ohlc_diff_metrics(overlap_primary, overlap_reference)
+        max_median = float(policy.max_median_ohlc_diff_bps or 0.0)
+        max_p95 = float(policy.max_p95_ohlc_diff_bps or 0.0)
+        min_overlap = float(policy.min_overlap_ratio or 0.0)
+        failed_checks: list[str] = []
+        if overlap_ratio < min_overlap:
+            failed_checks.append(
+                "overlap_ratio_below_threshold("
+                f"required={min_overlap}, available={overlap_ratio}, overlap_bars={overlap_bars}, "
+                f"primary_bars={primary_bars})"
+            )
+        median_diff = divergence["median_ohlc_diff_bps"]
+        if np.isfinite(median_diff) and median_diff > max_median:
+            failed_checks.append(
+                "median_ohlc_diff_bps_exceeded("
+                f"max_allowed={max_median}, available={median_diff})"
+            )
+        p95_diff = divergence["p95_ohlc_diff_bps"]
+        if np.isfinite(p95_diff) and p95_diff > max_p95:
+            failed_checks.append(
+                "p95_ohlc_diff_bps_exceeded("
+                f"max_allowed={max_p95}, available={p95_diff})"
+            )
+        meta: dict[str, Any] = {
+            "is_complete": True,
+            "status": "complete",
+            "source": context.job.collection.source,
+            "reference_source": context.job.collection.reference_source,
+            "primary_bars": primary_bars,
+            "reference_bars": reference_bars,
+            "overlap_bars": overlap_bars,
+            "overlap_ratio": overlap_ratio,
+            "missing_primary_bar_pct": missing_primary_bar_pct,
+            "min_overlap_ratio": min_overlap,
+            "max_median_ohlc_diff_bps": max_median,
+            "max_p95_ohlc_diff_bps": max_p95,
+            "reference_canonicalization": reference_canonicalization,
+            **divergence,
+            "failed_checks": list(failed_checks),
+        }
+        if failed_checks:
+            reason = "data_integrity_audit_failed(" + "; ".join(failed_checks) + ")"
+            return reason, meta
+        return None, meta
 
     def _run_transaction_cost_robustness_validation(
         self,
