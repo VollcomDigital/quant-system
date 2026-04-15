@@ -54,6 +54,10 @@ validation:
   result_consistency:
     min_metric: 0.5  # fail fast: require at least this metric before expensive checks
     min_trades: 20  # fail fast: require at least this many closed trades
+    data_integrity_audit:
+      min_overlap_ratio: 0.99  # min shared timestamps between source and reference_source
+      max_median_ohlc_diff_bps: 5.0  # median OHLC drift tolerance (bps)
+      max_p95_ohlc_diff_bps: 20.0  # tail OHLC drift tolerance (bps)
     outlier_dependency:
       slices: 5  # split trade history into N equal time-slices for diagnostics
       profit_share_threshold: 0.80
@@ -80,6 +84,7 @@ collections:
   # Stocks (large-cap growth)
   - name: stocks_large_cap_growth
     source: yfinance
+    reference_source: twelvedata  # optional golden source for post-run data-integrity audit
     symbols: ["CNDX.L", "AAPL", "MSFT", "NVDA"]
     fees: 0.0005  # approx IBKR
     slippage: 0.0005
@@ -101,6 +106,7 @@ collections:
   # Crypto (Binance via ccxt)
   - name: crypto
     source: binance
+    reference_source: bybit  # optional golden source; activates data_integrity_audit defaults if unset
     exchange: binance
     quote: USDT
     symbols: ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT"]
