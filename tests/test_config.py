@@ -110,6 +110,112 @@ metric: sharpe
     assert cfg.evaluation_mode == "backtest"
 
 
+def test_load_config_rejects_non_mapping_root(tmp_path: Path):
+    path = tmp_path / "config.yaml"
+    path.write_text("- not-a-mapping\n")
+
+    with pytest.raises(ValueError, match=r"Invalid `config`: expected a mapping"):
+        load_config(path)
+
+
+def test_load_config_rejects_missing_required_root_keys(tmp_path: Path):
+    path = tmp_path / "config.yaml"
+    path.write_text("metric: sharpe\n")
+
+    with pytest.raises(
+        ValueError,
+        match=r"Invalid `config`: missing required key\(s\): `collections`, `timeframes`",
+    ):
+        load_config(path)
+
+
+def test_load_config_rejects_non_list_timeframes(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: 1d
+metric: sharpe
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"Invalid `timeframes`: expected a list"):
+        load_config(path)
+
+
+def test_load_config_rejects_non_mapping_strategy_item(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+strategies:
+  - invalid
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"Invalid `strategies\[0\]`: expected a mapping"):
+        load_config(path)
+
+
+def test_load_config_rejects_strategy_missing_name(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+strategies:
+  - params: {}
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"Invalid `strategies\[0\]`: missing required key\(s\): `name`"):
+        load_config(path)
+
+
+def test_load_config_rejects_non_mapping_notifications(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+notifications: true
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"Invalid `notifications`: expected a mapping"):
+        load_config(path)
+
+
+def test_load_config_rejects_non_mapping_notifications_slack(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+notifications:
+  slack: true
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"Invalid `notifications.slack`: expected a mapping"):
+        load_config(path)
+
+
 def test_load_config_rejects_non_finite_top_level_numeric_values(tmp_path: Path):
     config_text = """
 collections:
@@ -124,6 +230,36 @@ fees: .inf
     path.write_text(config_text)
 
     with pytest.raises(ValueError, match=r"`fees` must be finite"):
+        load_config(path)
+
+
+def test_load_config_rejects_non_list_collections(tmp_path: Path):
+    config_text = """
+collections:
+  name: test
+  source: yfinance
+  symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"expected a list at `collections`"):
+        load_config(path)
+
+
+def test_load_config_rejects_non_mapping_collection_item(tmp_path: Path):
+    config_text = """
+collections:
+  - invalid
+timeframes: ['1d']
+metric: sharpe
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"expected a mapping at `collections\[0\]`"):
         load_config(path)
 
 

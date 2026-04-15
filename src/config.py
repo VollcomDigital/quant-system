@@ -1515,6 +1515,13 @@ def require_mapping(raw: Any, prefix: str) -> dict[str, Any]:
     return cast(dict[str, Any], raw)
 
 
+def require_keys(raw: dict[str, Any], prefix: str, keys: list[str]) -> None:
+    missing = [key for key in keys if key not in raw]
+    if missing:
+        formatted = ", ".join(f"`{key}`" for key in missing)
+        raise ValueError(f"Invalid `{prefix}`: missing required key(s): {formatted}")
+
+
 def _coerce_int(value: Any, field_path: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"Invalid `{field_path}`: expected an integer")
@@ -2222,33 +2229,69 @@ def _parse_strategies(raw: dict[str, Any]) -> list[StrategyConfig]:
         )
         raise ValueError(example)
 
-    return [
-        StrategyConfig(
-            name=s["name"],
-            module=s.get("module"),
-            cls=s.get("class") or s.get("cls"),
-            params=s.get("params", {}),
+    parsed: list[StrategyConfig] = []
+    for idx, strategy_raw in enumerate(strategies_raw):
+        strategy = require_mapping(strategy_raw, f"strategies[{idx}]")
+        require_keys(strategy, f"strategies[{idx}]", ["name"])
+        params_raw = strategy.get("params", {})
+        if not isinstance(params_raw, dict):
+            raise ValueError(f"Invalid `strategies[{idx}].params`: expected a mapping")
+        parsed.append(
+            StrategyConfig(
+                name=str(strategy["name"]).strip(),
+                module=parse_optional_str(strategy, "module", normalize=False),
+                cls=(
+                    parse_optional_str(strategy, "class", normalize=False)
+                    or parse_optional_str(strategy, "cls", normalize=False)
+                ),
+                params=cast(dict[str, list[Any]], params_raw),
+            )
         )
-        for s in strategies_raw
-    ]
+    return parsed
+
+
+def _parse_timeframes(raw: dict[str, Any]) -> list[str]:
+    timeframes_raw = raw["timeframes"]
+    if not isinstance(timeframes_raw, list):
+        raise ValueError("Invalid `timeframes`: expected a list")
+    return [str(timeframe).strip() for timeframe in timeframes_raw]
+
+
+def _parse_metric(raw: dict[str, Any]) -> str:
+    metric = str(raw.get("metric", "sharpe")).strip().lower()
+    allowed = {"sharpe", "sortino", "profit"}
+    if metric not in allowed:
+        raise ValueError(f"Invalid `metric`: expected one of {sorted(allowed)}, got '{metric}'")
+    return metric
 
 
 def _parse_collections(raw_collections: Any) -> list[CollectionConfig]:
+    if not isinstance(raw_collections, list):
+        raise ValueError("Invalid `collections`: expected a list at `collections`")
+
     collections: list[CollectionConfig] = []
     for idx, collection_raw in enumerate(raw_collections):
+        if not isinstance(collection_raw, dict):
+            raise ValueError(
+                f"Invalid `collections[{idx}]`: expected a mapping at `collections[{idx}]`"
+            )
+        require_keys(collection_raw, f"collections[{idx}]", ["name", "source", "symbols"])
         collection_validation = _parse_validation(
             collection_raw.get("validation"), f"collections[{idx}].validation"
         )
+        symbols_raw = collection_raw["symbols"]
+        if not isinstance(symbols_raw, list):
+            raise ValueError(f"Invalid `collections[{idx}].symbols`: expected a list")
         collection_fees_raw = collection_raw.get("fees")
         collection_slippage_raw = collection_raw.get("slippage")
         collections.append(
             CollectionConfig(
-                name=collection_raw["name"],
-                source=collection_raw["source"],
-                symbols=collection_raw["symbols"],
-                exchange=collection_raw.get("exchange"),
-                currency=collection_raw.get("currency"),
-                quote=collection_raw.get("quote"),
+                name=str(collection_raw["name"]).strip(),
+                source=str(collection_raw["source"]).strip(),
+                symbols=[str(symbol).strip() for symbol in symbols_raw],
+                exchange=parse_optional_str(collection_raw, "exchange", normalize=False),
+                currency=parse_optional_str(collection_raw, "currency", normalize=False),
+                quote=parse_optional_str(collection_raw, "quote", normalize=False),
                 fees=(
                     _coerce_float(collection_fees_raw, f"collections[{idx}].fees")
                     if collection_fees_raw is not None
@@ -2267,25 +2310,34 @@ def _parse_collections(raw_collections: Any) -> list[CollectionConfig]:
 
 def _parse_notifications(raw: dict[str, Any]) -> NotificationsConfig | None:
     notifications_raw = raw.get("notifications")
-    if not isinstance(notifications_raw, dict):
+    if notifications_raw is None:
         return None
+    if not isinstance(notifications_raw, dict):
+        raise ValueError("Invalid `notifications`: expected a mapping")
 
     slack_raw = notifications_raw.get("slack")
-    if not isinstance(slack_raw, dict) or not slack_raw.get("webhook_url"):
+    if slack_raw is None:
+        return None
+    if not isinstance(slack_raw, dict):
+        raise ValueError("Invalid `notifications.slack`: expected a mapping")
+    if not slack_raw.get("webhook_url"):
         return None
 
     threshold_raw = slack_raw.get("threshold")
+    metric = parse_optional_str(slack_raw, "metric")
+    if metric is None:
+        metric = str(raw.get("metric", "sharpe")).strip().lower()
     return NotificationsConfig(
         slack=SlackNotificationConfig(
-            webhook_url=slack_raw["webhook_url"],
-            metric=slack_raw.get("metric", raw.get("metric", "sharpe")),
+            webhook_url=str(slack_raw["webhook_url"]).strip(),
+            metric=metric,
             threshold=(
                 _coerce_float(threshold_raw, "notifications.slack.threshold")
                 if threshold_raw is not None
                 else None
             ),
-            channel=slack_raw.get("channel"),
-            username=slack_raw.get("username"),
+            channel=parse_optional_str(slack_raw, "channel", normalize=False),
+            username=parse_optional_str(slack_raw, "username", normalize=False),
         )
     )
 
@@ -2302,18 +2354,21 @@ def _parse_evaluation_mode(raw: dict[str, Any]) -> str:
 
 def load_config(path: str | Path) -> Config:
     with open(path) as f:
-        raw = yaml.safe_load(f)
+        raw = require_mapping(yaml.safe_load(f), "config")
+    require_keys(raw, "config", ["collections", "timeframes"])
 
     strategies = _parse_strategies(raw)
     collections = _parse_collections(raw["collections"])
+    timeframes = _parse_timeframes(raw)
+    metric = _parse_metric(raw)
     notifications_cfg = _parse_notifications(raw)
     validation_cfg = _parse_validation(raw.get("validation"), "validation")
     evaluation_mode = _parse_evaluation_mode(raw)
 
     cfg = Config(
         collections=collections,
-        timeframes=raw["timeframes"],
-        metric=raw.get("metric", "sharpe").lower(),
+        timeframes=timeframes,
+        metric=metric,
         strategies=strategies,
         engine=str(raw.get("engine", "pybroker")).lower(),
         param_search=str(raw.get("param_search", raw.get("param_optimizer", "grid"))).lower(),
