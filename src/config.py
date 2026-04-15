@@ -2178,10 +2178,7 @@ def _parse_result_consistency_transaction_cost_robustness(
     )
 
 
-def load_config(path: str | Path) -> Config:
-    with open(path) as f:
-        raw = yaml.safe_load(f)
-
+def _parse_strategies(raw: dict[str, Any]) -> list[StrategyConfig]:
     strategies_raw = raw.get("strategies")
     # `strategies` is an optional override. Missing/empty means "discover all external strategies".
     if strategies_raw is None:
@@ -2196,19 +2193,33 @@ def load_config(path: str | Path) -> Config:
         )
         raise ValueError(example)
 
+    return [
+        StrategyConfig(
+            name=s["name"],
+            module=s.get("module"),
+            cls=s.get("class") or s.get("cls"),
+            params=s.get("params", {}),
+        )
+        for s in strategies_raw
+    ]
+
+
+def _parse_collections(raw_collections: Any) -> list[CollectionConfig]:
     collections: list[CollectionConfig] = []
-    for idx, c in enumerate(raw["collections"]):
-        collection_validation = _parse_validation(c.get("validation"), f"collections[{idx}].validation")
-        collection_fees_raw = c.get("fees")
-        collection_slippage_raw = c.get("slippage")
+    for idx, collection_raw in enumerate(raw_collections):
+        collection_validation = _parse_validation(
+            collection_raw.get("validation"), f"collections[{idx}].validation"
+        )
+        collection_fees_raw = collection_raw.get("fees")
+        collection_slippage_raw = collection_raw.get("slippage")
         collections.append(
             CollectionConfig(
-                name=c["name"],
-                source=c["source"],
-                symbols=c["symbols"],
-                exchange=c.get("exchange"),
-                currency=c.get("currency"),
-                quote=c.get("quote"),
+                name=collection_raw["name"],
+                source=collection_raw["source"],
+                symbols=collection_raw["symbols"],
+                exchange=collection_raw.get("exchange"),
+                currency=collection_raw.get("currency"),
+                quote=collection_raw.get("quote"),
                 fees=(
                     _coerce_float(collection_fees_raw, f"collections[{idx}].fees")
                     if collection_fees_raw is not None
@@ -2222,47 +2233,53 @@ def load_config(path: str | Path) -> Config:
                 validation=collection_validation,
             )
         )
+    return collections
 
-    strategies = [
-        StrategyConfig(
-            name=s["name"],
-            module=s.get("module"),
-            cls=s.get("class") or s.get("cls"),
-            params=s.get("params", {}),
-        )
-        for s in strategies_raw
-    ]
 
-    notifications_cfg = None
+def _parse_notifications(raw: dict[str, Any]) -> NotificationsConfig | None:
     notifications_raw = raw.get("notifications")
-    if isinstance(notifications_raw, dict):
-        slack_raw = notifications_raw.get("slack")
-        slack_cfg = None
-        if isinstance(slack_raw, dict) and slack_raw.get("webhook_url"):
-            threshold_raw = slack_raw.get("threshold")
-            slack_cfg = SlackNotificationConfig(
-                webhook_url=slack_raw["webhook_url"],
-                metric=slack_raw.get("metric", raw.get("metric", "sharpe")),
-                threshold=(
-                    _coerce_float(threshold_raw, "notifications.slack.threshold")
-                    if threshold_raw is not None
-                    else None
-                ),
-                channel=slack_raw.get("channel"),
-                username=slack_raw.get("username"),
-            )
-        if slack_cfg is not None:
-            notifications_cfg = NotificationsConfig(slack=slack_cfg)
+    if not isinstance(notifications_raw, dict):
+        return None
 
-    validation_cfg = _parse_validation(raw.get("validation"), "validation")
+    slack_raw = notifications_raw.get("slack")
+    if not isinstance(slack_raw, dict) or not slack_raw.get("webhook_url"):
+        return None
 
+    threshold_raw = slack_raw.get("threshold")
+    return NotificationsConfig(
+        slack=SlackNotificationConfig(
+            webhook_url=slack_raw["webhook_url"],
+            metric=slack_raw.get("metric", raw.get("metric", "sharpe")),
+            threshold=(
+                _coerce_float(threshold_raw, "notifications.slack.threshold")
+                if threshold_raw is not None
+                else None
+            ),
+            channel=slack_raw.get("channel"),
+            username=slack_raw.get("username"),
+        )
+    )
+
+
+def _parse_evaluation_mode(raw: dict[str, Any]) -> str:
     evaluation_mode = str(raw.get("evaluation_mode", "backtest")).strip().lower()
     allowed_modes = {"backtest", "walk_forward"}
     if evaluation_mode not in allowed_modes:
         raise ValueError(
             f"Invalid `evaluation_mode`: expected one of {sorted(allowed_modes)}, got '{evaluation_mode}'"
         )
+    return evaluation_mode
 
+
+def load_config(path: str | Path) -> Config:
+    with open(path) as f:
+        raw = yaml.safe_load(f)
+
+    strategies = _parse_strategies(raw)
+    collections = _parse_collections(raw["collections"])
+    notifications_cfg = _parse_notifications(raw)
+    validation_cfg = _parse_validation(raw.get("validation"), "validation")
+    evaluation_mode = _parse_evaluation_mode(raw)
     param_trials = _coerce_int(raw.get("param_trials", raw.get("opt_trials", 25)), "param_trials")
     max_workers = _coerce_int(raw.get("max_workers", raw.get("asset_workers", 1)), "max_workers")
     asset_workers = _coerce_int(raw.get("asset_workers", raw.get("max_workers", 1)), "asset_workers")
