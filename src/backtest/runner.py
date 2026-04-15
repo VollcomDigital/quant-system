@@ -1977,7 +1977,7 @@ class BacktestRunner:
         return (
             "ohlc_integrity_invalid_bar_pct_exceeded("
             f"max_allowed={threshold}, "
-            f"available={invalid_pct}, "
+            f"observed={invalid_pct}, "
             f"invalid_bars={invalid_bars}, "
             f"total_bars={total}, "
             f"non_finite={int(non_finite.sum())}, "
