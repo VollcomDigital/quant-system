@@ -206,15 +206,20 @@ See new collection examples under `config/collections/` for FX intraday via Finn
   - `min_data_points` is optional: minimum number of bars required
   - `is_verified` is optional: set `false` to mark a collection as manually unverified and
     emit `collection_not_verified`
+  - `calendar` is optional and controls continuity expectations:
+    - `kind: auto | crypto_24_7 | weekday | exchange`
+    - `timezone: UTC or UTC±HH:MM`
+    - `auto` resolves to `crypto_24_7` for crypto sources and `weekday` otherwise
+    - `exchange` uses `exchange_calendars` for daily session-aware continuity (holidays excluded)
+    - non-daily checks use fixed-delta continuity (not weekday filtering)
   - `continuity` is optional:
     - `min_score` minimum continuity score (0..1)
     - `max_missing_bar_pct` maximum missing bars percentage across expected bars
-    - `calendar` is optional and controls continuity expectations:
-      - `kind: auto | crypto_24_7 | weekday | exchange`
-      - `timezone: UTC or UTC±HH:MM`
-      - `auto` resolves to `crypto_24_7` for crypto sources and `weekday` otherwise
-      - `exchange` uses `exchange_calendars` for daily session-aware continuity (holidays excluded)
-      - non-daily checks use fixed-delta continuity (not weekday filtering)
+  - `ohlc_integrity` (optional module; active when configured):
+    - `max_invalid_bar_pct` (optional, default `0.0`): maximum percent of bars allowed to violate OHLC invariants
+    - `allow_negative_price` (optional, default `false`)
+    - `allow_negative_volume` (optional, default `false`)
+    - fixed-action: emit `ohlc_integrity_invalid_bar_pct_exceeded(...)` when threshold is breached
   - `kurtosis` is optional: maximum kurtosis of close-to-close returns
   - `outlier_detection` (optional module; active when configured):
     - `max_outlier_pct` (required): maximum percentage of return bars classified as outliers
@@ -232,6 +237,8 @@ See new collection examples under `config/collections/` for FX intraday via Finn
       are treated as an explicit indeterminate reliability reason. If ADF and KPSS disagree,
       a stationarity conflict reason is emitted.
   - continuity diagnostics are always computed.
+  - continuity diagnostics run on canonicalized bars; duplicate bars removed during canonicalization
+    are included in continuity duplicate-bar scoring.
   - when `validation.data_quality` is configured, continuity precondition failures
     (for example fewer than 2 bars) fail data validation (`skip_job`).
   - when `validation.data_quality` is unset, continuity diagnostics are best-effort and
@@ -259,14 +266,13 @@ See new collection examples under `config/collections/` for FX intraday via Finn
       after applying tolerance.
     - missing/truncated fill metadata is non-blocking (`continue`); diagnostics are marked incomplete.
   - `lookahead_shuffle_test` (optional module; active when configured):
-    - `permutations` (optional, default `20`): number of deterministic OHLCV bar shuffles to evaluate
-    - `threshold` (optional, default `0.0`): median shuffled metric above this value is suspicious
+    - `permutations` (required, must be `>= 100`): number of deterministic OHLCV bar shuffles to evaluate
+    - `pvalue_max` (required, `0..1`): maximum allowed p-value from shuffle diagnostics
     - `seed` (optional, default `1337`): base seed combined with collection/symbol/timeframe/strategy
     - `max_failed_permutations` (optional, default unset): max allowed failed permutation
       evaluations before the module returns an indeterminate rejection
     - the runner permutes whole bars and reruns the selected strategy result after backtest
-      evaluation to detect look-ahead style behavior when the median shuffled metric remains above
-      the threshold
+      evaluation to detect look-ahead style behavior
   - `transaction_cost_robustness` (optional module; active when configured):
     - `mode` (required): `analytics | enforce`
       - `analytics`: compute diagnostics and attach metadata, but do not reject
@@ -293,6 +299,12 @@ Structured logs reflect this directly via gate actions:
 - `strategy_validation_gate` can emit `reject_result` for outlier dependency,
   execution price variance, and lookahead shuffle testing.
 
+Numeric config parsing follows `src/config.py` coercion helpers:
+- numeric fields are strict types: use YAML numbers, not quoted numeric strings
+- booleans are rejected for numeric fields (for example `true` is invalid for `int`/`float` fields)
+- non-finite values (`nan`, `inf`) are rejected
+- boolean fields are strict booleans only (`true`/`false` in YAML); quoted strings like `"true"` are rejected
+
 ### Optimization Only on Reliable Collections
 
 Use `validation.data_quality` to decide whether unreliable collections should only skip
@@ -302,11 +314,15 @@ optimization or block execution entirely:
   collection/symbol/timeframe, and falls back to baseline evaluation where the strategy supports it.
 - `on_fail: skip_job` blocks the current collection/symbol/timeframe job.
 - `on_fail: skip_collection` blocks the rest of the jobs in that collection after the first failure.
+- when optimization is skipped by this policy, optimization metadata records only skip markers
+  (`optimization.reasons`), while detailed reliability causes remain in
+  validation gate/failure reasons.
 
 Configured data-quality reliability reasons can include:
 
 - `collection_not_verified` when `validation.data_quality.is_verified: false`
 - `max_missing_bar_pct_exceeded(...)` when `continuity.max_missing_bar_pct` is breached
+- `ohlc_integrity_invalid_bar_pct_exceeded(...)` when `ohlc_integrity.max_invalid_bar_pct` is breached
 - `max_kurtosis_exceeded(...)` when `kurtosis` is breached
 - stationarity or outlier reasons when those modules are configured
 

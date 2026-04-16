@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,8 @@ from src.config import (
     ValidationStationarityConfig,
     ValidationStationarityRegimeShiftConfig,
     load_config,
+    parse_optional_float,
+    parse_optional_int,
     parse_optional_float_list,
     resolve_validation_overrides,
 )
@@ -64,6 +67,32 @@ def _transaction_cost_robustness_block(**overrides):
     return block
 
 
+def test_parse_optional_float_rejects_non_finite_values():
+    with pytest.raises(ValueError, match=r"must be finite"):
+        parse_optional_float({"threshold": math.nan}, "validation.result_consistency", "threshold")
+
+    with pytest.raises(ValueError, match=r"must be finite"):
+        parse_optional_float({"threshold": math.inf}, "validation.result_consistency", "threshold")
+
+
+def test_parse_optional_int_rejects_boolean_values():
+    with pytest.raises(ValueError, match=r"expected an integer"):
+        parse_optional_int({"permutations": True}, "validation.result_consistency", "permutations")
+
+
+def test_parse_optional_int_rejects_numeric_strings_and_floats():
+    with pytest.raises(ValueError, match=r"expected an integer"):
+        parse_optional_int({"permutations": "100"}, "validation.result_consistency", "permutations")
+
+    with pytest.raises(ValueError, match=r"expected an integer"):
+        parse_optional_int({"permutations": 100.0}, "validation.result_consistency", "permutations")
+
+
+def test_parse_optional_float_rejects_numeric_strings():
+    with pytest.raises(ValueError, match=r"expected a number"):
+        parse_optional_float({"threshold": "0.25"}, "validation.result_consistency", "threshold")
+
+
 def test_load_config_allows_missing_strategies(tmp_path: Path):
     config_text = """
 collections:
@@ -79,6 +108,159 @@ metric: sharpe
     cfg = load_config(path)
     assert cfg.strategies == []
     assert cfg.evaluation_mode == "backtest"
+
+
+def test_load_config_rejects_non_mapping_root(tmp_path: Path):
+    path = tmp_path / "config.yaml"
+    path.write_text("- not-a-mapping\n")
+
+    with pytest.raises(ValueError, match=r"Invalid `config`: expected a mapping"):
+        load_config(path)
+
+
+def test_load_config_rejects_missing_required_root_keys(tmp_path: Path):
+    path = tmp_path / "config.yaml"
+    path.write_text("metric: sharpe\n")
+
+    with pytest.raises(
+        ValueError,
+        match=r"Invalid `config`: missing required key\(s\): `collections`, `timeframes`",
+    ):
+        load_config(path)
+
+
+def test_load_config_rejects_non_list_timeframes(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: 1d
+metric: sharpe
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"Invalid `timeframes`: expected a list"):
+        load_config(path)
+
+
+def test_load_config_rejects_non_mapping_strategy_item(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+strategies:
+  - invalid
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"Invalid `strategies\[0\]`: expected a mapping"):
+        load_config(path)
+
+
+def test_load_config_rejects_strategy_missing_name(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+strategies:
+  - params: {}
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"Invalid `strategies\[0\]`: missing required key\(s\): `name`"):
+        load_config(path)
+
+
+def test_load_config_rejects_non_mapping_notifications(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+notifications: true
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"Invalid `notifications`: expected a mapping"):
+        load_config(path)
+
+
+def test_load_config_rejects_non_mapping_notifications_slack(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+notifications:
+  slack: true
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"Invalid `notifications.slack`: expected a mapping"):
+        load_config(path)
+
+
+def test_load_config_rejects_non_finite_top_level_numeric_values(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+fees: .inf
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"`fees` must be finite"):
+        load_config(path)
+
+
+def test_load_config_rejects_non_list_collections(tmp_path: Path):
+    config_text = """
+collections:
+  name: test
+  source: yfinance
+  symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"expected a list at `collections`"):
+        load_config(path)
+
+
+def test_load_config_rejects_non_mapping_collection_item(tmp_path: Path):
+    config_text = """
+collections:
+  - invalid
+timeframes: ['1d']
+metric: sharpe
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"expected a mapping at `collections\[0\]`"):
+        load_config(path)
 
 
 def test_load_config_accepts_evaluation_mode(tmp_path: Path):
@@ -162,6 +344,26 @@ validation:
     assert cfg.validation is not None
     assert cfg.validation.data_quality is not None
     assert cfg.validation.data_quality.is_verified is False
+
+
+def test_load_config_reliability_thresholds_rejects_string_is_verified(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    is_verified: "false"
+    on_fail: skip_job
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"validation\.data_quality\.is_verified"):
+        load_config(path)
 
 
 def test_load_config_lookahead_shuffle_test_defaults(tmp_path: Path):
@@ -261,6 +463,31 @@ def test_load_config_transaction_cost_robustness_requires_mode(tmp_path: Path):
                         "stress_multipliers": [2.0, 5.0],
                         "max_metric_drop_pct": 0.3,
                     }
+                )
+            },
+        )
+
+
+def test_load_config_transaction_cost_robustness_rejects_string_breakeven_enabled(
+    tmp_path: Path,
+):
+    with pytest.raises(
+        ValueError,
+        match=r"validation\.result_consistency\.transaction_cost_robustness\.breakeven\.enabled",
+    ):
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(
+                    transaction_cost_robustness=_transaction_cost_robustness_block(
+                        breakeven={
+                            "enabled": "true",
+                            "min_multiplier": 1.0,
+                            "max_multiplier": 5.0,
+                            "max_iterations": 8,
+                            "tolerance": 0.05,
+                        },
+                    )
                 )
             },
         )
@@ -972,11 +1199,10 @@ metric: sharpe
 validation:
   data_quality:
     on_fail: skip_job
-    continuity:
-      calendar:
-        kind: exchange
-        exchange: XNYS
-        timezone: UTC-05:00
+    calendar:
+      kind: exchange
+      exchange: XNYS
+      timezone: UTC-05:00
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -984,11 +1210,10 @@ validation:
     cfg = load_config(path)
     assert cfg.validation is not None
     assert cfg.validation.data_quality is not None
-    assert cfg.validation.data_quality.continuity is not None
-    assert cfg.validation.data_quality.continuity.calendar is not None
-    assert cfg.validation.data_quality.continuity.calendar.kind == "exchange"
-    assert cfg.validation.data_quality.continuity.calendar.exchange == "XNYS"
-    assert cfg.validation.data_quality.continuity.calendar.timezone == "UTC-05:00"
+    assert cfg.validation.data_quality.calendar is not None
+    assert cfg.validation.data_quality.calendar.kind == "exchange"
+    assert cfg.validation.data_quality.calendar.exchange == "XNYS"
+    assert cfg.validation.data_quality.calendar.timezone == "UTC-05:00"
 
 
 def test_load_config_data_quality_calendar_invalid_kind(tmp_path: Path):
@@ -1002,9 +1227,8 @@ metric: sharpe
 validation:
   data_quality:
     on_fail: skip_job
-    continuity:
-      calendar:
-        kind: invalid
+    calendar:
+      kind: invalid
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -1024,15 +1248,36 @@ metric: sharpe
 validation:
   data_quality:
     on_fail: skip_job
-    continuity:
-      calendar:
-        kind: exchange
-        timezone: America/New_York
+    calendar:
+      kind: exchange
+      timezone: America/New_York
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
 
     with pytest.raises(ValueError):
+        load_config(path)
+
+
+def test_load_config_data_quality_rejects_legacy_continuity_calendar_location(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    continuity:
+      calendar:
+        kind: exchange
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"validation\.data_quality\.continuity\.calendar"):
         load_config(path)
 
 
@@ -1056,8 +1301,35 @@ validation:
     cfg = load_config(path)
     assert cfg.validation is not None
     assert cfg.validation.data_quality is not None
-    assert cfg.validation.data_quality.continuity is not None
-    assert cfg.validation.data_quality.continuity.calendar is None
+    assert cfg.validation.data_quality.calendar is None
+
+
+def test_load_config_data_quality_ohlc_integrity_defaults(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    ohlc_integrity: {}
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.collections[0].validation is not None
+    effective_dq = cfg.collections[0].validation.data_quality
+    assert effective_dq is not None
+    assert effective_dq.ohlc_integrity is not None
+    assert effective_dq.ohlc_integrity.max_invalid_bar_pct == pytest.approx(0.0)
+    assert effective_dq.ohlc_integrity.allow_negative_price is False
+    assert effective_dq.ohlc_integrity.allow_negative_volume is False
 
 
 def test_load_config_data_quality_calendar_defaults_are_applied_at_effective_stage(tmp_path: Path):
@@ -1071,8 +1343,7 @@ metric: sharpe
 validation:
   data_quality:
     on_fail: skip_job
-    continuity:
-      calendar: {}
+    calendar: {}
 """
     path = tmp_path / "config.yaml"
     path.write_text(config_text)
@@ -1080,14 +1351,61 @@ validation:
     cfg = load_config(path)
     assert cfg.validation is not None
     assert cfg.validation.data_quality is not None
-    assert cfg.validation.data_quality.continuity is not None
-    assert cfg.validation.data_quality.continuity.calendar is not None
-    assert cfg.validation.data_quality.continuity.calendar.kind is None
+    assert cfg.validation.data_quality.calendar is not None
+    assert cfg.validation.data_quality.calendar.kind is None
     assert cfg.collections[0].validation is not None
     assert cfg.collections[0].validation.data_quality is not None
-    assert cfg.collections[0].validation.data_quality.continuity is not None
-    assert cfg.collections[0].validation.data_quality.continuity.calendar is not None
-    assert cfg.collections[0].validation.data_quality.continuity.calendar.kind == "auto"
+    assert cfg.collections[0].validation.data_quality.calendar is not None
+    assert cfg.collections[0].validation.data_quality.calendar.kind == "auto"
+
+
+def test_load_config_data_quality_ohlc_integrity_settings(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    ohlc_integrity:
+      max_invalid_bar_pct: 1.5
+      allow_negative_price: true
+      allow_negative_volume: false
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.validation is not None
+    assert cfg.validation.data_quality is not None
+    assert cfg.validation.data_quality.ohlc_integrity is not None
+    assert cfg.validation.data_quality.ohlc_integrity.max_invalid_bar_pct == pytest.approx(1.5)
+    assert cfg.validation.data_quality.ohlc_integrity.allow_negative_price is True
+    assert cfg.validation.data_quality.ohlc_integrity.allow_negative_volume is False
+
+
+def test_load_config_data_quality_ohlc_integrity_rejects_string_booleans(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+validation:
+  data_quality:
+    on_fail: skip_job
+    ohlc_integrity:
+      allow_negative_price: "false"
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    with pytest.raises(ValueError, match=r"validation\.data_quality\.ohlc_integrity\.allow_negative_price"):
+        load_config(path)
 
 
 def test_load_config_data_quality_outlier_settings(tmp_path: Path):

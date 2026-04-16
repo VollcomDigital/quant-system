@@ -54,8 +54,10 @@ class ValidationCalendarConfig:
 @dataclass
 class ValidationDataQualityConfig:
     min_data_points: int | None = None
+    calendar: ValidationCalendarConfig | None = None
     continuity: "ValidationContinuityConfig | None" = None
     kurtosis: float | None = None
+    ohlc_integrity: "ValidationOHLCIntegrityConfig | None" = None
     outlier_detection: "ValidationOutlierDetectionConfig | None" = None
     stationarity: "ValidationStationarityConfig | None" = None
     is_verified: bool | None = None
@@ -66,7 +68,13 @@ class ValidationDataQualityConfig:
 class ValidationContinuityConfig:
     min_score: float | None = None
     max_missing_bar_pct: float | None = None
-    calendar: ValidationCalendarConfig | None = None
+
+
+@dataclass
+class ValidationOHLCIntegrityConfig:
+    max_invalid_bar_pct: float | None = None
+    allow_negative_price: bool | None = None
+    allow_negative_volume: bool | None = None
 
 
 @dataclass
@@ -208,6 +216,7 @@ OPTIMIZATION_RUNTIME_ERROR_MAX_PER_TUPLE_MIN = 1
 RESULT_CONSISTENCY_OUTLIER_DEPENDENCY_SLICES_MIN = 2
 RESULT_CONSISTENCY_MIN_TRADES_MIN = 1
 OUTLIER_DETECTION_ZSCORE_THRESHOLD_MIN_EXCLUSIVE = 0.0
+OHLC_INTEGRITY_INVALID_BAR_PCT_DEFAULT = 0.0
 
 
 def _merged_field(base: Any, override: Any, field: str) -> Any:
@@ -332,13 +341,20 @@ def _normalize_data_quality_config(
         kurtosis = _coerce_float(kurtosis, f"{prefix}.kurtosis")
         if kurtosis < VALIDATION_NON_NEGATIVE_FLOAT_MIN:
             raise ValueError(f"`{prefix}.kurtosis` must be >= {VALIDATION_NON_NEGATIVE_FLOAT_MIN}")
+    continuity = _normalize_continuity_config(
+        getattr(cfg, "continuity", None),
+        f"{prefix}.continuity",
+    )
+    calendar = _normalize_calendar_config(getattr(cfg, "calendar", None), f"{prefix}.calendar")
     return ValidationDataQualityConfig(
         min_data_points=min_data_points,
-        continuity=_normalize_continuity_config(
-            getattr(cfg, "continuity", None),
-            f"{prefix}.continuity",
-        ),
+        calendar=calendar,
+        continuity=continuity,
         kurtosis=kurtosis,
+        ohlc_integrity=_normalize_ohlc_integrity_config(
+            getattr(cfg, "ohlc_integrity", None),
+            f"{prefix}.ohlc_integrity",
+        ),
         outlier_detection=_normalize_outlier_detection_config(
             getattr(cfg, "outlier_detection", None),
             f"{prefix}.outlier_detection",
@@ -355,8 +371,14 @@ def _normalize_data_quality_config(
 def _apply_data_quality_defaults(cfg: ValidationDataQualityConfig) -> ValidationDataQualityConfig:
     return ValidationDataQualityConfig(
         min_data_points=cfg.min_data_points,
+        calendar=_apply_calendar_defaults(cfg.calendar) if cfg.calendar is not None else None,
         continuity=_apply_continuity_defaults(cfg.continuity) if cfg.continuity is not None else None,
         kurtosis=cfg.kurtosis,
+        ohlc_integrity=(
+            _apply_ohlc_integrity_defaults(cfg.ohlc_integrity)
+            if cfg.ohlc_integrity is not None
+            else None
+        ),
         outlier_detection=(
             _apply_outlier_detection_defaults(cfg.outlier_detection)
             if cfg.outlier_detection is not None
@@ -393,7 +415,6 @@ def _normalize_continuity_config(
     return ValidationContinuityConfig(
         min_score=min_score,
         max_missing_bar_pct=max_missing_bar_pct,
-        calendar=_normalize_calendar_config(getattr(cfg, "calendar", None), f"{prefix}.calendar"),
     )
 
 
@@ -401,7 +422,49 @@ def _apply_continuity_defaults(cfg: ValidationContinuityConfig) -> ValidationCon
     return ValidationContinuityConfig(
         min_score=cfg.min_score,
         max_missing_bar_pct=cfg.max_missing_bar_pct,
-        calendar=_apply_calendar_defaults(cfg.calendar) if cfg.calendar is not None else None,
+    )
+
+
+def _normalize_ohlc_integrity_config(
+    cfg: ValidationOHLCIntegrityConfig | None,
+    prefix: str,
+) -> ValidationOHLCIntegrityConfig | None:
+    if cfg is None:
+        return None
+    max_invalid_bar_pct = getattr(cfg, "max_invalid_bar_pct", None)
+    if max_invalid_bar_pct is not None:
+        max_invalid_bar_pct = _coerce_float(max_invalid_bar_pct, f"{prefix}.max_invalid_bar_pct")
+        if max_invalid_bar_pct < VALIDATION_PERCENT_MIN or max_invalid_bar_pct > VALIDATION_PERCENT_MAX:
+            raise ValueError(
+                f"`{prefix}.max_invalid_bar_pct` must be between {VALIDATION_PERCENT_MIN} and {VALIDATION_PERCENT_MAX}"
+            )
+    allow_negative_price = getattr(cfg, "allow_negative_price", None)
+    if allow_negative_price is not None and not isinstance(allow_negative_price, bool):
+        raise ValueError(f"`{prefix}.allow_negative_price` must be a boolean or null")
+    allow_negative_volume = getattr(cfg, "allow_negative_volume", None)
+    if allow_negative_volume is not None and not isinstance(allow_negative_volume, bool):
+        raise ValueError(f"`{prefix}.allow_negative_volume` must be a boolean or null")
+    return ValidationOHLCIntegrityConfig(
+        max_invalid_bar_pct=max_invalid_bar_pct,
+        allow_negative_price=allow_negative_price,
+        allow_negative_volume=allow_negative_volume,
+    )
+
+
+def _apply_ohlc_integrity_defaults(
+    cfg: ValidationOHLCIntegrityConfig,
+) -> ValidationOHLCIntegrityConfig:
+    max_invalid_bar_pct = (
+        float(cfg.max_invalid_bar_pct)
+        if cfg.max_invalid_bar_pct is not None
+        else OHLC_INTEGRITY_INVALID_BAR_PCT_DEFAULT
+    )
+    allow_negative_price = cfg.allow_negative_price if cfg.allow_negative_price is not None else False
+    allow_negative_volume = cfg.allow_negative_volume if cfg.allow_negative_volume is not None else False
+    return ValidationOHLCIntegrityConfig(
+        max_invalid_bar_pct=max_invalid_bar_pct,
+        allow_negative_price=allow_negative_price,
+        allow_negative_volume=allow_negative_volume,
     )
 
 
@@ -925,11 +988,19 @@ def _merge_data_quality_config(
     normalized = _normalize_data_quality_config(
         ValidationDataQualityConfig(
             min_data_points=_merged_field(base, override, "min_data_points"),
+            calendar=_merge_calendar_config(
+                getattr(base, "calendar", None),
+                getattr(override, "calendar", None),
+            ),
             continuity=_merge_continuity_config(
                 getattr(base, "continuity", None),
                 getattr(override, "continuity", None),
             ),
             kurtosis=_merged_field(base, override, "kurtosis"),
+            ohlc_integrity=_merge_ohlc_integrity_config(
+                getattr(base, "ohlc_integrity", None),
+                getattr(override, "ohlc_integrity", None),
+            ),
             outlier_detection=_merge_outlier_detection_config(
                 getattr(base, "outlier_detection", None),
                 getattr(override, "outlier_detection", None),
@@ -1089,10 +1160,19 @@ def _merge_continuity_config(
     return ValidationContinuityConfig(
         min_score=_merged_field(base, override, "min_score"),
         max_missing_bar_pct=_merged_field(base, override, "max_missing_bar_pct"),
-        calendar=_merge_calendar_config(
-            getattr(base, "calendar", None),
-            getattr(override, "calendar", None),
-        ),
+    )
+
+
+def _merge_ohlc_integrity_config(
+    base: ValidationOHLCIntegrityConfig | None,
+    override: ValidationOHLCIntegrityConfig | None,
+) -> ValidationOHLCIntegrityConfig | None:
+    if base is None and override is None:
+        return None
+    return ValidationOHLCIntegrityConfig(
+        max_invalid_bar_pct=_merged_field(base, override, "max_invalid_bar_pct"),
+        allow_negative_price=_merged_field(base, override, "allow_negative_price"),
+        allow_negative_volume=_merged_field(base, override, "allow_negative_volume"),
     )
 
 
@@ -1150,8 +1230,8 @@ def _normalize_stationarity_regime_shift_config(
         raise ValueError(f"`{prefix}.vol_ratio_max` must be >= {STATIONARITY_REGIME_SHIFT_VOL_RATIO_MIN}")
     return ValidationStationarityRegimeShiftConfig(
         window=window,
-        mean_shift_max=mean_shift_max,
-        vol_ratio_max=vol_ratio_max,
+        mean_shift_max=float(mean_shift_max),
+        vol_ratio_max=float(vol_ratio_max),
     )
 
 
@@ -1435,6 +1515,13 @@ def require_mapping(raw: Any, prefix: str) -> dict[str, Any]:
     return cast(dict[str, Any], raw)
 
 
+def require_keys(raw: dict[str, Any], prefix: str, keys: list[str]) -> None:
+    missing = [key for key in keys if key not in raw]
+    if missing:
+        formatted = ", ".join(f"`{key}`" for key in missing)
+        raise ValueError(f"Invalid `{prefix}`: missing required key(s): {formatted}")
+
+
 def _coerce_int(value: Any, field_path: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"Invalid `{field_path}`: expected an integer")
@@ -1576,10 +1663,6 @@ def parse_optional_bool(
         return None
     if isinstance(value, bool):
         return value
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"true", "false"}:
-            return normalized == "true"
     raise ValueError(f"Invalid `{prefix}.{key}`: expected a boolean")
 
 
@@ -1639,11 +1722,15 @@ def _parse_validation_data_quality(
     min_data_points_cfg = parse_optional_int(
         parsed_raw, prefix, "min_data_points", min_value=VALIDATION_NON_NEGATIVE_INT_MIN
     )
+    calendar_cfg = _parse_validation_calendar(parsed_raw.get("calendar"), f"{prefix}.calendar")
     continuity_cfg = _parse_continuity(
         parsed_raw.get("continuity"), f"{prefix}.continuity"
     )
     kurtosis_cfg = parse_optional_float(
         parsed_raw, prefix, "kurtosis", min_value=VALIDATION_NON_NEGATIVE_FLOAT_MIN
+    )
+    ohlc_integrity_cfg = _parse_ohlc_integrity(
+        parsed_raw.get("ohlc_integrity"), f"{prefix}.ohlc_integrity"
     )
     outlier_detection_cfg = _parse_outlier_detection(
         parsed_raw.get("outlier_detection"), f"{prefix}.outlier_detection"
@@ -1656,8 +1743,10 @@ def _parse_validation_data_quality(
     return _normalize_data_quality_config(
         ValidationDataQualityConfig(
             min_data_points=min_data_points_cfg,
+            calendar=calendar_cfg,
             continuity=continuity_cfg,
             kurtosis=kurtosis_cfg,
+            ohlc_integrity=ohlc_integrity_cfg,
             outlier_detection=outlier_detection_cfg,
             stationarity=stationarity_cfg,
             is_verified=is_verified,
@@ -1673,6 +1762,10 @@ def _parse_continuity(
     if raw is None:
         return None
     parsed_raw = require_mapping(raw, prefix)
+    if "calendar" in parsed_raw:
+        raise ValueError(
+            f"Invalid `{prefix}.calendar`: configure calendar under `validation.data_quality.calendar`"
+        )
     min_score = parse_optional_float(
         parsed_raw,
         prefix,
@@ -1687,11 +1780,32 @@ def _parse_continuity(
         min_value=VALIDATION_PERCENT_MIN,
         max_value=VALIDATION_PERCENT_MAX,
     )
-    calendar_cfg = _parse_validation_calendar(parsed_raw.get("calendar"), f"{prefix}.calendar")
     return ValidationContinuityConfig(
         min_score=min_score,
         max_missing_bar_pct=max_missing,
-        calendar=calendar_cfg,
+    )
+
+
+def _parse_ohlc_integrity(
+    raw: Any,
+    prefix: str,
+) -> ValidationOHLCIntegrityConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    max_invalid_bar_pct = parse_optional_float(
+        parsed_raw,
+        prefix,
+        "max_invalid_bar_pct",
+        min_value=VALIDATION_PERCENT_MIN,
+        max_value=VALIDATION_PERCENT_MAX,
+    )
+    allow_negative_price = parse_optional_bool(parsed_raw, prefix, "allow_negative_price")
+    allow_negative_volume = parse_optional_bool(parsed_raw, prefix, "allow_negative_volume")
+    return ValidationOHLCIntegrityConfig(
+        max_invalid_bar_pct=max_invalid_bar_pct,
+        allow_negative_price=allow_negative_price,
+        allow_negative_volume=allow_negative_volume,
     )
 
 def _parse_outlier_detection(
@@ -1750,8 +1864,8 @@ def _parse_stationarity_regime_shift(
     )
     return ValidationStationarityRegimeShiftConfig(
         window=window,
-        mean_shift_max=float(mean_shift_max),
-        vol_ratio_max=float(vol_ratio_max),
+        mean_shift_max=mean_shift_max,
+        vol_ratio_max=vol_ratio_max,
     )
 
 
@@ -2100,10 +2214,7 @@ def _parse_result_consistency_transaction_cost_robustness(
     )
 
 
-def load_config(path: str | Path) -> Config:
-    with open(path) as f:
-        raw = yaml.safe_load(f)
-
+def _parse_strategies(raw: dict[str, Any]) -> list[StrategyConfig]:
     strategies_raw = raw.get("strategies")
     # `strategies` is an optional override. Missing/empty means "discover all external strategies".
     if strategies_raw is None:
@@ -2118,62 +2229,146 @@ def load_config(path: str | Path) -> Config:
         )
         raise ValueError(example)
 
+    parsed: list[StrategyConfig] = []
+    for idx, strategy_raw in enumerate(strategies_raw):
+        strategy = require_mapping(strategy_raw, f"strategies[{idx}]")
+        require_keys(strategy, f"strategies[{idx}]", ["name"])
+        params_raw = strategy.get("params", {})
+        if not isinstance(params_raw, dict):
+            raise ValueError(f"Invalid `strategies[{idx}].params`: expected a mapping")
+        parsed.append(
+            StrategyConfig(
+                name=str(strategy["name"]).strip(),
+                module=parse_optional_str(strategy, "module", normalize=False),
+                cls=(
+                    parse_optional_str(strategy, "class", normalize=False)
+                    or parse_optional_str(strategy, "cls", normalize=False)
+                ),
+                params=cast(dict[str, list[Any]], params_raw),
+            )
+        )
+    return parsed
+
+
+def _parse_timeframes(raw: dict[str, Any]) -> list[str]:
+    timeframes_raw = raw["timeframes"]
+    if not isinstance(timeframes_raw, list):
+        raise ValueError("Invalid `timeframes`: expected a list")
+    return [str(timeframe).strip() for timeframe in timeframes_raw]
+
+
+def _parse_metric(raw: dict[str, Any]) -> str:
+    metric = str(raw.get("metric", "sharpe")).strip().lower()
+    allowed = {"sharpe", "sortino", "profit"}
+    if metric not in allowed:
+        raise ValueError(f"Invalid `metric`: expected one of {sorted(allowed)}, got '{metric}'")
+    return metric
+
+
+def _parse_collections(raw_collections: Any) -> list[CollectionConfig]:
+    if not isinstance(raw_collections, list):
+        raise ValueError("Invalid `collections`: expected a list at `collections`")
+
     collections: list[CollectionConfig] = []
-    for idx, c in enumerate(raw["collections"]):
-        collection_validation = _parse_validation(c.get("validation"), f"collections[{idx}].validation")
+    for idx, collection_raw in enumerate(raw_collections):
+        if not isinstance(collection_raw, dict):
+            raise ValueError(
+                f"Invalid `collections[{idx}]`: expected a mapping at `collections[{idx}]`"
+            )
+        require_keys(collection_raw, f"collections[{idx}]", ["name", "source", "symbols"])
+        collection_validation = _parse_validation(
+            collection_raw.get("validation"), f"collections[{idx}].validation"
+        )
+        symbols_raw = collection_raw["symbols"]
+        if not isinstance(symbols_raw, list):
+            raise ValueError(f"Invalid `collections[{idx}].symbols`: expected a list")
+        collection_fees_raw = collection_raw.get("fees")
+        collection_slippage_raw = collection_raw.get("slippage")
         collections.append(
             CollectionConfig(
-                name=c["name"],
-                source=c["source"],
-                symbols=c["symbols"],
-                exchange=c.get("exchange"),
-                currency=c.get("currency"),
-                quote=c.get("quote"),
-                fees=c.get("fees"),
-                slippage=c.get("slippage"),
+                name=str(collection_raw["name"]).strip(),
+                source=str(collection_raw["source"]).strip(),
+                symbols=[str(symbol).strip() for symbol in symbols_raw],
+                exchange=parse_optional_str(collection_raw, "exchange", normalize=False),
+                currency=parse_optional_str(collection_raw, "currency", normalize=False),
+                quote=parse_optional_str(collection_raw, "quote", normalize=False),
+                fees=(
+                    _coerce_float(collection_fees_raw, f"collections[{idx}].fees")
+                    if collection_fees_raw is not None
+                    else None
+                ),
+                slippage=(
+                    _coerce_float(collection_slippage_raw, f"collections[{idx}].slippage")
+                    if collection_slippage_raw is not None
+                    else None
+                ),
                 validation=collection_validation,
             )
         )
+    return collections
 
-    strategies = [
-        StrategyConfig(
-            name=s["name"],
-            module=s.get("module"),
-            cls=s.get("class") or s.get("cls"),
-            params=s.get("params", {}),
-        )
-        for s in strategies_raw
-    ]
 
-    notifications_cfg = None
+def _parse_notifications(raw: dict[str, Any]) -> NotificationsConfig | None:
     notifications_raw = raw.get("notifications")
-    if isinstance(notifications_raw, dict):
-        slack_raw = notifications_raw.get("slack")
-        slack_cfg = None
-        if isinstance(slack_raw, dict) and slack_raw.get("webhook_url"):
-            slack_cfg = SlackNotificationConfig(
-                webhook_url=slack_raw["webhook_url"],
-                metric=slack_raw.get("metric", raw.get("metric", "sharpe")),
-                threshold=slack_raw.get("threshold"),
-                channel=slack_raw.get("channel"),
-                username=slack_raw.get("username"),
-            )
-        if slack_cfg is not None:
-            notifications_cfg = NotificationsConfig(slack=slack_cfg)
+    if notifications_raw is None:
+        return None
+    if not isinstance(notifications_raw, dict):
+        raise ValueError("Invalid `notifications`: expected a mapping")
 
-    validation_cfg = _parse_validation(raw.get("validation"), "validation")
+    slack_raw = notifications_raw.get("slack")
+    if slack_raw is None:
+        return None
+    if not isinstance(slack_raw, dict):
+        raise ValueError("Invalid `notifications.slack`: expected a mapping")
+    if not slack_raw.get("webhook_url"):
+        return None
 
+    threshold_raw = slack_raw.get("threshold")
+    metric = parse_optional_str(slack_raw, "metric")
+    if metric is None:
+        metric = str(raw.get("metric", "sharpe")).strip().lower()
+    return NotificationsConfig(
+        slack=SlackNotificationConfig(
+            webhook_url=str(slack_raw["webhook_url"]).strip(),
+            metric=metric,
+            threshold=(
+                _coerce_float(threshold_raw, "notifications.slack.threshold")
+                if threshold_raw is not None
+                else None
+            ),
+            channel=parse_optional_str(slack_raw, "channel", normalize=False),
+            username=parse_optional_str(slack_raw, "username", normalize=False),
+        )
+    )
+
+
+def _parse_evaluation_mode(raw: dict[str, Any]) -> str:
     evaluation_mode = str(raw.get("evaluation_mode", "backtest")).strip().lower()
     allowed_modes = {"backtest", "walk_forward"}
     if evaluation_mode not in allowed_modes:
         raise ValueError(
             f"Invalid `evaluation_mode`: expected one of {sorted(allowed_modes)}, got '{evaluation_mode}'"
         )
+    return evaluation_mode
+
+
+def load_config(path: str | Path) -> Config:
+    with open(path) as f:
+        raw = require_mapping(yaml.safe_load(f), "config")
+    require_keys(raw, "config", ["collections", "timeframes"])
+
+    strategies = _parse_strategies(raw)
+    collections = _parse_collections(raw["collections"])
+    timeframes = _parse_timeframes(raw)
+    metric = _parse_metric(raw)
+    notifications_cfg = _parse_notifications(raw)
+    validation_cfg = _parse_validation(raw.get("validation"), "validation")
+    evaluation_mode = _parse_evaluation_mode(raw)
 
     cfg = Config(
         collections=collections,
-        timeframes=raw["timeframes"],
-        metric=raw.get("metric", "sharpe").lower(),
+        timeframes=timeframes,
+        metric=metric,
         strategies=strategies,
         engine=str(raw.get("engine", "pybroker")).lower(),
         param_search=str(raw.get("param_search", raw.get("param_optimizer", "grid"))).lower(),

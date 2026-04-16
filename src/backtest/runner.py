@@ -28,6 +28,7 @@ from ..config import (
     ValidationContinuityConfig,
     ValidationDataQualityConfig,
     ValidationLookaheadShuffleTestConfig,
+    ValidationOHLCIntegrityConfig,
     ValidationOutlierDetectionConfig,
     ValidationStationarityConfig,
 )
@@ -130,6 +131,7 @@ class ValidatedData:
     continuity: dict[str, float | int]
     reliability_on_fail: str | None
     reliability_reasons: list[str]
+    canonicalization: dict[str, int]
 
 
 @dataclass
@@ -223,6 +225,7 @@ class BacktestRunner:
         "data_quality.min_data_points",
         "data_quality.continuity.min_score",
         "data_quality.continuity.max_missing_bar_pct",
+        "data_quality.ohlc_integrity",
         "data_quality.kurtosis",
         "data_quality.outlier_detection",
         "data_quality.stationarity",
@@ -398,9 +401,6 @@ class BacktestRunner:
         return {
             "min_score": getattr(continuity, "min_score", None),
             "max_missing_bar_pct": getattr(continuity, "max_missing_bar_pct", None),
-            "calendar": BacktestRunner._serialize_calendar_profile(
-                getattr(continuity, "calendar", None)
-            ),
         }
 
     @staticmethod
@@ -488,9 +488,31 @@ class BacktestRunner:
             "on_fail": getattr(data_quality, "on_fail", None),
             "min_data_points": getattr(data_quality, "min_data_points", None),
             "is_verified": getattr(data_quality, "is_verified", None),
+            "calendar": BacktestRunner._serialize_calendar_profile(
+                getattr(data_quality, "calendar", None)
+            ),
             "continuity": BacktestRunner._serialize_continuity_profile(
                 getattr(data_quality, "continuity", None)
             ),
+            "ohlc_integrity": {
+                "max_invalid_bar_pct": getattr(
+                    getattr(data_quality, "ohlc_integrity", None),
+                    "max_invalid_bar_pct",
+                    None,
+                ),
+                "allow_negative_price": getattr(
+                    getattr(data_quality, "ohlc_integrity", None),
+                    "allow_negative_price",
+                    None,
+                ),
+                "allow_negative_volume": getattr(
+                    getattr(data_quality, "ohlc_integrity", None),
+                    "allow_negative_volume",
+                    None,
+                ),
+            }
+            if getattr(data_quality, "ohlc_integrity", None) is not None
+            else None,
             "kurtosis": getattr(data_quality, "kurtosis", None),
             "outlier_detection": BacktestRunner._serialize_outlier_detection_profile(
                 getattr(data_quality, "outlier_detection", None)
@@ -560,6 +582,8 @@ class BacktestRunner:
                 active.add("data_quality.continuity.min_score")
             if getattr(continuity, "max_missing_bar_pct", None) is not None:
                 active.add("data_quality.continuity.max_missing_bar_pct")
+        if getattr(data_quality, "ohlc_integrity", None) is not None:
+            active.add("data_quality.ohlc_integrity")
         if getattr(data_quality, "kurtosis", None) is not None:
             active.add("data_quality.kurtosis")
         if getattr(data_quality, "outlier_detection", None) is not None:
@@ -909,15 +933,14 @@ class BacktestRunner:
         timeframe: str,
         calendar_kind: str = "crypto_24_7",
         exchange_calendar: str | None = None,
-        calendar_timezone: str | None = None,
+        duplicate_bars: int = 0,
     ) -> dict[str, float | int]:
-        raw_idx = pd.DatetimeIndex(pd.to_datetime(df.index)).sort_values()
-        idx = cls._normalize_for_calendar_timezone(raw_idx, calendar_timezone).sort_values()
-        actual_bars = int(len(idx))
+        idx = pd.DatetimeIndex(pd.to_datetime(df.index)).sort_values()
         if idx.has_duplicates:
-            idx = idx[~idx.duplicated(keep="first")]
+            raise ValueError("duplicate_index_for_continuity: canonicalize_before_scoring")
+        duplicate_bars = max(0, int(duplicate_bars))
         unique_bars = int(len(idx))
-        duplicate_bars = max(0, actual_bars - unique_bars)
+        actual_bars = unique_bars + duplicate_bars
 
         if unique_bars <= 1:
             raise ValueError(
@@ -971,6 +994,7 @@ class BacktestRunner:
             enriched_stats["optimization"] = dict(plan.optimization_details)
         reliability = dict(enriched_stats.get("data_reliability", {}))
         reliability["continuity"] = validated_data.continuity
+        reliability["canonicalization"] = dict(validated_data.canonicalization)
         enriched_stats["data_reliability"] = reliability
         return enriched_stats
 
@@ -1362,15 +1386,11 @@ class BacktestRunner:
     def _apply_policy_constraints_to_plan(
         self,
         state: JobState,
-        validated_data: ValidatedData,
         plan: StrategyPlan,
     ) -> None:
         if not state.policy_skip_optimization or not plan.search_space:
             return
         self._plan_add_skip_reason(plan, "reliability_threshold_skip_optimization")
-        if not isinstance(plan.optimization_details, dict):
-            plan.optimization_details = {}
-        plan.optimization_details["reliability_reasons"] = list(validated_data.reliability_reasons)
 
     def _create_job_list(self) -> list[JobContext]:
         # Expand config into executable collection/symbol/timeframe jobs.
@@ -1544,21 +1564,27 @@ class BacktestRunner:
             return GateDecision(False, "skip_job", ["missing_fetched_data"], "data_validation"), None
         if fetched_data.raw_df.empty:
             return GateDecision(False, "skip_job", ["empty_dataframe"], "data_validation"), None
-
         (
             reliability_on_fail,
             min_data_points_cfg,
             continuity_cfg,
             kurtosis_cfg,
+            ohlc_integrity_cfg,
             outlier_detection,
             stationarity_cfg,
             is_verified,
             calendar_kind,
             calendar_exchange,
             calendar_timezone,
-        ) = (
-            self._load_data_quality_policy(context.job.collection)
-        )
+        ) = self._load_data_quality_policy(context.job.collection)
+        try:
+            canonical_raw_df, canonicalization_meta = self._canonicalize_validation_frame(
+                fetched_data.raw_df,
+                calendar_timezone=calendar_timezone,
+            )
+        except ValueError as exc:
+            reason = self._canonicalization_failure_reason(str(exc))
+            return GateDecision(False, "skip_job", [reason], "data_validation"), None
         # `on_fail` is required by config whenever a data-quality policy exists,
         # so `reliability_on_fail is None` means data-quality policy is unset.
         if reliability_on_fail is None:
@@ -1569,19 +1595,21 @@ class BacktestRunner:
             )
             try:
                 continuity = self.compute_continuity_score(
-                    fetched_data.raw_df,
+                    canonical_raw_df,
                     context.job.timeframe,
                     calendar_kind=default_calendar_kind,
                     exchange_calendar=default_calendar_exchange,
+                    duplicate_bars=canonicalization_meta.get("duplicate_bars_removed", 0),
                 )
             except ValueError:
                 # No policy is configured, so continuity diagnostics are best-effort only.
                 continuity = {}
             validated_data = ValidatedData(
-                raw_df=fetched_data.raw_df,
+                raw_df=canonical_raw_df,
                 continuity=continuity,
                 reliability_on_fail=None,
                 reliability_reasons=[],
+                canonicalization=canonicalization_meta,
             )
             return GateDecision(True, "continue", [], "data_validation"), validated_data
 
@@ -1594,20 +1622,21 @@ class BacktestRunner:
             )
         try:
             continuity = self.compute_continuity_score(
-                fetched_data.raw_df,
+                canonical_raw_df,
                 context.job.timeframe,
                 calendar_kind=continuity_calendar_kind,
                 exchange_calendar=continuity_calendar_exchange,
-                calendar_timezone=calendar_timezone,
+                duplicate_bars=canonicalization_meta.get("duplicate_bars_removed", 0),
             )
         except ValueError as exc:
             return GateDecision(False, "skip_job", [str(exc)], "data_validation"), None
         reliability_reasons = self._collect_reliability_reasons(
-            raw_df=fetched_data.raw_df,
+            raw_df=canonical_raw_df,
             continuity=continuity,
             min_data_points_cfg=min_data_points_cfg,
             continuity_cfg=continuity_cfg,
             kurtosis_cfg=kurtosis_cfg,
+            ohlc_integrity_cfg=ohlc_integrity_cfg,
             outlier_detection=outlier_detection,
             stationarity_cfg=stationarity_cfg,
             is_verified=is_verified,
@@ -1622,12 +1651,17 @@ class BacktestRunner:
             decision = GateDecision(True, "skip_optimization", reliability_reasons, "data_validation")
         # Keep validated diagnostics available even when decision is skip_job.
         validated_data = ValidatedData(
-            raw_df=fetched_data.raw_df,
+            raw_df=canonical_raw_df,
             continuity=continuity,
             reliability_on_fail=reliability_on_fail,
             reliability_reasons=list(reliability_reasons),
+            canonicalization=canonicalization_meta,
         )
         return decision, validated_data
+
+    @staticmethod
+    def _canonicalization_failure_reason(reason: str) -> str:
+        return f"canonicalization_failed(reason={reason})"
 
     def _load_data_quality_policy(
         self, collection: CollectionConfig
@@ -1636,6 +1670,7 @@ class BacktestRunner:
         int | None,
         ValidationContinuityConfig | None,
         float | None,
+        ValidationOHLCIntegrityConfig | None,
         ValidationOutlierDetectionConfig | None,
         ValidationStationarityConfig | None,
         bool | None,
@@ -1649,26 +1684,29 @@ class BacktestRunner:
         )
         if resolved_dq is None:
             # Sentinel for "no data-quality policy configured for this collection".
-            return None, None, None, None, None, None, None, None, None, None
+            return None, None, None, None, None, None, None, None, None, None, None
         on_fail = resolved_dq.on_fail
         min_data_points_cfg = resolved_dq.min_data_points
         continuity_cfg = resolved_dq.continuity
         kurtosis_cfg = resolved_dq.kurtosis
+        ohlc_integrity_cfg = getattr(resolved_dq, "ohlc_integrity", None)
         outlier_detection = resolved_dq.outlier_detection
         stationarity_cfg = getattr(resolved_dq, "stationarity", None)
         is_verified = getattr(resolved_dq, "is_verified", None)
         calendar_kind: str | None = None
         calendar_exchange: str | None = None
         calendar_timezone: str | None = None
-        if continuity_cfg is not None:
+        calendar_cfg = getattr(resolved_dq, "calendar", None)
+        if calendar_cfg is not None:
             calendar_kind, calendar_exchange, calendar_timezone = self._resolve_calendar_policy(
-                continuity_cfg.calendar, collection.source
+                calendar_cfg, collection.source
             )
         return (
             on_fail,
             min_data_points_cfg,
             continuity_cfg,
             kurtosis_cfg,
+            ohlc_integrity_cfg,
             outlier_detection,
             stationarity_cfg,
             is_verified,
@@ -1801,6 +1839,155 @@ class BacktestRunner:
         if "close" in raw_df.columns:
             return "close"
         return None
+
+    @staticmethod
+    def _canonicalize_price_columns(raw_df: pd.DataFrame) -> pd.DataFrame:
+        normalized = raw_df.copy()
+        required = {
+            "close": "Close",
+        }
+        optional = {
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "volume": "Volume",
+        }
+        existing_keys = {str(column).strip().lower() for column in normalized.columns}
+        missing = [name for name in required if name not in existing_keys]
+        if missing:
+            missing_cols = ", ".join(sorted(missing))
+            raise ValueError(f"missing_price_columns({missing_cols})")
+        canonical_names = {**required, **optional}
+        rename_map: dict[Any, str] = {}
+        for original in normalized.columns:
+            source = str(original).strip().lower()
+            target = canonical_names.get(source)
+            if target is not None:
+                rename_map[original] = target
+        normalized = normalized.rename(columns=rename_map)
+        if normalized.columns.has_duplicates:
+            normalized = normalized.loc[:, ~normalized.columns.duplicated(keep="last")]
+        if "Volume" not in normalized.columns:
+            normalized["Volume"] = 0.0
+        for column in ("Open", "High", "Low", "Close", "Volume"):
+            if column in normalized.columns:
+                normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+        return normalized
+
+    @classmethod
+    def _canonicalize_datetime_index(
+        cls,
+        raw_df: pd.DataFrame,
+        calendar_timezone: str | None = None,
+    ) -> tuple[pd.DataFrame, dict[str, int]]:
+        normalized = raw_df.copy()
+        original_rows = int(len(normalized))
+        idx = pd.to_datetime(normalized.index, errors="coerce", utc=True)
+        valid_mask = pd.notna(idx)
+        invalid_timestamp_rows = int((~valid_mask).sum())
+        if not bool(valid_mask.all()):
+            normalized = normalized.loc[valid_mask]
+            idx = idx[valid_mask]
+        if len(normalized) == 0:
+            raise ValueError("empty_dataframe_after_timestamp_normalization")
+        dt_idx_utc = pd.DatetimeIndex(idx)
+        dt_idx = (
+            dt_idx_utc.tz_convert(None)
+            if calendar_timezone is None
+            else cls._normalize_for_calendar_timezone(dt_idx_utc, calendar_timezone)
+        )
+        normalized.index = dt_idx
+        rows_after_timestamp = int(len(normalized))
+        duplicate_bars_removed = 0
+        if normalized.index.has_duplicates:
+            # Keep the last fetched row for each duplicate timestamp before sorting.
+            duplicate_mask = normalized.index.duplicated(keep="last")
+            duplicate_bars_removed = int(duplicate_mask.sum())
+            normalized = normalized[~duplicate_mask]
+        if not normalized.index.is_monotonic_increasing:
+            normalized = normalized.sort_index(kind="mergesort")
+        if len(normalized) == 0:
+            raise ValueError("empty_dataframe_after_deduplication")
+        diagnostics = {
+            "input_rows": original_rows,
+            "invalid_timestamp_rows_removed": invalid_timestamp_rows,
+            "duplicate_bars_removed": duplicate_bars_removed,
+            "output_rows": int(len(normalized)),
+            "timestamp_normalized_rows": rows_after_timestamp,
+        }
+        return normalized, diagnostics
+
+    @classmethod
+    def _canonicalize_validation_frame(
+        cls,
+        raw_df: pd.DataFrame,
+        calendar_timezone: str | None = None,
+    ) -> tuple[pd.DataFrame, dict[str, int]]:
+        canonical = cls._canonicalize_price_columns(raw_df)
+        return cls._canonicalize_datetime_index(canonical, calendar_timezone=calendar_timezone)
+
+    @staticmethod
+    def _ohlc_integrity_reason(
+        raw_df: pd.DataFrame,
+        ohlc_integrity_cfg: ValidationOHLCIntegrityConfig | None,
+    ) -> str | None:
+        if ohlc_integrity_cfg is None:
+            return None
+        if raw_df.empty:
+            return "ohlc_integrity_indeterminate(reason=empty_dataframe)"
+        required_columns = ("Open", "High", "Low", "Close", "Volume")
+        missing_columns = [name.lower() for name in required_columns if name not in raw_df.columns]
+        if missing_columns:
+            missing = ",".join(missing_columns)
+            return f"ohlc_integrity_indeterminate(reason=missing_price_columns({missing}))"
+        open_values = raw_df["Open"].to_numpy(dtype=float)
+        high_values = raw_df["High"].to_numpy(dtype=float)
+        low_values = raw_df["Low"].to_numpy(dtype=float)
+        close_values = raw_df["Close"].to_numpy(dtype=float)
+        volume_values = raw_df["Volume"].to_numpy(dtype=float)
+        non_finite = ~(
+            np.isfinite(open_values)
+            & np.isfinite(high_values)
+            & np.isfinite(low_values)
+            & np.isfinite(close_values)
+            & np.isfinite(volume_values)
+        )
+        high_below_low = high_values < low_values
+        high_below_body = high_values < np.maximum(open_values, close_values)
+        low_above_body = low_values > np.minimum(open_values, close_values)
+        negative_price = (
+            np.zeros(len(raw_df), dtype=bool)
+            if bool(ohlc_integrity_cfg.allow_negative_price)
+            else (open_values < 0) | (high_values < 0) | (low_values < 0) | (close_values < 0)
+        )
+        negative_volume = (
+            np.zeros(len(raw_df), dtype=bool)
+            if bool(ohlc_integrity_cfg.allow_negative_volume)
+            else (volume_values < 0)
+        )
+        invalid_mask = non_finite | high_below_low | high_below_body | low_above_body | negative_price | negative_volume
+        invalid_bars = int(invalid_mask.sum())
+        if invalid_bars <= 0:
+            return None
+        total = int(len(raw_df))
+        invalid_pct = (float(invalid_bars) / float(total)) * 100.0
+        threshold = float(ohlc_integrity_cfg.max_invalid_bar_pct or 0.0)
+        if invalid_pct <= threshold:
+            return None
+        return (
+            "ohlc_integrity_invalid_bar_pct_exceeded("
+            f"max_allowed={threshold}, "
+            f"observed={invalid_pct}, "
+            f"invalid_bars={invalid_bars}, "
+            f"total_bars={total}, "
+            f"non_finite={int(non_finite.sum())}, "
+            f"high_below_low={int(high_below_low.sum())}, "
+            f"high_below_body={int(high_below_body.sum())}, "
+            f"low_above_body={int(low_above_body.sum())}, "
+            f"negative_price={int(negative_price.sum())}, "
+            f"negative_volume={int(negative_volume.sum())}"
+            ")"
+        )
 
     @classmethod
     def _max_kurtosis_reason(
@@ -2035,6 +2222,7 @@ class BacktestRunner:
         min_data_points_cfg: int | None,
         continuity_cfg: ValidationContinuityConfig | None,
         kurtosis_cfg: float | None,
+        ohlc_integrity_cfg: ValidationOHLCIntegrityConfig | None,
         outlier_detection: ValidationOutlierDetectionConfig | None,
         stationarity_cfg: ValidationStationarityConfig | None,
         is_verified: bool | None,
@@ -2045,6 +2233,7 @@ class BacktestRunner:
             cls._min_data_points_reason(raw_df, min_data_points_cfg),
             cls._missing_bar_pct_reason(continuity, continuity_cfg),
             cls._max_kurtosis_reason(raw_df, kurtosis_cfg),
+            cls._ohlc_integrity_reason(raw_df, ohlc_integrity_cfg),
             cls._collection_verification_reason(is_verified),
             cls._outlier_pct_reason(
                 raw_df=raw_df,
@@ -2318,7 +2507,6 @@ class BacktestRunner:
         if not isinstance(plan.optimization_details, dict):
             plan.optimization_details = {}
         plan.optimization_details["skipped"] = True
-        plan.optimization_details["reason"] = skip_reasons[0]
         plan.optimization_details["reasons"] = skip_reasons
         if min_bars_required is not None:
             plan.optimization_details["min_bars_required"] = min_bars_required
@@ -4056,7 +4244,7 @@ class BacktestRunner:
                 self.metrics["symbols_tested"] += 1
                 # Strategy stage: create plan -> validate plan -> run -> validate results.
                 plan = self._strategy_create_plan(state, strat_name)
-                self._apply_policy_constraints_to_plan(state, validated_data, plan)
+                self._apply_policy_constraints_to_plan(state, plan)
                 plan_decision = self._strategy_validate_plan(state, validated_data, plan)
                 plan_decision = self._handle_gate_decision(
                     state,

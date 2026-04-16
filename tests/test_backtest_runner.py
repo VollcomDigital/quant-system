@@ -38,6 +38,7 @@ from src.config import (
     ValidationContinuityConfig,
     ValidationDataQualityConfig,
     ValidationLookaheadShuffleTestConfig,
+    ValidationOHLCIntegrityConfig,
     ValidationOutlierDetectionConfig,
     ValidationStationarityConfig,
     ValidationStationarityRegimeShiftConfig,
@@ -324,11 +325,12 @@ def test_compute_outlier_mask_rejects_unsupported_method():
 
 
 @pytest.mark.parametrize(
-    ("idx", "values", "expected"),
+    ("idx", "values", "duplicate_bars", "expected"),
     [
         (
             pd.date_range("2024-01-01", periods=5, freq="D"),
             [1, 2, 3, 4, 5],
+            0,
             {
                 "score": pytest.approx(1.0),
                 "coverage_ratio": pytest.approx(1.0),
@@ -343,6 +345,7 @@ def test_compute_outlier_mask_rejects_unsupported_method():
         (
             pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-04", "2024-01-05"]),
             [1, 2, 4, 5],
+            0,
             {
                 "missing_bars": 1,
                 "largest_gap_bars": 1,
@@ -351,8 +354,9 @@ def test_compute_outlier_mask_rejects_unsupported_method():
             },
         ),
         (
-            pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-02", "2024-01-03"]),
-            [1, 2, 2, 3],
+            pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"]),
+            [1, 2, 3],
+            1,
             {
                 "missing_bars": 0,
                 "actual_bars": 4,
@@ -361,11 +365,15 @@ def test_compute_outlier_mask_rejects_unsupported_method():
             },
         ),
     ],
-    ids=["complete_series", "missing_internal_bars", "deduplicated_index"],
+    ids=["complete_series", "missing_internal_bars", "canonical_with_duplicate_meta"],
 )
-def test_compute_continuity_score_scenarios(idx, values, expected):
+def test_compute_continuity_score_scenarios(idx, values, duplicate_bars, expected):
     df = pd.DataFrame({"Close": values}, index=idx)
-    continuity = BacktestRunner.compute_continuity_score(df, "1d")
+    continuity = BacktestRunner.compute_continuity_score(
+        df,
+        "1d",
+        duplicate_bars=duplicate_bars,
+    )
 
     for key, value in expected.items():
         assert continuity[key] == value
@@ -388,8 +396,16 @@ def test_compute_continuity_score_scenarios(idx, values, expected):
             "1quarter",
             "unsupported_timeframe_for_continuity",
         ),
+        (
+            pd.DataFrame(
+                {"Close": [1, 2, 2, 3]},
+                index=pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-02", "2024-01-03"]),
+            ),
+            "1d",
+            "duplicate_index_for_continuity",
+        ),
     ],
-    ids=["empty_frame", "single_bar", "unsupported_timeframe"],
+    ids=["empty_frame", "single_bar", "unsupported_timeframe", "duplicate_index"],
 )
 def test_compute_continuity_score_invalid_inputs(df, timeframe, error_match):
     with pytest.raises(ValueError, match=error_match):
@@ -410,6 +426,22 @@ def test_compute_continuity_score_weekend_gap_missing_for_24_7_calendar():
     continuity = BacktestRunner.compute_continuity_score(df, "1d", calendar_kind="crypto_24_7")
     assert continuity["missing_bars"] == 2
     assert continuity["score"] < 1.0
+
+
+def test_compute_continuity_score_uses_duplicate_count_for_scoring():
+    idx = pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"])
+    df = pd.DataFrame({"Close": [100.0, 101.0, 102.0]}, index=idx)
+    baseline = BacktestRunner.compute_continuity_score(df, "1d", calendar_kind="weekday")
+    with_duplicates = BacktestRunner.compute_continuity_score(
+        df,
+        "1d",
+        calendar_kind="weekday",
+        duplicate_bars=2,
+    )
+    assert baseline["duplicate_bars"] == 0
+    assert with_duplicates["duplicate_bars"] == 2
+    assert with_duplicates["actual_bars"] == 5
+    assert with_duplicates["score"] < baseline["score"]
 
 
 @pytest.mark.parametrize(
@@ -458,15 +490,21 @@ def test_data_validation_calendar_timezone_changes_weekday_continuity(tmp_path, 
     runner = _make_runner(tmp_path, monkeypatch)
     runner.cfg.validation = ValidationConfig(
         data_quality=ValidationDataQualityConfig(
-            continuity=ValidationContinuityConfig(
-                calendar=ValidationCalendarConfig(kind="weekday", timezone="UTC-05:00")
-            ),
+            calendar=ValidationCalendarConfig(kind="weekday", timezone="UTC-05:00"),
             on_fail="skip_job",
         )
     )
     resolve_validation_overrides(runner.cfg)
     idx = pd.to_datetime(["2024-01-06 00:30:00+00:00", "2024-01-09 00:30:00+00:00"], utc=True)
-    df = pd.DataFrame({"Close": [100.0, 101.0]}, index=idx)
+    df = pd.DataFrame(
+        {
+            "Open": [100.0, 101.0],
+            "High": [101.0, 102.0],
+            "Low": [99.0, 100.0],
+            "Close": [100.0, 101.0],
+        },
+        index=idx,
+    )
     context = SimpleNamespace(
         job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
         fetched_data=SimpleNamespace(raw_df=df),
@@ -476,6 +514,8 @@ def test_data_validation_calendar_timezone_changes_weekday_continuity(tmp_path, 
 
     assert decision.passed
     assert validated_data is not None
+    assert validated_data.raw_df.index[0] == pd.Timestamp("2024-01-05 19:30:00")
+    assert validated_data.raw_df.index[1] == pd.Timestamp("2024-01-08 19:30:00")
     assert validated_data.continuity["missing_bars"] == 0
 
 
@@ -483,7 +523,15 @@ def test_data_validation_without_data_quality_does_not_skip_on_continuity_errors
     tmp_path, monkeypatch
 ):
     runner = _make_runner(tmp_path, monkeypatch)
-    df = pd.DataFrame({"Close": [100.0]}, index=pd.to_datetime(["2024-01-01"]))
+    df = pd.DataFrame(
+        {
+            "Open": [100.0],
+            "High": [101.0],
+            "Low": [99.0],
+            "Close": [100.0],
+        },
+        index=pd.to_datetime(["2024-01-01"]),
+    )
     context = SimpleNamespace(
         job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
         fetched_data=SimpleNamespace(raw_df=df),
@@ -502,11 +550,12 @@ def test_serialize_data_quality_profile_keeps_schema_and_key_order():
         on_fail="skip_job",
         min_data_points=42,
         is_verified=True,
+        calendar=SimpleNamespace(kind="weekday", exchange=None, timezone="UTC"),
         continuity=SimpleNamespace(
             min_score=0.8,
             max_missing_bar_pct=10.0,
-            calendar=SimpleNamespace(kind="weekday", exchange=None, timezone="UTC"),
         ),
+        ohlc_integrity=None,
         kurtosis=3.5,
         outlier_detection=SimpleNamespace(
             max_outlier_pct=5.0,
@@ -527,15 +576,17 @@ def test_serialize_data_quality_profile_keeps_schema_and_key_order():
         "on_fail",
         "min_data_points",
         "is_verified",
+        "calendar",
         "continuity",
+        "ohlc_integrity",
         "kurtosis",
         "outlier_detection",
         "stationarity",
     ]
+    assert payload["calendar"] == {"kind": "weekday", "exchange": None, "timezone": "UTC"}
     assert payload["continuity"] == {
         "min_score": 0.8,
         "max_missing_bar_pct": 10.0,
-        "calendar": {"kind": "weekday", "exchange": None, "timezone": "UTC"},
     }
     assert payload["stationarity"] == {
         "adf_pvalue_max": 0.05,
@@ -629,7 +680,15 @@ def test_data_validation_stationarity_rejects_constant_series(tmp_path, monkeypa
         )
     )
     resolve_validation_overrides(runner.cfg)
-    df = pd.DataFrame({"Close": [100.0] * 8}, index=pd.date_range("2024-01-01", periods=8, freq="D"))
+    df = pd.DataFrame(
+        {
+            "Open": [100.0] * 8,
+            "High": [100.0] * 8,
+            "Low": [100.0] * 8,
+            "Close": [100.0] * 8,
+        },
+        index=pd.date_range("2024-01-01", periods=8, freq="D"),
+    )
     context = SimpleNamespace(
         job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
         fetched_data=SimpleNamespace(raw_df=df),
@@ -696,6 +755,197 @@ def test_data_validation_collects_multiple_reliability_reasons(tmp_path, monkeyp
     assert any(reason.startswith("max_missing_bar_pct_exceeded") for reason in validated_data.reliability_reasons)
     assert any(reason.startswith("max_kurtosis_exceeded") for reason in validated_data.reliability_reasons)
     assert "collection_not_verified" in validated_data.reliability_reasons
+
+
+def test_data_validation_canonicalizes_index_and_price_columns(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            on_fail="skip_job",
+            continuity=ValidationContinuityConfig(min_score=0.0),
+        )
+    )
+    resolve_validation_overrides(runner.cfg)
+    idx = pd.to_datetime(
+        [
+            "2024-01-03 00:00:00+00:00",
+            "2024-01-01 00:00:00+00:00",
+            "2024-01-01 00:00:00+00:00",
+            "2024-01-02 00:00:00+00:00",
+        ],
+        utc=True,
+    )
+    df = pd.DataFrame(
+        {
+            "open": [3.0, 1.0, 1.5, 2.0],
+            "high": [3.2, 1.2, 1.7, 2.2],
+            "low": [2.8, 0.8, 1.3, 1.8],
+            "close": [3.1, 1.1, 1.6, 2.1],
+        },
+        index=idx,
+    )
+    context = SimpleNamespace(
+        job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
+        fetched_data=SimpleNamespace(raw_df=df),
+    )
+
+    decision, validated_data = runner._data_validation_common(context)
+
+    assert decision.passed
+    assert validated_data is not None
+    assert list(validated_data.raw_df.columns)[:5] == ["Open", "High", "Low", "Close", "Volume"]
+    assert validated_data.raw_df.index.is_monotonic_increasing
+    assert validated_data.raw_df.index.is_unique
+    assert len(validated_data.raw_df) == 3
+    assert validated_data.raw_df.loc[pd.Timestamp("2024-01-01"), "Close"] == pytest.approx(1.6)
+
+
+def test_data_validation_canonicalization_failure_has_structured_reason(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    idx = pd.date_range("2024-01-01", periods=2, freq="D")
+    df = pd.DataFrame(
+        {
+            "Open": [1.0, 2.0],
+            "High": [1.1, 2.1],
+            "Low": [0.9, 1.9],
+        },
+        index=idx,
+    )
+    context = SimpleNamespace(
+        job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
+        fetched_data=SimpleNamespace(raw_df=df),
+    )
+
+    decision, validated_data = runner._data_validation_common(context)
+
+    assert not decision.passed
+    assert decision.action == "skip_job"
+    assert decision.reasons == ["canonicalization_failed(reason=missing_price_columns(close))"]
+    assert validated_data is None
+
+
+def test_canonicalize_price_columns_deduplicates_columns_after_rename():
+    raw_df = pd.DataFrame(
+        {
+            "Open": [1.0, 2.0],
+            "High": [2.0, 3.0],
+            "Low": [0.5, 1.5],
+            "Close": [10.0, 11.0],
+            "close": [20.0, 21.0],
+        },
+        index=pd.date_range("2024-01-01", periods=2, freq="D"),
+    )
+
+    normalized = BacktestRunner._canonicalize_price_columns(raw_df)
+
+    assert normalized.columns.is_unique
+    assert list(normalized.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert normalized["Close"].tolist() == [20.0, 21.0]
+
+
+def test_canonicalize_price_columns_deduplicates_columns_after_rename_lowercase_first():
+    raw_df = pd.DataFrame(
+        {
+            "open": [1.0, 2.0],
+            "high": [2.0, 3.0],
+            "low": [0.5, 1.5],
+            "close": [20.0, 21.0],
+            "Open": [1.0, 2.0],
+            "High": [2.0, 3.0],
+            "Low": [0.5, 1.5],
+            "Close": [10.0, 11.0],
+        },
+        index=pd.date_range("2024-01-01", periods=2, freq="D"),
+    )
+
+    normalized = BacktestRunner._canonicalize_price_columns(raw_df)
+
+    assert normalized.columns.is_unique
+    assert list(normalized.columns) == ["Open", "High", "Low", "Close", "Volume"]
+    assert normalized["Close"].tolist() == [10.0, 11.0]
+
+
+def test_canonicalize_price_columns_allows_close_only_input():
+    raw_df = pd.DataFrame(
+        {
+            "Close": [10.0, 11.0],
+        },
+        index=pd.date_range("2024-01-01", periods=2, freq="D"),
+    )
+
+    normalized = BacktestRunner._canonicalize_price_columns(raw_df)
+
+    assert normalized.columns.is_unique
+    assert list(normalized.columns) == ["Close", "Volume"]
+    assert normalized["Close"].tolist() == [10.0, 11.0]
+    assert normalized["Volume"].tolist() == [0.0, 0.0]
+
+
+def test_data_validation_ohlc_integrity_rejects_invalid_bars(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            on_fail="skip_job",
+            ohlc_integrity=ValidationOHLCIntegrityConfig(max_invalid_bar_pct=0.0),
+        )
+    )
+    resolve_validation_overrides(runner.cfg)
+    idx = pd.date_range("2024-01-01", periods=3, freq="D")
+    df = pd.DataFrame(
+        {
+            "Open": [100.0, 101.0, 102.0],
+            "High": [101.0, 99.0, 103.0],
+            "Low": [99.0, 100.0, 101.0],
+            "Close": [100.5, 100.2, 102.2],
+            "Volume": [10.0, -1.0, 12.0],
+        },
+        index=idx,
+    )
+    context = SimpleNamespace(
+        job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
+        fetched_data=SimpleNamespace(raw_df=df),
+    )
+
+    decision, validated_data = runner._data_validation_common(context)
+
+    assert not decision.passed
+    assert decision.action == "skip_job"
+    assert validated_data is not None
+    assert any(
+        reason.startswith("ohlc_integrity_invalid_bar_pct_exceeded")
+        for reason in validated_data.reliability_reasons
+    )
+
+
+def test_data_validation_ohlc_integrity_rejects_missing_ohl_columns(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch)
+    runner.cfg.validation = ValidationConfig(
+        data_quality=ValidationDataQualityConfig(
+            on_fail="skip_job",
+            ohlc_integrity=ValidationOHLCIntegrityConfig(max_invalid_bar_pct=0.0),
+        )
+    )
+    resolve_validation_overrides(runner.cfg)
+    idx = pd.date_range("2024-01-01", periods=3, freq="D")
+    df = pd.DataFrame(
+        {
+            "Close": [100.5, 100.2, 102.2],
+        },
+        index=idx,
+    )
+    context = SimpleNamespace(
+        job=SimpleNamespace(collection=runner.cfg.collections[0], timeframe="1d"),
+        fetched_data=SimpleNamespace(raw_df=df),
+    )
+
+    decision, validated_data = runner._data_validation_common(context)
+
+    assert not decision.passed
+    assert decision.action == "skip_job"
+    assert validated_data is not None
+    assert "ohlc_integrity_indeterminate(reason=missing_price_columns(open,high,low))" in (
+        validated_data.reliability_reasons
+    )
 
 
 def test_stationarity_adf_reason_returns_indeterminate_when_statsmodels_missing():
@@ -1674,6 +1924,7 @@ def _build_strategy_validation_artifacts(
         continuity={},
         reliability_on_fail="skip_optimization",
         reliability_reasons=[],
+        canonicalization={},
     )
     context_kwargs = {
         "stage": "strategy_validation",
@@ -1880,7 +2131,7 @@ def test_run_all_min_bars_and_dof_guard_behavior(
     if expect_skip:
         assert optimization is not None
         assert optimization["skipped"] is True
-        assert optimization["reason"] == "insufficient_bars_for_optimization"
+        assert optimization["reasons"] == ["insufficient_bars_for_optimization"]
         # search_space has one dimension (`window`) in _make_runner, so n_params=1.
         expected_min_bars = max(min_bars, dof_multiplier * 1)
         assert optimization["min_bars_required"] == expected_min_bars
@@ -2309,6 +2560,7 @@ def test_strategy_run_baseline_skips_evaluation_when_runtime_tuple_is_capped(tmp
         continuity={},
         reliability_on_fail="skip_optimization",
         reliability_reasons=[],
+        canonicalization={},
     )
     prep_decision, prepared = runner._execution_context_prepare(state, validated_data)
     assert prep_decision.passed is True
@@ -2345,9 +2597,8 @@ def test_run_all_reliability_min_data_points_skips_optimization(tmp_path, monkey
     assert eval_calls["count"] == 1
     optimization = results[0].stats.get("optimization")
     assert optimization is not None
-    assert optimization["reason"] == "reliability_threshold_skip_optimization"
-    reasons = optimization.get("reliability_reasons", [])
-    assert any("min_data_points_not_met" in r for r in reasons)
+    assert optimization["reasons"] == ["reliability_threshold_skip_optimization"]
+    assert "reliability_reasons" not in optimization
 
 
 def test_run_all_reliability_not_verified_skips_optimization(tmp_path, monkeypatch):
@@ -2366,9 +2617,8 @@ def test_run_all_reliability_not_verified_skips_optimization(tmp_path, monkeypat
     assert eval_calls["count"] == 1
     optimization = results[0].stats.get("optimization")
     assert optimization is not None
-    assert optimization["reason"] == "reliability_threshold_skip_optimization"
-    reasons = optimization.get("reliability_reasons", [])
-    assert "collection_not_verified" in reasons
+    assert optimization["reasons"] == ["reliability_threshold_skip_optimization"]
+    assert "reliability_reasons" not in optimization
 
 
 def test_run_all_data_quality_without_continuity_still_computes_diagnostics(
@@ -3641,9 +3891,8 @@ def test_run_all_skip_optimization_still_evaluates_each_strategy(tmp_path, monke
     for result in results:
         optimization = result.stats.get("optimization")
         assert optimization is not None
-        assert optimization["reason"] == "reliability_threshold_skip_optimization"
-        reasons = optimization.get("reliability_reasons", [])
-        assert any("min_data_points_not_met" in reason for reason in reasons)
+        assert optimization["reasons"] == ["reliability_threshold_skip_optimization"]
+        assert "reliability_reasons" not in optimization
         assert all("insufficient_bars_for_optimization" not in reason for reason in optimization["reasons"])
 
 
@@ -3784,9 +4033,8 @@ def test_run_all_collection_reliability_override_takes_precedence(tmp_path, monk
     assert eval_calls["count"] == 1
     optimization = results[0].stats.get("optimization")
     assert optimization is not None
-    assert optimization["reason"] == "reliability_threshold_skip_optimization"
-    reasons = optimization.get("reliability_reasons", [])
-    assert any("min_data_points_not_met" in reason for reason in reasons)
+    assert optimization["reasons"] == ["reliability_threshold_skip_optimization"]
+    assert "reliability_reasons" not in optimization
 
 
 def test_run_all_reliability_skip_collection_blocks_remaining_jobs_in_collection(
@@ -4208,6 +4456,7 @@ def test_collect_reliability_reasons_dispatches_outlier_reason_to_subclass():
         min_data_points_cfg=None,
         continuity_cfg=None,
         kurtosis_cfg=None,
+        ohlc_integrity_cfg=None,
         outlier_detection=None,
         stationarity_cfg=None,
         is_verified=None,
