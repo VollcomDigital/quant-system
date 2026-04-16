@@ -91,6 +91,29 @@ The largest missing capabilities are:
 - low-latency gateway/HFT foundations
 - infrastructure-as-code and platform deployment boundaries
 
+## Execution-Grade Design Package
+
+The migration plan should be implemented alongside a lightweight design package so early implementation work is constrained by written decisions instead of informal assumptions.
+
+### Design Artifacts
+
+- ADR index: `docs/adr/README.md`
+- ADR-0001: `docs/adr/0001-monorepo-workspace-and-package-boundaries.md`
+- ADR-0002: `docs/adr/0002-data-platform-orchestration-and-immutability.md`
+- ADR-0003: `docs/adr/0003-two-speed-execution-runtime-boundaries.md`
+- ADR-0004: `docs/adr/0004-agent-permissions-and-control-plane.md`
+- ADR-0005: `docs/adr/0005-tradfi-and-web3-gateway-architecture.md`
+- ADR-0006: `docs/adr/0006-execution-signing-custody-and-kill-switches.md`
+- Phase 0 scaffold: `docs/architecture/phase-0-scaffold.md`
+
+### Delivery Rule
+
+No major implementation phase should start without:
+
+- the relevant ADR status set to `accepted` or `proposed with explicit implementation owner`
+- explicit entry criteria met
+- explicit exit criteria recorded and verified
+
 ## Phase 0 - Architecture Baseline and Repo Restructure
 
 ### Goal
@@ -130,6 +153,20 @@ Create the monorepo skeleton without breaking the existing CLI or backtesting fl
 - [ ] Monorepo skeleton committed
 - [ ] Internal package naming standard documented
 - [ ] Compatibility strategy for existing `src.main` documented
+
+### Entry Criteria
+
+- [ ] ADR-0001 reviewed
+- [ ] ADR-0003 reviewed
+- [ ] `docs/architecture/phase-0-scaffold.md` agreed as the initial package skeleton
+- [ ] Existing branch and release compatibility constraints documented
+
+### Exit Criteria
+
+- [ ] Top-level monorepo directories created or approved for creation
+- [ ] Package/import naming conventions fixed in writing
+- [ ] Current CLI compatibility facade strategy documented
+- [ ] No Phase 1 extraction starts without an approved package-boundary direction
 
 ## Phase 1 - Shared Contracts, Telemetry, and Core Utilities
 
@@ -171,6 +208,18 @@ Extract the common primitives used by all future modules before any service spli
 - [ ] `shared_lib/math_utils`
 - [ ] shared domain schemas and validation contracts
 - [ ] OTel instrumentation baseline
+
+### Entry Criteria
+
+- [ ] Phase 0 exit criteria satisfied
+- [ ] ADR-0001 accepted or implementation-ready
+- [ ] Shared schema ownership agreed across research, backtest, and execution modules
+
+### Exit Criteria
+
+- [ ] Shared schemas are importable without `src/*` coupling
+- [ ] Telemetry baseline is reusable across batch jobs, APIs, agents, and execution paths
+- [ ] Decimal-safe money primitives exist before OMS work begins
 
 ## Phase 2 - Data Platform Extraction
 
@@ -244,6 +293,19 @@ Turn the current datasource layer into a reusable ingestion and feature foundati
 - [ ] feature-store contracts and storage abstraction
 - [ ] dataset validation jobs
 
+### Entry Criteria
+
+- [ ] Phase 1 exit criteria satisfied
+- [ ] ADR-0002 reviewed and implementation-ready
+- [ ] Orchestrator baseline fixed to Apache Airflow unless superseded by ADR
+
+### Exit Criteria
+
+- [ ] Connector interfaces are separated from cache/storage concerns
+- [ ] Airflow DAG structure exists for backfill and refresh workflows
+- [ ] Feature definitions are versioned and reusable across research, backtesting, and live systems
+- [ ] Vendor historical data path is documented separately from live broker connectivity
+
 ## Phase 3 - Alpha Research Workspace
 
 ### Goal
@@ -281,6 +343,18 @@ Separate ephemeral research from production factor logic.
 - [ ] production factor library
 - [ ] ML training pipeline structure
 - [ ] promotion rules for factors/models
+
+### Entry Criteria
+
+- [ ] Phase 1 and Phase 2 exit criteria satisfied
+- [ ] Feature-store read path available or stubbed with stable contracts
+- [ ] Model registry approach documented in the active design package
+
+### Exit Criteria
+
+- [ ] Notebook code is clearly separated from production factor modules
+- [ ] Factor promotion path is documented and testable
+- [ ] Model artifacts can be traced to training data, registry metadata, and promotion status
 
 ## Phase 4 - Backtest Engine Modularization
 
@@ -325,6 +399,18 @@ Convert the current runner into a reusable engine with explicit simulator, mecha
 - [ ] isolated market mechanics package
 - [ ] analytics/tear-sheet package
 - [ ] validation guardrails against leakage
+
+### Entry Criteria
+
+- [ ] Phase 1 exit criteria satisfied
+- [ ] Phase 2 data contracts available
+- [ ] Phase 3 factor contracts available for engine consumption
+
+### Exit Criteria
+
+- [ ] Simulator, analytics, and market-mechanics boundaries are separate packages or modules
+- [ ] Exact API/order payload replay path is defined against gateway contracts
+- [ ] Look-ahead and leakage validation runs as part of normal engine validation
 
 ## Phase 5 - AI Agents Foundation
 
@@ -387,6 +473,18 @@ Introduce agent runtime and the first three target agents on top of stable contr
 - [ ] alpha researcher prototype
 - [ ] PR/code review agent in CI
 - [ ] live risk monitor prototype
+
+### Entry Criteria
+
+- [ ] Phase 1 shared telemetry and contracts are available
+- [ ] ADR-0004 reviewed and implementation-ready
+- [ ] Restricted tool/API surface defined for each agent role
+
+### Exit Criteria
+
+- [ ] Agent permissions are scoped by workflow and target system
+- [ ] Agent traces and audit logs are emitted with shared telemetry conventions
+- [ ] No agent has direct unrestricted access to OMS, KMS, or treasury systems
 
 ## Phase 6 - Trading System Mid-Frequency Layer
 
@@ -453,6 +551,19 @@ Implement a production-grade trading system for minute-to-week horizons before i
 - [ ] RMS controls and kill-switches
 - [ ] mid-frequency execution engine structure
 
+### Entry Criteria
+
+- [ ] Phase 1 and Phase 4 exit criteria satisfied
+- [ ] ADR-0003 and ADR-0006 reviewed and implementation-ready
+- [ ] Shared order/fill/position schemas stabilized
+
+### Exit Criteria
+
+- [ ] OMS and EMS are separated by responsibility
+- [ ] RMS controls are enforced between signal generation and gateway execution
+- [ ] Automated panic-button workflow is defined for TradFi and DeFi paths
+- [ ] Mid-frequency execution contracts work without introducing HFT-only assumptions
+
 ## Phase 7 - Shared Market Connectivity
 
 ### Goal
@@ -504,6 +615,17 @@ Create reusable connectivity layers that can be shared by both mid-frequency and
 - [ ] binary protocol adapter contracts
 - [ ] replayable paper-trading gateway layer
 
+### Entry Criteria
+
+- [ ] Phase 6 OMS/EMS schemas and state model are available
+- [ ] ADR-0005 reviewed and implementation-ready
+
+### Exit Criteria
+
+- [ ] TradFi and Web3 gateway abstractions are separate and explicit
+- [ ] Replay and reconciliation workflows exist for gateway failures
+- [ ] Paper-trading parity is possible without live credential access
+
 ## Phase 8 - HFT Engine Foundations
 
 ### Goal
@@ -536,6 +658,18 @@ Only after OMS/EMS/RMS and shared gateways are stable, add the low-latency HFT-s
 - [ ] market-data/order-entry network layer
 - [ ] inference wrapper interfaces
 - [ ] benchmark and replay harnesses
+
+### Entry Criteria
+
+- [ ] Phase 7 exit criteria satisfied
+- [ ] Two-speed boundary is enforced in code/package ownership
+- [ ] Native toolchain ownership (Rust/C++/FPGA) assigned
+
+### Exit Criteria
+
+- [ ] Python is excluded from the HFT critical path by design
+- [ ] Benchmark/replay harnesses exist before any live-path consideration
+- [ ] HFT runtime contracts integrate with shared risk and gateway boundaries without bypassing them
 
 ## Phase 9 - Infrastructure and Platform Delivery
 
@@ -603,6 +737,17 @@ Add deployment, orchestration, and environment separation once service boundarie
 - [ ] CI/CD per package/service group
 - [ ] environment promotion model
 
+### Entry Criteria
+
+- [ ] ADR-0002, ADR-0005, and ADR-0006 reviewed and implementation-ready
+- [ ] Service boundaries from Phases 2 through 8 are stable enough to deploy independently
+
+### Exit Criteria
+
+- [ ] Deployment patterns exist for research, data, agents, model serving, and trading control-plane services
+- [ ] Signing/custody model is documented in deployable infrastructure terms
+- [ ] Out-of-band hard-kill path is documented and testable
+
 ## Phase 10 - Cutover and Decomposition of Current App
 
 ### Goal
@@ -630,6 +775,17 @@ Retire the legacy single-package structure after all critical modules are stable
 - [ ] legacy module retirement checklist
 - [ ] parity validation report
 
+### Entry Criteria
+
+- [ ] Phases 1 through 9 provide stable replacement boundaries for legacy `src/*` functionality
+- [ ] Migration test coverage and contract tests exist for all critical flows
+
+### Exit Criteria
+
+- [ ] Legacy `src/*` dependencies are either removed or intentionally retained behind compatibility wrappers
+- [ ] Parity validation is documented for data, backtests, reporting, and execution-control paths
+- [ ] The repository can be reasoned about by package/domain instead of legacy module inheritance
+
 ## Recommended Execution Order
 
 1. Phase 0 - repo/package architecture
@@ -651,3 +807,4 @@ Retire the legacy single-package structure after all critical modules are stable
 - The current application is still the fastest path to bootstrap `data_platform`, `backtest_engine`, and `shared_lib`.
 - The first implementation milestone should be a non-breaking monorepo skeleton plus shared contracts, not a full rewrite.
 - The shared foundation should stay unified, but execution and infrastructure must split into HFT fast-path and mid-frequency smart-path concerns as early architecture decisions.
+- Phase work should not be marked complete without satisfying both the technical tasks and the explicit exit criteria for that phase.
