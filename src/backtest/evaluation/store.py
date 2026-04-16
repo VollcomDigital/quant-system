@@ -21,6 +21,7 @@ class EvaluationCache:
     def _ensure(self) -> None:
         con = sqlite3.connect(self.db_path)
         try:
+            con.execute("PRAGMA journal_mode=WAL")
             self._create_evaluation_cache_table(con)
             con.commit()
         finally:
@@ -303,6 +304,8 @@ class ResultStore:
             con.close()
 
     def insert(self, record: ResultRecord) -> None:
+        if record.run_id is None:
+            return
         con = sqlite3.connect(self.db_path)
         try:
             con.execute(

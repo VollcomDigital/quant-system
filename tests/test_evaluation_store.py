@@ -153,6 +153,44 @@ def test_evaluation_cache_uses_strategy_fingerprint(tmp_path: Path):
     assert hit_v2["metric_value"] == pytest.approx(2.0)
 
 
+def test_result_store_insert_skips_when_run_id_is_none(tmp_path: Path):
+    store = ResultStore(tmp_path)
+    record = ResultRecord(
+        run_id=None,
+        evaluation_mode="backtest",
+        collection="c",
+        symbol="AAPL",
+        timeframe="1d",
+        source="yfinance",
+        strategy="s",
+        params={"x": 1},
+        metric_name="sharpe",
+        metric_value=1.5,
+        stats={"sharpe": 1.5},
+        data_fingerprint="fp",
+        fees=0.0,
+        slippage=0.0,
+        mode_config_hash="abc",
+    )
+    store.insert(record)
+    con = sqlite3.connect(store.db_path)
+    try:
+        count = con.execute("SELECT COUNT(*) FROM result_records").fetchone()[0]
+    finally:
+        con.close()
+    assert int(count) == 0
+
+
+def test_evaluation_cache_enables_wal(tmp_path: Path):
+    cache = EvaluationCache(tmp_path)
+    con = sqlite3.connect(cache.db_path)
+    try:
+        row = con.execute("PRAGMA journal_mode").fetchone()
+    finally:
+        con.close()
+    assert str(row[0]).upper() == "WAL"
+
+
 def test_result_store_round_trip(tmp_path: Path):
     store = ResultStore(tmp_path)
     record = ResultRecord(
