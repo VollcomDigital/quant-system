@@ -791,8 +791,8 @@ Retire the legacy single-package structure after all critical modules are stable
 1. Phase 0 - repo/package architecture
 2. Phase 1 - shared contracts and telemetry
 3. Phase 2 - data platform extraction
-4. Phase 4 - backtest engine modularization
-5. Phase 3 - alpha research workspace
+4. Phase 3 - alpha research workspace
+5. Phase 4 - backtest engine modularization
 6. Phase 5 - AI agents
 7. Phase 6 - mid-frequency OMS/EMS/RMS
 8. Phase 7 - shared gateways
