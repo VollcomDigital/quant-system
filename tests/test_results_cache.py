@@ -3,8 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import sqlite3
 
-from src.backtest.results_cache import ResultsCache, ResultsCacheRecord
+from src.backtest.results_cache import ENGINE_VERSION, ResultsCache, ResultsCacheRecord
 
 
 def test_results_cache_set_get_and_list(tmp_path: Path):
@@ -137,6 +138,75 @@ def test_results_cache_normalizes_evaluation_mode_for_set_and_get(tmp_path: Path
 
     assert hit is not None
     assert hit["metric_value"] == pytest.approx(1.25)
+
+
+def test_results_cache_recovers_when_only_results_legacy_exists(tmp_path: Path):
+    db_path = tmp_path / "results.sqlite"
+    con = sqlite3.connect(db_path)
+    try:
+        con.execute(
+            """
+            CREATE TABLE results_legacy (
+                collection TEXT,
+                symbol TEXT,
+                timeframe TEXT,
+                strategy TEXT,
+                params_json TEXT,
+                metric_name TEXT,
+                metric_value REAL,
+                stats_json TEXT,
+                data_fingerprint TEXT,
+                fees REAL,
+                slippage REAL,
+                run_id TEXT,
+                evaluation_mode TEXT,
+                mode_config_hash TEXT,
+                engine_version TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY(
+                    collection,
+                    symbol,
+                    timeframe,
+                    strategy,
+                    params_json,
+                    metric_name,
+                    data_fingerprint,
+                    fees,
+                    slippage,
+                    engine_version
+                )
+            )
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO results_legacy VALUES (
+                'demo','AAPL','1d','strat','{"x": 1}','sharpe',1.0,'{"sharpe":1.0}',
+                'fp',0.0,0.0,'run-1','backtest','',?,CURRENT_TIMESTAMP
+            )
+            """,
+            (ENGINE_VERSION,),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    cache = ResultsCache(tmp_path)
+    hit = cache.get(
+        collection="demo",
+        symbol="AAPL",
+        timeframe="1d",
+        strategy="strat",
+        params={"x": 1},
+        metric_name="sharpe",
+        data_fingerprint="fp",
+        fees=0.0,
+        slippage=0.0,
+        evaluation_mode="backtest",
+        mode_config_hash="",
+    )
+    assert hit is not None
+    assert hit["metric_value"] == pytest.approx(1.0)
 
 
 def test_results_cache_normalizes_evaluation_mode_when_setting_via_record(tmp_path: Path):
