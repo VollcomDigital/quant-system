@@ -77,6 +77,8 @@ class ResultsCache:
     def _ensure(self):
         con = sqlite3.connect(self.db_path)
         try:
+            if self._table_exists(con, "results_legacy") and not self._table_exists(con, "results"):
+                con.execute("ALTER TABLE results_legacy RENAME TO results")
             self._create_results_table(con)
             existing_columns = self._get_results_table_columns(con)
             # Backward-compat: add columns only when missing (avoid exception-driven control flow).
@@ -136,15 +138,29 @@ class ResultsCache:
         )
 
     @staticmethod
+    def _table_exists(con: sqlite3.Connection, name: str) -> bool:
+        row = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1",
+            (name,),
+        ).fetchone()
+        return row is not None
+
+    @staticmethod
     def _primary_key_columns(con: sqlite3.Connection, table: str) -> list[str]:
         rows = con.execute(f"PRAGMA table_info({table})").fetchall()
         pk_rows = sorted((int(row[5]), str(row[1])) for row in rows if int(row[5]) > 0)
         return [name for _, name in pk_rows]
 
     def _migrate_legacy_primary_key(self, con: sqlite3.Connection) -> None:
+        if not self._table_exists(con, "results"):
+            self._create_results_table(con)
+            return
+
         pk_columns = self._primary_key_columns(con, "results")
         if "evaluation_mode" in pk_columns and "mode_config_hash" in pk_columns:
             return
+
+        con.execute("DROP TABLE IF EXISTS results_legacy")
         con.execute("ALTER TABLE results RENAME TO results_legacy")
         self._create_results_table(con)
         con.execute(
@@ -216,8 +232,8 @@ class ResultsCache:
                 WHERE collection=? AND symbol=? AND timeframe=? AND strategy=?
                   AND params_json=? AND metric_name=? AND data_fingerprint=?
                   AND fees=? AND slippage=? AND engine_version=?
-                  AND COALESCE(evaluation_mode, 'backtest')=?
-                  AND COALESCE(mode_config_hash, '')=?
+                  AND evaluation_mode=?
+                  AND mode_config_hash=?
                 """,
                 (
                     collection,

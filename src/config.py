@@ -1486,15 +1486,15 @@ def resolve_validation_overrides(cfg: Config) -> None:
         collection_validation = collection.validation
         resolved_data_quality = _merge_data_quality_config(
             global_data_quality_policy,
-            getattr(collection_validation, "data_quality", None),
+            collection_validation.data_quality if collection_validation else None,
         )
         resolved_optimization = _merge_optimization_config(
             global_optimization_policy,
-            getattr(collection_validation, "optimization", None),
+            collection_validation.optimization if collection_validation else None,
         )
         resolved_result_consistency = _merge_result_consistency_config(
             global_result_consistency_policy,
-            getattr(collection_validation, "result_consistency", None),
+            collection_validation.result_consistency if collection_validation else None,
         )
         if (
             resolved_data_quality is None
