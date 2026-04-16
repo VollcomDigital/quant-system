@@ -267,6 +267,24 @@ See new collection examples under `config/collections/` for FX intraday via Finn
     - the runner permutes whole bars and reruns the selected strategy result after backtest
       evaluation to detect look-ahead style behavior when the median shuffled metric remains above
       the threshold
+  - `transaction_cost_robustness` (optional module; active when configured):
+    - `mode` (required): `analytics | enforce`
+      - `analytics`: compute diagnostics and attach metadata, but do not reject
+      - `enforce`: reject when robustness breaches are detected or when enabled checks are indeterminate
+    - `stress_multipliers` (required): ascending multipliers (`>= 1.0`) applied to both fees and slippage
+      during re-evaluation of the selected strategy result
+    - `max_metric_drop_pct` (required, `0..1`): maximum allowed relative drop versus baseline metric
+      before a breach is flagged
+    - `breakeven` (optional nested module):
+      - `enabled` (required when `breakeven` is present)
+      - `min_multiplier` (required, `>= 1.0`)
+      - `max_multiplier` (required, `>= min_multiplier`)
+      - `max_iterations` (required, `>= 1`)
+      - `tolerance` (required, `> 0`)
+      - when enabled, runner performs a bounded binary search over multipliers to estimate where the
+        metric-drop threshold is crossed
+    - diagnostics are attached under `post_run_meta.transaction_cost_robustness`
+    - in `enforce` mode, breaches (or indeterminate enabled checks) produce `reject_result`
   - action is fixed to `reject_result` (no `on_fail` override).
 
 Structured logs reflect this directly via gate actions:

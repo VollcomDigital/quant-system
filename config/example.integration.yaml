@@ -50,6 +50,16 @@ validation:
       pvalue_max: 0.05  # required: reject when shuffled metric beats observed metric too often
       seed: 1337  # base seed combined with collection/symbol/timeframe/strategy
       max_failed_permutations: 2  # optional cap; reject as indeterminate if exceeded
+    transaction_cost_robustness:
+      mode: enforce  # analytics | enforce
+      stress_multipliers: [2.0, 5.0]
+      max_metric_drop_pct: 0.30
+      breakeven:
+        enabled: true
+        min_multiplier: 1.0
+        max_multiplier: 5.0
+        max_iterations: 8
+        tolerance: 0.05
 
 collections:
   - name: integration_crypto

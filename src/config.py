@@ -4,7 +4,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import yaml
 
@@ -127,12 +127,30 @@ class ResultConsistencyExecutionPriceVarianceConfig:
 
 
 @dataclass
+class ResultConsistencyTransactionCostBreakevenConfig:
+    enabled: bool | None = None
+    min_multiplier: float | None = None
+    max_multiplier: float | None = None
+    max_iterations: int | None = None
+    tolerance: float | None = None
+
+
+@dataclass
+class ResultConsistencyTransactionCostRobustnessConfig:
+    mode: Literal["analytics", "enforce"] | None = None
+    stress_multipliers: list[float] | None = None
+    max_metric_drop_pct: float | None = None
+    breakeven: ResultConsistencyTransactionCostBreakevenConfig | None = None
+
+
+@dataclass
 class ResultConsistencyConfig:
     min_metric: float | None = None
     min_trades: int | None = None
     outlier_dependency: ResultConsistencyOutlierDependencyConfig | None = None
     execution_price_variance: ResultConsistencyExecutionPriceVarianceConfig | None = None
     lookahead_shuffle_test: ValidationLookaheadShuffleTestConfig | None = None
+    transaction_cost_robustness: ResultConsistencyTransactionCostRobustnessConfig | None = None
 
 
 @dataclass
@@ -169,6 +187,17 @@ LOOKAHEAD_SHUFFLE_TEST_SEED_DEFAULT = 1337
 LOOKAHEAD_SHUFFLE_TEST_SEED_MIN = 0
 LOOKAHEAD_SHUFFLE_TEST_FAILED_PERMUTATIONS_MIN = 0
 LOOKAHEAD_SHUFFLE_TEST_CONFIG_PREFIX = "validation.result_consistency.lookahead_shuffle_test"
+TRANSACTION_COST_ROBUSTNESS_MODE_ANALYTICS = "analytics"
+TRANSACTION_COST_ROBUSTNESS_MODE_ENFORCE = "enforce"
+TRANSACTION_COST_ROBUSTNESS_MODES = {
+    TRANSACTION_COST_ROBUSTNESS_MODE_ANALYTICS,
+    TRANSACTION_COST_ROBUSTNESS_MODE_ENFORCE,
+}
+TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN = 1.0
+TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MIN = 0.0
+TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MAX = 1.0
+TRANSACTION_COST_ROBUSTNESS_MAX_ITERATIONS_MIN = 1
+TRANSACTION_COST_ROBUSTNESS_TOLERANCE_MIN = 0.0
 VALIDATION_PROBABILITY_MIN = 0.0
 VALIDATION_PROBABILITY_MAX = 1.0
 VALIDATION_PERCENT_MIN = 0.0
@@ -238,18 +267,21 @@ def _normalize_optimization_config(
     min_bars = getattr(cfg, "min_bars", None)
     if min_bars is None:
         raise ValueError(f"Invalid `{prefix}`: missing required field(s): min_bars")
-    min_bars = int(min_bars)
+    min_bars = _coerce_int(min_bars, f"{prefix}.min_bars")
     if min_bars < VALIDATION_NON_NEGATIVE_INT_MIN:
         raise ValueError(f"`{prefix}.min_bars` must be >= {VALIDATION_NON_NEGATIVE_INT_MIN}")
     dof_multiplier = getattr(cfg, "dof_multiplier", None)
     if dof_multiplier is None:
         raise ValueError(f"Invalid `{prefix}`: missing required field(s): dof_multiplier")
-    dof_multiplier = int(dof_multiplier)
+    dof_multiplier = _coerce_int(dof_multiplier, f"{prefix}.dof_multiplier")
     if dof_multiplier < VALIDATION_NON_NEGATIVE_INT_MIN:
         raise ValueError(f"`{prefix}.dof_multiplier` must be >= {VALIDATION_NON_NEGATIVE_INT_MIN}")
     runtime_error_max_per_tuple = getattr(cfg, "runtime_error_max_per_tuple", None)
     if runtime_error_max_per_tuple is not None:
-        runtime_error_max_per_tuple = int(runtime_error_max_per_tuple)
+        runtime_error_max_per_tuple = _coerce_int(
+            runtime_error_max_per_tuple,
+            f"{prefix}.runtime_error_max_per_tuple",
+        )
         if runtime_error_max_per_tuple < OPTIMIZATION_RUNTIME_ERROR_MAX_PER_TUPLE_MIN:
             raise ValueError(
                 f"`{prefix}.runtime_error_max_per_tuple` must be >= {OPTIMIZATION_RUNTIME_ERROR_MAX_PER_TUPLE_MIN}"
@@ -270,7 +302,10 @@ def _apply_optimization_defaults(cfg: OptimizationPolicyConfig) -> OptimizationP
         on_fail=cfg.on_fail,
         min_bars=cfg.min_bars,
         dof_multiplier=cfg.dof_multiplier,
-        runtime_error_max_per_tuple=int(runtime_error_max_per_tuple),
+        runtime_error_max_per_tuple=_coerce_int(
+            runtime_error_max_per_tuple,
+            "validation.optimization.runtime_error_max_per_tuple",
+        ),
     )
 
 
@@ -289,12 +324,12 @@ def _normalize_data_quality_config(
         raise ValueError(f"Invalid `{prefix}`: missing required field(s): on_fail")
     min_data_points = getattr(cfg, "min_data_points", None)
     if min_data_points is not None:
-        min_data_points = int(min_data_points)
+        min_data_points = _coerce_int(min_data_points, f"{prefix}.min_data_points")
         if min_data_points < VALIDATION_NON_NEGATIVE_INT_MIN:
             raise ValueError(f"`{prefix}.min_data_points` must be >= {VALIDATION_NON_NEGATIVE_INT_MIN}")
     kurtosis = getattr(cfg, "kurtosis", None)
     if kurtosis is not None:
-        kurtosis = float(kurtosis)
+        kurtosis = _coerce_float(kurtosis, f"{prefix}.kurtosis")
         if kurtosis < VALIDATION_NON_NEGATIVE_FLOAT_MIN:
             raise ValueError(f"`{prefix}.kurtosis` must be >= {VALIDATION_NON_NEGATIVE_FLOAT_MIN}")
     return ValidationDataQualityConfig(
@@ -343,14 +378,14 @@ def _normalize_continuity_config(
         return None
     min_score = getattr(cfg, "min_score", None)
     if min_score is not None:
-        min_score = float(min_score)
+        min_score = _coerce_float(min_score, f"{prefix}.min_score")
         if min_score < VALIDATION_PROBABILITY_MIN or min_score > VALIDATION_PROBABILITY_MAX:
             raise ValueError(
                 f"`{prefix}.min_score` must be between {VALIDATION_PROBABILITY_MIN} and {VALIDATION_PROBABILITY_MAX}"
             )
     max_missing_bar_pct = getattr(cfg, "max_missing_bar_pct", None)
     if max_missing_bar_pct is not None:
-        max_missing_bar_pct = float(max_missing_bar_pct)
+        max_missing_bar_pct = _coerce_float(max_missing_bar_pct, f"{prefix}.max_missing_bar_pct")
         if max_missing_bar_pct < VALIDATION_PERCENT_MIN or max_missing_bar_pct > VALIDATION_PERCENT_MAX:
             raise ValueError(
                 f"`{prefix}.max_missing_bar_pct` must be between {VALIDATION_PERCENT_MIN} and {VALIDATION_PERCENT_MAX}"
@@ -379,7 +414,7 @@ def _normalize_outlier_detection_config(
     max_outlier_pct = getattr(cfg, "max_outlier_pct", None)
     if max_outlier_pct is None:
         raise ValueError(f"Invalid `{prefix}`: missing required field(s): max_outlier_pct")
-    max_outlier_pct = float(max_outlier_pct)
+    max_outlier_pct = _coerce_float(max_outlier_pct, f"{prefix}.max_outlier_pct")
     if max_outlier_pct < VALIDATION_PERCENT_MIN or max_outlier_pct > VALIDATION_PERCENT_MAX:
         raise ValueError(
             f"`{prefix}.max_outlier_pct` must be between {VALIDATION_PERCENT_MIN} and {VALIDATION_PERCENT_MAX}"
@@ -395,7 +430,7 @@ def _normalize_outlier_detection_config(
     zscore_threshold = getattr(cfg, "zscore_threshold", None)
     if zscore_threshold is None:
         raise ValueError(f"Invalid `{prefix}`: missing required field(s): zscore_threshold")
-    zscore_threshold = float(zscore_threshold)
+    zscore_threshold = _coerce_float(zscore_threshold, f"{prefix}.zscore_threshold")
     if zscore_threshold <= OUTLIER_DETECTION_ZSCORE_THRESHOLD_MIN_EXCLUSIVE:
         raise ValueError(
             f"`{prefix}.zscore_threshold` must be > {OUTLIER_DETECTION_ZSCORE_THRESHOLD_MIN_EXCLUSIVE}"
@@ -426,13 +461,13 @@ def _normalize_result_consistency_outlier_dependency_config(
     slices = getattr(cfg, "slices", None)
     if slices is None:
         raise ValueError(f"Invalid `{prefix}`: missing required field(s): slices")
-    slices = int(slices)
+    slices = _coerce_int(slices, f"{prefix}.slices")
     if slices < RESULT_CONSISTENCY_OUTLIER_DEPENDENCY_SLICES_MIN:
         raise ValueError(f"`{prefix}.slices` must be >= {RESULT_CONSISTENCY_OUTLIER_DEPENDENCY_SLICES_MIN}")
     profit_share_threshold = getattr(cfg, "profit_share_threshold", None)
     if profit_share_threshold is None:
         raise ValueError(f"Invalid `{prefix}`: missing required field(s): profit_share_threshold")
-    profit_share_threshold = float(profit_share_threshold)
+    profit_share_threshold = _coerce_float(profit_share_threshold, f"{prefix}.profit_share_threshold")
     if (
         profit_share_threshold < VALIDATION_PROBABILITY_MIN
         or profit_share_threshold > VALIDATION_PROBABILITY_MAX
@@ -443,7 +478,7 @@ def _normalize_result_consistency_outlier_dependency_config(
     trade_share_threshold = getattr(cfg, "trade_share_threshold", None)
     if trade_share_threshold is None:
         raise ValueError(f"Invalid `{prefix}`: missing required field(s): trade_share_threshold")
-    trade_share_threshold = float(trade_share_threshold)
+    trade_share_threshold = _coerce_float(trade_share_threshold, f"{prefix}.trade_share_threshold")
     if (
         trade_share_threshold < VALIDATION_PROBABILITY_MIN
         or trade_share_threshold > VALIDATION_PROBABILITY_MAX
@@ -477,7 +512,7 @@ def _normalize_result_consistency_execution_price_variance_config(
     price_tolerance_bps = getattr(cfg, "price_tolerance_bps", None)
     if price_tolerance_bps is None:
         raise ValueError(f"Invalid `{prefix}`: missing required field(s): price_tolerance_bps")
-    price_tolerance_bps = float(price_tolerance_bps)
+    price_tolerance_bps = _coerce_float(price_tolerance_bps, f"{prefix}.price_tolerance_bps")
     if price_tolerance_bps < VALIDATION_NON_NEGATIVE_FLOAT_MIN:
         raise ValueError(f"`{prefix}.price_tolerance_bps` must be >= {VALIDATION_NON_NEGATIVE_FLOAT_MIN}")
     return ResultConsistencyExecutionPriceVarianceConfig(
@@ -490,6 +525,315 @@ def _apply_result_consistency_execution_price_variance_defaults(
 ) -> ResultConsistencyExecutionPriceVarianceConfig:
     return ResultConsistencyExecutionPriceVarianceConfig(
         price_tolerance_bps=cfg.price_tolerance_bps,
+    )
+
+
+def _normalize_transaction_cost_breakeven_config(
+    cfg: ResultConsistencyTransactionCostBreakevenConfig | None,
+    prefix: str,
+) -> ResultConsistencyTransactionCostBreakevenConfig | None:
+    if cfg is None:
+        return None
+    enabled = _normalize_transaction_cost_breakeven_enabled(getattr(cfg, "enabled", None), prefix)
+    min_multiplier = _normalize_transaction_cost_breakeven_multiplier(
+        getattr(cfg, "min_multiplier", None),
+        f"{prefix}.min_multiplier",
+    )
+    max_multiplier = _normalize_transaction_cost_breakeven_multiplier(
+        getattr(cfg, "max_multiplier", None),
+        f"{prefix}.max_multiplier",
+    )
+    max_iterations = _normalize_transaction_cost_breakeven_iterations(
+        getattr(cfg, "max_iterations", None),
+        prefix,
+    )
+    tolerance = _normalize_transaction_cost_breakeven_tolerance(
+        getattr(cfg, "tolerance", None),
+        prefix,
+    )
+    _validate_transaction_cost_breakeven_multiplier_range(
+        min_multiplier=min_multiplier,
+        max_multiplier=max_multiplier,
+        prefix=prefix,
+    )
+    return ResultConsistencyTransactionCostBreakevenConfig(
+        enabled=enabled,
+        min_multiplier=min_multiplier,
+        max_multiplier=max_multiplier,
+        max_iterations=max_iterations,
+        tolerance=tolerance,
+    )
+
+
+def _normalize_transaction_cost_breakeven_enabled(
+    enabled_raw: Any,
+    prefix: str,
+) -> bool | None:
+    if enabled_raw is not None and not isinstance(enabled_raw, bool):
+        raise ValueError(f"Invalid `{prefix}.enabled`: expected a boolean")
+    return enabled_raw
+
+
+def _normalize_transaction_cost_breakeven_multiplier(
+    multiplier_raw: Any,
+    field_path: str,
+) -> float | None:
+    if multiplier_raw is None:
+        return None
+    multiplier = _coerce_float(multiplier_raw, field_path)
+    if multiplier < TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN:
+        raise ValueError(
+            f"`{field_path}` must be >= {TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN}"
+        )
+    return multiplier
+
+
+def _normalize_transaction_cost_breakeven_iterations(
+    max_iterations_raw: Any,
+    prefix: str,
+) -> int | None:
+    if max_iterations_raw is None:
+        return None
+    max_iterations = _coerce_int(max_iterations_raw, f"{prefix}.max_iterations")
+    if max_iterations < TRANSACTION_COST_ROBUSTNESS_MAX_ITERATIONS_MIN:
+        raise ValueError(
+            f"`{prefix}.max_iterations` must be >= {TRANSACTION_COST_ROBUSTNESS_MAX_ITERATIONS_MIN}"
+        )
+    return max_iterations
+
+
+def _normalize_transaction_cost_breakeven_tolerance(
+    tolerance_raw: Any,
+    prefix: str,
+) -> float | None:
+    if tolerance_raw is None:
+        return None
+    tolerance = _coerce_float(tolerance_raw, f"{prefix}.tolerance")
+    if tolerance <= TRANSACTION_COST_ROBUSTNESS_TOLERANCE_MIN:
+        raise ValueError(
+            f"`{prefix}.tolerance` must be > {TRANSACTION_COST_ROBUSTNESS_TOLERANCE_MIN}"
+        )
+    return tolerance
+
+
+def _validate_transaction_cost_breakeven_multiplier_range(
+    *,
+    min_multiplier: float | None,
+    max_multiplier: float | None,
+    prefix: str,
+) -> None:
+    if min_multiplier is None or max_multiplier is None:
+        return
+    if max_multiplier < min_multiplier:
+        raise ValueError(f"`{prefix}.max_multiplier` must be >= `{prefix}.min_multiplier`")
+
+
+def _normalize_transaction_cost_mode(mode_raw: Any, prefix: str) -> str | None:
+    mode = str(mode_raw).strip().lower() if mode_raw is not None else None
+    if mode is not None and mode not in TRANSACTION_COST_ROBUSTNESS_MODES:
+        raise ValueError(
+            f"Invalid `{prefix}.mode`: expected one of {sorted(TRANSACTION_COST_ROBUSTNESS_MODES)}"
+        )
+    return mode
+
+
+def _normalize_transaction_cost_stress_multipliers(
+    stress_multipliers_raw: Any,
+    prefix: str,
+) -> list[float] | None:
+    if stress_multipliers_raw is None:
+        return None
+    if not isinstance(stress_multipliers_raw, list):
+        raise ValueError(f"Invalid `{prefix}.stress_multipliers`: expected a list")
+    normalized_multipliers: list[float] = []
+    previous: float | None = None
+    for idx, value in enumerate(stress_multipliers_raw):
+        multiplier = _coerce_float(value, f"{prefix}.stress_multipliers[{idx}]")
+        if multiplier < TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN:
+            raise ValueError(
+                f"`{prefix}.stress_multipliers[{idx}]` must be >= {TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN}"
+            )
+        if previous is not None and multiplier <= previous:
+            raise ValueError(f"`{prefix}.stress_multipliers` must be sorted in ascending order")
+        normalized_multipliers.append(multiplier)
+        previous = multiplier
+    return normalized_multipliers
+
+
+def _normalize_transaction_cost_max_metric_drop_pct(
+    max_metric_drop_pct_raw: Any,
+    prefix: str,
+) -> float | None:
+    if max_metric_drop_pct_raw is None:
+        return None
+    max_metric_drop_pct = _coerce_float(max_metric_drop_pct_raw, f"{prefix}.max_metric_drop_pct")
+    if (
+        max_metric_drop_pct < TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MIN
+        or max_metric_drop_pct > TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MAX
+    ):
+        raise ValueError(
+            f"`{prefix}.max_metric_drop_pct` must be between "
+            f"{TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MIN} and "
+            f"{TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MAX}"
+        )
+    return max_metric_drop_pct
+
+
+def _apply_transaction_cost_breakeven_defaults(
+    cfg: ResultConsistencyTransactionCostBreakevenConfig,
+) -> ResultConsistencyTransactionCostBreakevenConfig:
+    enabled = cfg.enabled
+    if enabled is None:
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness.breakeven`: "
+            "missing required field(s): enabled"
+        )
+    if cfg.min_multiplier is None:
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness.breakeven`: "
+            "missing required field(s): min_multiplier"
+        )
+    if cfg.max_multiplier is None:
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness.breakeven`: "
+            "missing required field(s): max_multiplier"
+        )
+    if cfg.max_iterations is None:
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness.breakeven`: "
+            "missing required field(s): max_iterations"
+        )
+    if cfg.tolerance is None:
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness.breakeven`: "
+            "missing required field(s): tolerance"
+        )
+    if cfg.min_multiplier < TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN:
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness.breakeven`: "
+            f"min_multiplier must be >= {TRANSACTION_COST_ROBUSTNESS_MIN_MULTIPLIER_MIN}"
+        )
+    if cfg.max_multiplier < cfg.min_multiplier:
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness.breakeven`: "
+            "max_multiplier must be >= min_multiplier"
+        )
+    if cfg.max_iterations < TRANSACTION_COST_ROBUSTNESS_MAX_ITERATIONS_MIN:
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness.breakeven`: "
+            f"max_iterations must be >= {TRANSACTION_COST_ROBUSTNESS_MAX_ITERATIONS_MIN}"
+        )
+    if cfg.tolerance <= TRANSACTION_COST_ROBUSTNESS_TOLERANCE_MIN:
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness.breakeven`: "
+            f"tolerance must be > {TRANSACTION_COST_ROBUSTNESS_TOLERANCE_MIN}"
+        )
+    return ResultConsistencyTransactionCostBreakevenConfig(
+        enabled=enabled,
+        min_multiplier=_coerce_float(
+            cfg.min_multiplier,
+            "validation.result_consistency.transaction_cost_robustness.breakeven.min_multiplier",
+        ),
+        max_multiplier=_coerce_float(
+            cfg.max_multiplier,
+            "validation.result_consistency.transaction_cost_robustness.breakeven.max_multiplier",
+        ),
+        max_iterations=_coerce_int(
+            cfg.max_iterations,
+            "validation.result_consistency.transaction_cost_robustness.breakeven.max_iterations",
+        ),
+        tolerance=_coerce_float(
+            cfg.tolerance,
+            "validation.result_consistency.transaction_cost_robustness.breakeven.tolerance",
+        ),
+    )
+
+
+def _normalize_transaction_cost_robustness_config(
+    cfg: ResultConsistencyTransactionCostRobustnessConfig | None,
+    prefix: str,
+) -> ResultConsistencyTransactionCostRobustnessConfig | None:
+    if cfg is None:
+        return None
+    mode = _normalize_transaction_cost_mode(getattr(cfg, "mode", None), prefix)
+    stress_multipliers = _normalize_transaction_cost_stress_multipliers(
+        getattr(cfg, "stress_multipliers", None),
+        prefix,
+    )
+    max_metric_drop_pct = _normalize_transaction_cost_max_metric_drop_pct(
+        getattr(cfg, "max_metric_drop_pct", None),
+        prefix,
+    )
+    breakeven = _normalize_transaction_cost_breakeven_config(
+        getattr(cfg, "breakeven", None),
+        f"{prefix}.breakeven",
+    )
+    return ResultConsistencyTransactionCostRobustnessConfig(
+        mode=mode,
+        stress_multipliers=stress_multipliers,
+        max_metric_drop_pct=max_metric_drop_pct,
+        breakeven=breakeven,
+    )
+
+
+def _apply_transaction_cost_robustness_defaults(
+    cfg: ResultConsistencyTransactionCostRobustnessConfig,
+) -> ResultConsistencyTransactionCostRobustnessConfig:
+    mode = cfg.mode
+    if mode is None:
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness`: "
+            "missing required field(s): mode"
+        )
+    if mode not in TRANSACTION_COST_ROBUSTNESS_MODES:
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness`: "
+            f"expected mode to be one of {sorted(TRANSACTION_COST_ROBUSTNESS_MODES)}"
+        )
+    stress_multipliers = cfg.stress_multipliers
+    if stress_multipliers is None or not stress_multipliers:
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness`: "
+            "missing required field(s): stress_multipliers"
+        )
+    if cfg.max_metric_drop_pct is None:
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness`: "
+            "missing required field(s): max_metric_drop_pct"
+        )
+    if not math.isfinite(cfg.max_metric_drop_pct):
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness`: "
+            "`validation.result_consistency.transaction_cost_robustness.max_metric_drop_pct` must be finite"
+        )
+    if cfg.max_metric_drop_pct < TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MIN or (
+        cfg.max_metric_drop_pct > TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MAX
+    ):
+        raise ValueError(
+            "Invalid `validation.result_consistency.transaction_cost_robustness`: "
+            f"max_metric_drop_pct must be between "
+            f"{TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MIN} and "
+            f"{TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MAX}"
+        )
+    breakeven = (
+        _apply_transaction_cost_breakeven_defaults(cfg.breakeven)
+        if cfg.breakeven is not None
+        else None
+    )
+    return ResultConsistencyTransactionCostRobustnessConfig(
+        mode=mode,
+        stress_multipliers=[
+            _coerce_float(
+                value,
+                f"validation.result_consistency.transaction_cost_robustness.stress_multipliers[{idx}]",
+            )
+            for idx, value in enumerate(stress_multipliers)
+        ],
+        max_metric_drop_pct=_coerce_float(
+            cfg.max_metric_drop_pct,
+            "validation.result_consistency.transaction_cost_robustness.max_metric_drop_pct",
+        ),
+        breakeven=breakeven,
     )
 
 
@@ -511,17 +855,25 @@ def _normalize_result_consistency_config(
         getattr(cfg, "lookahead_shuffle_test", None),
         f"{prefix}.lookahead_shuffle_test",
     )
-    if outlier_dependency is None and execution_price_variance is None and lookahead_shuffle_test is None:
+    transaction_cost_robustness = _normalize_transaction_cost_robustness_config(
+        getattr(cfg, "transaction_cost_robustness", None),
+        f"{prefix}.transaction_cost_robustness",
+    )
+    if (
+        outlier_dependency is None
+        and execution_price_variance is None
+        and lookahead_shuffle_test is None
+        and transaction_cost_robustness is None
+    ):
         raise ValueError(
             f"Invalid `{prefix}`: expected at least one configured module "
-            "(`outlier_dependency`, `execution_price_variance`, or `lookahead_shuffle_test`)"
+            "(`outlier_dependency`, `execution_price_variance`, `lookahead_shuffle_test`, "
+            "or `transaction_cost_robustness`)"
         )
     min_metric_raw = getattr(cfg, "min_metric", None)
-    min_metric = float(min_metric_raw) if min_metric_raw is not None else None
-    if min_metric is not None and not math.isfinite(min_metric):
-        raise ValueError(f"`{prefix}.min_metric` must be finite")
+    min_metric = _coerce_float(min_metric_raw, f"{prefix}.min_metric") if min_metric_raw is not None else None
     min_trades_raw = getattr(cfg, "min_trades", None)
-    min_trades = int(min_trades_raw) if min_trades_raw is not None else None
+    min_trades = _coerce_int(min_trades_raw, f"{prefix}.min_trades") if min_trades_raw is not None else None
     if min_trades is not None and min_trades < RESULT_CONSISTENCY_MIN_TRADES_MIN:
         raise ValueError(f"`{prefix}.min_trades` must be >= {RESULT_CONSISTENCY_MIN_TRADES_MIN}")
     return ResultConsistencyConfig(
@@ -530,6 +882,7 @@ def _normalize_result_consistency_config(
         outlier_dependency=outlier_dependency,
         execution_price_variance=execution_price_variance,
         lookahead_shuffle_test=lookahead_shuffle_test,
+        transaction_cost_robustness=transaction_cost_robustness,
     )
 
 
@@ -553,6 +906,11 @@ def _apply_result_consistency_defaults(cfg: ResultConsistencyConfig) -> ResultCo
                 LOOKAHEAD_SHUFFLE_TEST_CONFIG_PREFIX,
             )
             if cfg.lookahead_shuffle_test is not None
+            else None
+        ),
+        transaction_cost_robustness=(
+            _apply_transaction_cost_robustness_defaults(cfg.transaction_cost_robustness)
+            if cfg.transaction_cost_robustness is not None
             else None
         ),
     )
@@ -631,11 +989,16 @@ def _merge_result_consistency_config(
             getattr(base, "lookahead_shuffle_test", None),
             getattr(override, "lookahead_shuffle_test", None),
         ),
+        transaction_cost_robustness=_merge_transaction_cost_robustness_config(
+            getattr(base, "transaction_cost_robustness", None),
+            getattr(override, "transaction_cost_robustness", None),
+        ),
     )
     if (
         merged.outlier_dependency is None
         and merged.execution_price_variance is None
         and merged.lookahead_shuffle_test is None
+        and merged.transaction_cost_robustness is None
     ):
         return None
     normalized = _normalize_result_consistency_config(merged, "validation.result_consistency")
@@ -665,6 +1028,55 @@ def _merge_result_consistency_execution_price_variance_config(
         return None
     return ResultConsistencyExecutionPriceVarianceConfig(
         price_tolerance_bps=_merged_field(base, override, "price_tolerance_bps"),
+    )
+
+
+def _merge_transaction_cost_breakeven_config(
+    base: ResultConsistencyTransactionCostBreakevenConfig | None,
+    override: ResultConsistencyTransactionCostBreakevenConfig | None,
+) -> ResultConsistencyTransactionCostBreakevenConfig | None:
+    if base is None and override is None:
+        return None
+    return ResultConsistencyTransactionCostBreakevenConfig(
+        enabled=_merged_field(base, override, "enabled"),
+        min_multiplier=_merged_field(base, override, "min_multiplier"),
+        max_multiplier=_merged_field(base, override, "max_multiplier"),
+        max_iterations=_merged_field(base, override, "max_iterations"),
+        tolerance=_merged_field(base, override, "tolerance"),
+    )
+
+
+def _merge_transaction_cost_robustness_config(
+    base: ResultConsistencyTransactionCostRobustnessConfig | None,
+    override: ResultConsistencyTransactionCostRobustnessConfig | None,
+) -> ResultConsistencyTransactionCostRobustnessConfig | None:
+    if base is None and override is None:
+        return None
+    merged = ResultConsistencyTransactionCostRobustnessConfig(
+        mode=_merged_field(base, override, "mode"),
+        stress_multipliers=_merged_field(base, override, "stress_multipliers"),
+        max_metric_drop_pct=_merged_field(base, override, "max_metric_drop_pct"),
+        breakeven=_merge_transaction_cost_breakeven_config(
+            getattr(base, "breakeven", None),
+            getattr(override, "breakeven", None),
+        ),
+    )
+    if (
+        merged.mode is None
+        and merged.stress_multipliers is None
+        and merged.max_metric_drop_pct is None
+        and merged.breakeven is None
+    ):
+        return None
+    normalized = _normalize_transaction_cost_robustness_config(
+        merged,
+        "validation.result_consistency.transaction_cost_robustness",
+    )
+    return _apply_transaction_cost_robustness_defaults(
+        _require_normalized(
+            normalized,
+            "validation.result_consistency.transaction_cost_robustness",
+        )
     )
 
 
@@ -719,13 +1131,13 @@ def _normalize_stationarity_regime_shift_config(
     window = getattr(cfg, "window", None)
     if window is None:
         raise ValueError(f"Invalid `{prefix}`: missing required field(s): window")
-    window = int(window)
+    window = _coerce_int(window, f"{prefix}.window")
     if window < STATIONARITY_REGIME_SHIFT_WINDOW_MIN:
         raise ValueError(f"`{prefix}.window` must be >= {STATIONARITY_REGIME_SHIFT_WINDOW_MIN}")
     mean_shift_max = getattr(cfg, "mean_shift_max", None)
     if mean_shift_max is None:
         raise ValueError(f"Invalid `{prefix}`: missing required field(s): mean_shift_max")
-    mean_shift_max = float(mean_shift_max)
+    mean_shift_max = _coerce_float(mean_shift_max, f"{prefix}.mean_shift_max")
     if mean_shift_max < STATIONARITY_REGIME_SHIFT_MEAN_SHIFT_MIN:
         raise ValueError(
             f"`{prefix}.mean_shift_max` must be >= {STATIONARITY_REGIME_SHIFT_MEAN_SHIFT_MIN}"
@@ -733,7 +1145,7 @@ def _normalize_stationarity_regime_shift_config(
     vol_ratio_max = getattr(cfg, "vol_ratio_max", None)
     if vol_ratio_max is None:
         raise ValueError(f"Invalid `{prefix}`: missing required field(s): vol_ratio_max")
-    vol_ratio_max = float(vol_ratio_max)
+    vol_ratio_max = _coerce_float(vol_ratio_max, f"{prefix}.vol_ratio_max")
     if vol_ratio_max < STATIONARITY_REGIME_SHIFT_VOL_RATIO_MIN:
         raise ValueError(f"`{prefix}.vol_ratio_max` must be >= {STATIONARITY_REGIME_SHIFT_VOL_RATIO_MIN}")
     return ValidationStationarityRegimeShiftConfig(
@@ -752,14 +1164,14 @@ def _normalize_stationarity_config(
     adf_pvalue_max = getattr(cfg, "adf_pvalue_max", None)
     if adf_pvalue_max is None:
         raise ValueError(f"Invalid `{prefix}`: missing required field(s): adf_pvalue_max")
-    adf_pvalue_max = float(adf_pvalue_max)
+    adf_pvalue_max = _coerce_float(adf_pvalue_max, f"{prefix}.adf_pvalue_max")
     if adf_pvalue_max < VALIDATION_PROBABILITY_MIN or adf_pvalue_max > VALIDATION_PROBABILITY_MAX:
         raise ValueError(
             f"`{prefix}.adf_pvalue_max` must be between {VALIDATION_PROBABILITY_MIN} and {VALIDATION_PROBABILITY_MAX}"
         )
     kpss_pvalue_min = getattr(cfg, "kpss_pvalue_min", None)
     if kpss_pvalue_min is not None:
-        kpss_pvalue_min = float(kpss_pvalue_min)
+        kpss_pvalue_min = _coerce_float(kpss_pvalue_min, f"{prefix}.kpss_pvalue_min")
         if (
             kpss_pvalue_min < VALIDATION_PROBABILITY_MIN
             or kpss_pvalue_min > VALIDATION_PROBABILITY_MAX
@@ -768,7 +1180,7 @@ def _normalize_stationarity_config(
                 f"`{prefix}.kpss_pvalue_min` must be between {VALIDATION_PROBABILITY_MIN} and {VALIDATION_PROBABILITY_MAX}"
             )
     min_points = getattr(cfg, "min_points", None)
-    normalized_min_points = int(min_points) if min_points is not None else None
+    normalized_min_points = _coerce_int(min_points, f"{prefix}.min_points") if min_points is not None else None
     if normalized_min_points is not None and normalized_min_points < STATIONARITY_MIN_POINTS_MIN:
         raise ValueError(f"`{prefix}.min_points` must be >= {STATIONARITY_MIN_POINTS_MIN}")
     regime_shift = _normalize_stationarity_regime_shift_config(
@@ -860,7 +1272,7 @@ def _normalize_lookahead_permutations(
     prefix: str,
 ) -> int | None:
     permutations_raw = getattr(cfg, "permutations", None)
-    permutations = int(permutations_raw) if permutations_raw is not None else None
+    permutations = _coerce_int(permutations_raw, f"{prefix}.permutations") if permutations_raw is not None else None
     if permutations is not None and permutations < LOOKAHEAD_SHUFFLE_TEST_PERMUTATIONS_MIN:
         raise ValueError(
             f"`{prefix}.permutations` must be >= {LOOKAHEAD_SHUFFLE_TEST_PERMUTATIONS_MIN}"
@@ -873,7 +1285,7 @@ def _normalize_lookahead_pvalue_max(
     prefix: str,
 ) -> float | None:
     pvalue_max_raw = getattr(cfg, "pvalue_max", None)
-    pvalue_max = float(pvalue_max_raw) if pvalue_max_raw is not None else None
+    pvalue_max = _coerce_float(pvalue_max_raw, f"{prefix}.pvalue_max") if pvalue_max_raw is not None else None
     if pvalue_max is not None and not (
         VALIDATION_PROBABILITY_MIN <= pvalue_max <= VALIDATION_PROBABILITY_MAX
     ):
@@ -888,7 +1300,7 @@ def _normalize_lookahead_seed(
     prefix: str,
 ) -> int | None:
     seed_raw = getattr(cfg, "seed", None)
-    seed = int(seed_raw) if seed_raw is not None else None
+    seed = _coerce_int(seed_raw, f"{prefix}.seed") if seed_raw is not None else None
     if seed is not None and seed < LOOKAHEAD_SHUFFLE_TEST_SEED_MIN:
         raise ValueError(f"`{prefix}.seed` must be >= {LOOKAHEAD_SHUFFLE_TEST_SEED_MIN}")
     return seed
@@ -901,7 +1313,9 @@ def _normalize_lookahead_max_failed_permutations(
 ) -> int | None:
     max_failed_permutations_raw = getattr(cfg, "max_failed_permutations", None)
     max_failed_permutations = (
-        int(max_failed_permutations_raw) if max_failed_permutations_raw is not None else None
+        _coerce_int(max_failed_permutations_raw, f"{prefix}.max_failed_permutations")
+        if max_failed_permutations_raw is not None
+        else None
     )
     if max_failed_permutations is not None:
         if max_failed_permutations < LOOKAHEAD_SHUFFLE_TEST_FAILED_PERMUTATIONS_MIN:
@@ -1021,6 +1435,21 @@ def require_mapping(raw: Any, prefix: str) -> dict[str, Any]:
     return cast(dict[str, Any], raw)
 
 
+def _coerce_int(value: Any, field_path: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"Invalid `{field_path}`: expected an integer")
+    return value
+
+
+def _coerce_float(value: Any, field_path: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"Invalid `{field_path}`: expected a number")
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"`{field_path}` must be finite")
+    return parsed
+
+
 def parse_optional_int(
     raw: dict[str, Any],
     prefix: str,
@@ -1032,7 +1461,7 @@ def parse_optional_int(
     value = raw.get(key)
     if value is None:
         return None
-    parsed = int(value)
+    parsed = _coerce_int(value, f"{prefix}.{key}")
     if min_value is not None and parsed < min_value:
         raise ValueError(f"`{prefix}.{key}` must be >= {min_value}")
     if max_value is not None and parsed > max_value:
@@ -1065,11 +1494,35 @@ def parse_optional_float(
     value = raw.get(key)
     if value is None:
         return None
-    parsed = float(value)
+    parsed = _coerce_float(value, f"{prefix}.{key}")
     if min_value is not None and parsed < min_value:
         raise ValueError(f"`{prefix}.{key}` must be >= {min_value}")
     if max_value is not None and parsed > max_value:
         raise ValueError(f"`{prefix}.{key}` must be <= {max_value}")
+    return parsed
+
+
+def parse_optional_float_list(
+    raw: dict[str, Any],
+    prefix: str,
+    key: str,
+    *,
+    min_value: float | None = None,
+    max_value: float | None = None,
+) -> list[float] | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise ValueError(f"Invalid `{prefix}.{key}`: expected a list")
+    parsed: list[float] = []
+    for idx, item in enumerate(value):
+        parsed_item = _coerce_float(item, f"{prefix}.{key}[{idx}]")
+        if min_value is not None and parsed_item < min_value:
+            raise ValueError(f"`{prefix}.{key}[{idx}]` must be >= {min_value}")
+        if max_value is not None and parsed_item > max_value:
+            raise ValueError(f"`{prefix}.{key}[{idx}]` must be <= {max_value}")
+        parsed.append(parsed_item)
     return parsed
 
 
@@ -1523,6 +1976,22 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
         if isinstance(lookahead_shuffle_test_raw, dict)
         else None
     )
+    transaction_cost_robustness_raw = parsed_raw.get("transaction_cost_robustness")
+    if (
+        transaction_cost_robustness_raw is not None
+        and not isinstance(transaction_cost_robustness_raw, dict)
+    ):
+        raise ValueError(
+            f"Invalid `{prefix}.transaction_cost_robustness`: expected a mapping"
+        )
+    transaction_cost_robustness = (
+        _parse_result_consistency_transaction_cost_robustness(
+            transaction_cost_robustness_raw,
+            f"{prefix}.transaction_cost_robustness",
+        )
+        if isinstance(transaction_cost_robustness_raw, dict)
+        else None
+    )
 
     return _normalize_result_consistency_config(
         ResultConsistencyConfig(
@@ -1531,6 +2000,7 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
             outlier_dependency=outlier_dependency,
             execution_price_variance=execution_price_variance,
             lookahead_shuffle_test=lookahead_shuffle_test,
+            transaction_cost_robustness=transaction_cost_robustness,
         ),
         prefix,
     )
@@ -1583,6 +2053,50 @@ def _parse_result_consistency_execution_price_variance(
     )
     return ResultConsistencyExecutionPriceVarianceConfig(
         price_tolerance_bps=float(price_tolerance_bps),
+    )
+
+
+def _parse_result_consistency_transaction_cost_breakeven(
+    raw: Any, prefix: str
+) -> ResultConsistencyTransactionCostBreakevenConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    return ResultConsistencyTransactionCostBreakevenConfig(
+        enabled=parse_optional_bool(parsed_raw, prefix, "enabled"),
+        min_multiplier=parse_optional_float(parsed_raw, prefix, "min_multiplier"),
+        max_multiplier=parse_optional_float(parsed_raw, prefix, "max_multiplier"),
+        max_iterations=parse_optional_int(parsed_raw, prefix, "max_iterations"),
+        tolerance=parse_optional_float(parsed_raw, prefix, "tolerance"),
+    )
+
+
+def _parse_result_consistency_transaction_cost_robustness(
+    raw: Any,
+    prefix: str,
+) -> ResultConsistencyTransactionCostRobustnessConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    stress_multipliers = parse_optional_float_list(
+        parsed_raw,
+        prefix,
+        "stress_multipliers",
+    )
+    return ResultConsistencyTransactionCostRobustnessConfig(
+        mode=parse_optional_str(parsed_raw, "mode"),
+        stress_multipliers=stress_multipliers,
+        max_metric_drop_pct=parse_optional_float(
+            parsed_raw,
+            prefix,
+            "max_metric_drop_pct",
+            min_value=TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MIN,
+            max_value=TRANSACTION_COST_ROBUSTNESS_MAX_METRIC_DROP_PCT_MAX,
+        ),
+        breakeven=_parse_result_consistency_transaction_cost_breakeven(
+            parsed_raw.get("breakeven"),
+            f"{prefix}.breakeven",
+        ),
     )
 
 
@@ -1663,14 +2177,14 @@ def load_config(path: str | Path) -> Config:
         strategies=strategies,
         engine=str(raw.get("engine", "pybroker")).lower(),
         param_search=str(raw.get("param_search", raw.get("param_optimizer", "grid"))).lower(),
-        param_trials=int(raw.get("param_trials", raw.get("opt_trials", 25))),
-        max_workers=int(raw.get("max_workers", raw.get("asset_workers", 1))),
-        asset_workers=int(raw.get("asset_workers", raw.get("max_workers", 1))),
-        param_workers=int(raw.get("param_workers", 1)),
-        max_fetch_concurrency=int(raw.get("max_fetch_concurrency", 2)),
-        fees=float(raw.get("fees", 0.0)),
-        slippage=float(raw.get("slippage", 0.0)),
-        risk_free_rate=float(raw.get("risk_free_rate", 0.0)),
+        param_trials=_coerce_int(raw.get("param_trials", raw.get("opt_trials", 25)), "param_trials"),
+        max_workers=_coerce_int(raw.get("max_workers", raw.get("asset_workers", 1)), "max_workers"),
+        asset_workers=_coerce_int(raw.get("asset_workers", raw.get("max_workers", 1)), "asset_workers"),
+        param_workers=_coerce_int(raw.get("param_workers", 1), "param_workers"),
+        max_fetch_concurrency=_coerce_int(raw.get("max_fetch_concurrency", 2), "max_fetch_concurrency"),
+        fees=_coerce_float(raw.get("fees", 0.0), "fees"),
+        slippage=_coerce_float(raw.get("slippage", 0.0), "slippage"),
+        risk_free_rate=_coerce_float(raw.get("risk_free_rate", 0.0), "risk_free_rate"),
         cache_dir=raw.get("cache_dir", ".cache/data"),
         evaluation_mode=evaluation_mode,
         notifications=notifications_cfg,
