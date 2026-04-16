@@ -346,8 +346,6 @@ class BacktestRunner:
                 )
 
     def _result_store_insert(self, record: ResultRecord) -> None:
-        if self.run_id is None:
-            return
         try:
             self.result_store.insert(record)
         except Exception as exc:
