@@ -91,6 +91,144 @@ The largest missing capabilities are:
 - low-latency gateway/HFT foundations
 - infrastructure-as-code and platform deployment boundaries
 
+## Upstream-Inspired Capability Adoption Strategy
+
+The roadmap should incorporate ideas from the following repositories without allowing any of them to become the architectural spine of the platform:
+
+- `shiyu-coder/Kronos`
+- `MemPalace/mempalace`
+- `HKUDS/Vibe-Trading`
+- `rtk-ai/rtk`
+- `NVIDIA-AI-Blueprints/quantitative-portfolio-optimization`
+- `AI4Finance-Foundation/FinRL`
+- `666ghj/MiroFish`
+
+### Adoption Model
+
+Use a **hybrid adoption model** with a strong bias toward **pattern-level adoption first** and **selective integration only at clean adapter boundaries**.
+
+This means:
+
+- internal packages own core contracts, orchestration, control planes, and risk boundaries
+- upstream repositories are treated as architecture donors, bounded providers, or external operator tools
+- direct integration is allowed only where the upstream capability is already naturally artifact- or service-shaped
+- execution, custody, OMS, RMS, and treasury boundaries remain internal and deterministic
+
+### Repository Classification
+
+#### `HKUDS/Vibe-Trading`
+
+- primary architecture donor
+- pattern-level adoption only
+- borrow:
+  - loader registries and fallback patterns
+  - composite backtest orchestration concepts
+  - robustness validation and research-to-report automation
+- avoid:
+  - transplanting its full agent stack as the core runtime
+
+#### `shiyu-coder/Kronos`
+
+- bounded model provider
+- selective integration only through an internal forecasting adapter
+- use for:
+  - cacheable prediction features from OHLCV windows
+  - batch forecasting across multiple assets
+- land behind:
+  - `alpha_research/ml_models/providers/`
+  - `shared_lib` prediction contracts
+  - `data_platform/feature_store/` persistence
+
+#### `MemPalace/mempalace`
+
+- research-memory subsystem donor
+- pattern adoption first, optional backend integration later
+- use for:
+  - factor hypotheses
+  - experiment rationale
+  - failed trial history
+  - retrieval context for researcher and reviewer agents
+
+#### `NVIDIA-AI-Blueprints/quantitative-portfolio-optimization`
+
+- portfolio optimization donor with optional accelerator backend
+- pattern adoption first, optional GPU backend later
+- use for:
+  - Mean-CVaR and constrained allocation workflows
+  - portfolio construction after alpha generation and before execution
+
+#### `AI4Finance-Foundation/FinRL`
+
+- RL research-pattern donor
+- pattern-level adoption only
+- use for:
+  - RL environment design
+  - train/test/trade workflow patterns
+  - benchmark tasks for RL-specific strategy tracks
+
+#### `rtk-ai/rtk`
+
+- operator and agent ergonomics tool
+- external tooling only
+- use for:
+  - compact CI/test/backtest output
+  - failure summarization for human and agent review
+- do not integrate into runtime or execution paths
+
+#### `666ghj/MiroFish`
+
+- scenario-simulation idea donor
+- concept mining only
+- use for:
+  - late-stage narrative stress testing and what-if simulations
+- do not integrate into core backtesting truth
+
+### Cross-Phase Capability Priorities
+
+The upstream-inspired roadmap should be layered onto the existing phases in three waves:
+
+#### Wave 1 - Research Operating System
+
+Primary phases: Phase 1 through Phase 4
+
+- strengthen `shared_lib`, `data_platform`, `alpha_research`, and `backtest_engine`
+- add contracts for:
+  - predictions
+  - optimizer requests/responses
+  - research memory records
+  - RL environment metadata
+- add prediction-provider architecture for Kronos-like forecasting backends
+- add RL research boundaries inspired by FinRL
+- add richer validation and statistical robustness checks inspired by Vibe-Trading
+
+#### Wave 2 - Agentic Research and Portfolio Intelligence
+
+Primary phases: Phase 5 and parts of Phase 3 / Phase 6
+
+- add research-memory abstractions influenced by MemPalace
+- add memory-aware researcher and reviewer agents
+- add a portfolio optimizer service influenced by NVIDIA quantitative portfolio optimization
+- expose Kronos-like forecasting as an optional bounded model provider
+
+#### Wave 3 - Production Trading Hardening
+
+Primary phases: Phase 6 through Phase 10
+
+- connect validated signals, forecasts, and optimized allocations into OMS/EMS/RMS boundaries
+- keep execution deterministic and internal
+- add late-stage scenario simulation inspired by MiroFish as optional stress tooling
+- adopt RTK-style operator tooling around CI, Docker, and incident review workflows
+
+### Non-Negotiable Guardrails
+
+- adapters live at the edge and contracts live at the center
+- upstream projects must not define internal schemas for orders, fills, positions, or risk events
+- forecasting, optimization, memory, RL, and simulation remain optional modules
+- agents may propose, validate, and summarize, but may not bypass OMS, RMS, KMS/HSM, approval gates, or treasury controls
+- portfolio optimization is a distinct stage after alpha generation and before execution
+- scenario simulation is an enhancement to stress testing, not a replacement for replay- and market-mechanics-based backtesting
+- if licensing or dependency drag becomes material, revert to pattern adoption and avoid direct integration
+
 ## Execution-Grade Design Package
 
 The migration plan should be implemented alongside a lightweight design package so early implementation work is constrained by written decisions instead of informal assumptions.
@@ -196,6 +334,10 @@ Extract the common primitives used by all future modules before any service spli
 - [ ] Define shared schema modules for:
   - market data bars
   - factor frames
+  - prediction artifacts
+  - portfolio optimization requests/responses
+  - research memory records
+  - RL environment metadata
   - trade signals
   - orders/fills/positions
   - validation results
@@ -248,6 +390,7 @@ Turn the current datasource layer into a reusable ingestion and feature foundati
 - [ ] Standardize the analytical storage layer around Apache Parquet.
 - [ ] Make Polars the default data-manipulation engine for large immutable datasets.
 - [ ] Convert cache logic into reusable ingestion storage policies with dataset versioning and immutable snapshots.
+- [ ] Add prediction artifact persistence rules for model-generated features so forecasts can be versioned and reused exactly like factors.
 - [ ] Add orchestration package under `data_platform/pipelines/`:
   - DAG definitions
   - backfill jobs
@@ -327,12 +470,14 @@ Separate ephemeral research from production factor logic.
   - universe coverage
   - leakage risk review
   - validation status
+- [ ] Add forecasting-provider interfaces under `alpha_research/ml_models/providers/` so Kronos-like models can be integrated without dictating internal architecture.
 - [ ] Create `alpha_research/ml_models/` for:
   - feature generation pipelines
   - training/evaluation loops
   - model registry metadata
   - hyperparameter tuning jobs
   - experiment tracking
+- [ ] Create an RL-specific research lane under `alpha_research/ml_models/rl/` using FinRL-inspired environment and benchmark patterns without making RL the default strategy framework.
 - [ ] Standardize model registry workflows with MLflow or Weights & Biases so deployed model weights can be tied back to specific training runs and dates.
 - [ ] Add walk-forward and cross-validation pipelines that can be reused by the backtest engine.
 - [ ] Define promotion gates from notebook -> factor library -> model artifact.
@@ -390,6 +535,7 @@ Convert the current runner into a reusable engine with explicit simulator, mecha
   - execution timestamp separation
   - reproducible replay ordering
 - [ ] Add scenario and stress replay support.
+- [ ] Add statistical robustness and post-backtest validation modules inspired by Vibe-Trading, including walk-forward, confidence intervals, and stability checks where they provide real signal quality value.
 - [ ] Add an engine API boundary so research factors and live execution systems can consume the same contracts.
 - [ ] Ensure the simulator can emit and replay the exact API payloads and order payloads that `trading_system` will submit in paper and live modes.
 
@@ -426,6 +572,7 @@ Introduce agent runtime and the first three target agents on top of stable contr
   - prompt/version registry
   - tool interfaces
   - trace and audit logging
+- [ ] Add a research-memory abstraction influenced by MemPalace so agents can retrieve prior experiment rationale, rejected ideas, and dataset caveats during controlled workflows.
 - [ ] Evaluate and select a multi-agent orchestration framework baseline:
   - LangChain
   - AutoGen
@@ -455,6 +602,7 @@ Introduce agent runtime and the first three target agents on top of stable contr
 - [ ] Add specialized hybrid-fund agents:
   - HFT Latency Agent for parsing native execution telemetry and detecting latency regressions
   - Mid-Freq Allocation Agent for adjusting portfolio risk posture from macro or alternative-data signals
+- [ ] Add memory-aware researcher and reviewer workflows that can retrieve prior findings without giving agents unrestricted filesystem or production access.
 - [ ] Add stack-specific resilience and routing agents:
   - On-Chain Routing Agent for gas-aware and liquidity-aware DEX routing decisions
   - Gateway Health Agent for broker, gateway, and container health monitoring plus reconnection workflows
@@ -534,6 +682,7 @@ Implement a production-grade trading system for minute-to-week horizons before i
 - [ ] Introduce model-serving integration contracts for Triton/gRPC.
 - [ ] Expose heavy prediction services as cloud-native microservices callable over gRPC.
 - [ ] Introduce optimizer interfaces for convex position sizing and risk budgeting.
+- [ ] Add a portfolio-construction stage inspired by NVIDIA quantitative portfolio optimization so validated signals can be transformed into bounded allocation decisions before OMS submission.
 - [ ] Define Python-to-native transport patterns for signal handoff:
   - gRPC for low-latency request/response model calls
   - Kafka or ZeroMQ for streaming signals and execution events
@@ -710,6 +859,7 @@ Add deployment, orchestration, and environment separation once service boundarie
   - IaC scanning
   - code review agent integration
   - staged deployment promotion
+- [ ] Add optional RTK-style operator tooling or wrappers for compact CI, Docker, and backtest failure summaries to reduce review noise for humans and agents.
 - [ ] Add factor-library promotion gates so every PR from a human or agent triggers:
   - unit tests
   - leakage and look-ahead checks
