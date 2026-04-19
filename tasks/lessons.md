@@ -214,3 +214,35 @@
   `frontend/src/` without colliding. Captured the deviation in the
   Phase 5 conftest `_WCP_SRC` path and in the web-control-plane
   scope doc.
+
+### Phase 6 — Trading System Mid-Frequency Layer
+
+- **OMS as a typed state machine.** Six states
+  (`new → acknowledged → partially_filled → filled | cancelled |
+  rejected`); transitions enforced at every mutation site. Cancel
+  after fill is a `ValueError`, not a silent no-op.
+- **Reconciliation is a diff, not a flag.** `ReconciliationDiff`
+  returns three dicts: missing-at-broker, missing-at-local, quantity
+  mismatches. `in_sync` is derived. The kill switch can trigger only
+  when a mismatch is material.
+- **RMS checks return `ValidationResult`.** Rejecting a signal is
+  business logic, not an error condition. The web control plane, the
+  risk monitor agent, and the factor promotion gate all consume
+  `ValidationResult` uniformly.
+- **`TRADING_HALTED` belongs on `RiskContext`, not global state.**
+  The `KillSwitch` is the authoritative writer; the `RiskContext` is
+  the read view. Unit tests flip it per call; multiple OMS instances
+  never collide on a module-level global.
+- **Panic playbooks stop at the domain boundary.**
+  `PanicPlaybook.execute(cancel_all_orders=callable)` — the actual
+  broker cancel flow wires in Phase 7 when gateway adapters exist.
+  Phase 6 stays deterministic and the boundary stays honest.
+- **"No trade entry" is a CI-blocking invariant.**
+  `test_execution_api_has_no_submit_order_endpoint` scans the module
+  for any handler name containing `submit_order`/`place_order`.
+  Smuggling a trade-entry handler into the web backend fails CI.
+- **Phase 6 deferred three things cleanly**: (1)
+  stop-loss/take-profit/time-exit registry — Phase 7 when gateway
+  fills wire up. (2) Flatten/Delta-Hedge logic — Phase 7/8, needs
+  live position deltas. (3) gRPC/Triton transport for model serving —
+  Phase 9 infra; Phase 6 shipped the contract.
