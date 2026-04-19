@@ -8,6 +8,7 @@ Evolve the current single-package backtesting application into a staged monorepo
 - data ingestion and feature management
 - a reusable backtest engine
 - autonomous AI agents
+- a web control plane for management, reporting, approvals, and execution oversight
 - a production trading system split between mid-frequency and HFT concerns
 - infrastructure and deployment automation
 
@@ -76,6 +77,7 @@ The current repository already contains the seeds of several target domains:
 
 - `src/data/*` -> `data_platform/connectors`
 - `src/backtest/*` -> `backtest_engine/simulator` and `backtest_engine/analytics`
+- `src/dashboard/*` -> `web_control_plane/backend` initial compatibility shell
 - `src/reporting/*` -> `backtest_engine/analytics` and shared reporting interfaces
 - `src/utils/telemetry.py` -> `shared_lib/logging`
 - `src/config.py` -> shared contracts/config packages
@@ -86,10 +88,152 @@ The largest missing capabilities are:
 - a true monorepo package layout with internal contracts
 - a data platform with orchestration and feature-store abstractions
 - research training and model-serving pipelines
+- a first-class web application for operator workflows and approvals
 - OMS/EMS separation for live trading
 - agent runtime and review/risk agents
 - low-latency gateway/HFT foundations
 - infrastructure-as-code and platform deployment boundaries
+
+## Upstream-Inspired Capability Adoption Strategy
+
+The roadmap should incorporate ideas from the following repositories without allowing any of them to become the architectural spine of the platform:
+
+- `shiyu-coder/Kronos`
+- `MemPalace/mempalace`
+- `HKUDS/Vibe-Trading`
+- `rtk-ai/rtk`
+- `NVIDIA-AI-Blueprints/quantitative-portfolio-optimization`
+- `AI4Finance-Foundation/FinRL`
+- `666ghj/MiroFish`
+
+### Adoption Model
+
+Use a **hybrid adoption model** with a strong bias toward **pattern-level adoption first** and **selective integration only at clean adapter boundaries**.
+
+This means:
+
+- internal packages own core contracts, orchestration, control planes, and risk boundaries
+- upstream repositories are treated as architecture donors, bounded providers, or external operator tools
+- direct integration is allowed only where the upstream capability is already naturally artifact- or service-shaped
+- execution, custody, OMS, RMS, and treasury boundaries remain internal and deterministic
+- the web application is an operator surface and must not bypass backend enforcement for approvals, OMS, RMS, gateways, or custody controls
+
+### Repository Classification
+
+#### `HKUDS/Vibe-Trading`
+
+- primary architecture donor
+- pattern-level adoption only
+- borrow:
+  - loader registries and fallback patterns
+  - composite backtest orchestration concepts
+  - robustness validation and research-to-report automation
+- avoid:
+  - transplanting its full agent stack as the core runtime
+
+#### `shiyu-coder/Kronos`
+
+- bounded model provider
+- selective integration only through an internal forecasting adapter
+- use for:
+  - cacheable prediction features from OHLCV windows
+  - batch forecasting across multiple assets
+- land behind:
+  - `alpha_research/ml_models/providers/`
+  - `shared_lib` prediction contracts
+  - `data_platform/feature_store/` persistence
+
+#### `MemPalace/mempalace`
+
+- research-memory subsystem donor
+- pattern adoption first, optional backend integration later
+- use for:
+  - factor hypotheses
+  - experiment rationale
+  - failed trial history
+  - retrieval context for researcher and reviewer agents
+
+#### `NVIDIA-AI-Blueprints/quantitative-portfolio-optimization`
+
+- portfolio optimization donor with optional accelerator backend
+- pattern adoption first, optional GPU backend later
+- use for:
+  - Mean-CVaR and constrained allocation workflows
+  - portfolio construction after alpha generation and before execution
+
+#### `AI4Finance-Foundation/FinRL`
+
+- RL research-pattern donor
+- pattern-level adoption only
+- use for:
+  - RL environment design
+  - train/test/trade workflow patterns
+  - benchmark tasks for RL-specific strategy tracks
+
+#### `rtk-ai/rtk`
+
+- operator and agent ergonomics tool
+- external tooling only
+- use for:
+  - compact CI/test/backtest output
+  - failure summarization for human and agent review
+- do not integrate into runtime or execution paths
+
+#### `666ghj/MiroFish`
+
+- scenario-simulation idea donor
+- concept mining only
+- use for:
+  - late-stage narrative stress testing and what-if simulations
+- do not integrate into core backtesting truth
+
+### Cross-Phase Capability Priorities
+
+The upstream-inspired roadmap should be layered onto the existing phases in three waves:
+
+#### Wave 1 - Research Operating System
+
+Primary phases: Phase 1 through Phase 4
+
+- strengthen `shared_lib`, `data_platform`, `alpha_research`, and `backtest_engine`
+- add contracts for:
+  - predictions
+  - optimizer requests/responses
+  - research memory records
+  - RL environment metadata
+- add prediction-provider architecture for Kronos-like forecasting backends
+- add RL research boundaries inspired by FinRL
+- add richer validation and statistical robustness checks inspired by Vibe-Trading
+
+#### Wave 2 - Agentic Research and Portfolio Intelligence
+
+Primary phases: Phase 5 and parts of Phase 3 / Phase 6
+
+- add research-memory abstractions influenced by MemPalace
+- add memory-aware researcher and reviewer agents
+- add a portfolio optimizer service influenced by NVIDIA quantitative portfolio optimization
+- expose Kronos-like forecasting as an optional bounded model provider
+
+#### Wave 3 - Production Trading Hardening
+
+Primary phases: Phase 6 through Phase 10
+
+- connect validated signals, forecasts, and optimized allocations into OMS/EMS/RMS boundaries
+- keep execution deterministic and internal
+- add late-stage scenario simulation inspired by MiroFish as optional stress tooling
+- adopt RTK-style operator tooling around CI, Docker, and incident review workflows
+
+### Non-Negotiable Guardrails
+
+- adapters live at the edge and contracts live at the center
+- upstream projects must not define internal schemas for orders, fills, positions, or risk events
+- forecasting, optimization, memory, RL, and simulation remain optional modules
+- agents may propose, validate, and summarize, but may not bypass OMS, RMS, KMS/HSM, approval gates, or treasury controls
+- the web control plane may launch, monitor, approve, pause, reconcile, and halt workflows, but every mutating action must resolve through authenticated backend control APIs
+- the browser must never hold broker credentials, exchange credentials, private keys, or signing authority
+- portfolio optimization is a distinct stage after alpha generation and before execution
+- scenario simulation is an enhancement to stress testing, not a replacement for replay- and market-mechanics-based backtesting
+- if licensing or dependency drag becomes material, revert to pattern adoption and avoid direct integration
 
 ## Execution-Grade Design Package
 
@@ -130,6 +274,7 @@ Create the monorepo skeleton without breaking the existing CLI or backtesting fl
   - `data_platform/`
   - `alpha_research/`
   - `backtest_engine/`
+- `web_control_plane/`
   - `trading_system/`
   - `infrastructure/`
   - `shared_lib/`
@@ -196,6 +341,14 @@ Extract the common primitives used by all future modules before any service spli
 - [ ] Define shared schema modules for:
   - market data bars
   - factor frames
+  - prediction artifacts
+  - portfolio optimization requests/responses
+  - research memory records
+  - RL environment metadata
+  - run metadata and job status payloads
+  - approval requests and approval decisions
+  - audit events and operator actions
+  - UI-facing execution and health status payloads
   - trade signals
   - orders/fills/positions
   - validation results
@@ -248,6 +401,7 @@ Turn the current datasource layer into a reusable ingestion and feature foundati
 - [ ] Standardize the analytical storage layer around Apache Parquet.
 - [ ] Make Polars the default data-manipulation engine for large immutable datasets.
 - [ ] Convert cache logic into reusable ingestion storage policies with dataset versioning and immutable snapshots.
+- [ ] Add prediction artifact persistence rules for model-generated features so forecasts can be versioned and reused exactly like factors.
 - [ ] Add orchestration package under `data_platform/pipelines/`:
   - DAG definitions
   - backfill jobs
@@ -327,12 +481,14 @@ Separate ephemeral research from production factor logic.
   - universe coverage
   - leakage risk review
   - validation status
+- [ ] Add forecasting-provider interfaces under `alpha_research/ml_models/providers/` so Kronos-like models can be integrated without dictating internal architecture.
 - [ ] Create `alpha_research/ml_models/` for:
   - feature generation pipelines
   - training/evaluation loops
   - model registry metadata
   - hyperparameter tuning jobs
   - experiment tracking
+- [ ] Create an RL-specific research lane under `alpha_research/ml_models/rl/` using FinRL-inspired environment and benchmark patterns without making RL the default strategy framework.
 - [ ] Standardize model registry workflows with MLflow or Weights & Biases so deployed model weights can be tied back to specific training runs and dates.
 - [ ] Add walk-forward and cross-validation pipelines that can be reused by the backtest engine.
 - [ ] Define promotion gates from notebook -> factor library -> model artifact.
@@ -390,8 +546,10 @@ Convert the current runner into a reusable engine with explicit simulator, mecha
   - execution timestamp separation
   - reproducible replay ordering
 - [ ] Add scenario and stress replay support.
+- [ ] Add statistical robustness and post-backtest validation modules inspired by Vibe-Trading, including walk-forward, confidence intervals, and stability checks where they provide real signal quality value.
 - [ ] Add an engine API boundary so research factors and live execution systems can consume the same contracts.
 - [ ] Ensure the simulator can emit and replay the exact API payloads and order payloads that `trading_system` will submit in paper and live modes.
+- [ ] Evolve the current FastAPI dashboard into an authenticated initial web shell that exposes managed run browsing, run comparison, report access, and job/provenance views without introducing direct execution controls yet.
 
 ### Deliverables
 
@@ -426,6 +584,7 @@ Introduce agent runtime and the first three target agents on top of stable contr
   - prompt/version registry
   - tool interfaces
   - trace and audit logging
+- [ ] Add a research-memory abstraction influenced by MemPalace so agents can retrieve prior experiment rationale, rejected ideas, and dataset caveats during controlled workflows.
 - [ ] Evaluate and select a multi-agent orchestration framework baseline:
   - LangChain
   - AutoGen
@@ -455,6 +614,7 @@ Introduce agent runtime and the first three target agents on top of stable contr
 - [ ] Add specialized hybrid-fund agents:
   - HFT Latency Agent for parsing native execution telemetry and detecting latency regressions
   - Mid-Freq Allocation Agent for adjusting portfolio risk posture from macro or alternative-data signals
+- [ ] Add memory-aware researcher and reviewer workflows that can retrieve prior findings without giving agents unrestricted filesystem or production access.
 - [ ] Add stack-specific resilience and routing agents:
   - On-Chain Routing Agent for gas-aware and liquidity-aware DEX routing decisions
   - Gateway Health Agent for broker, gateway, and container health monitoring plus reconnection workflows
@@ -466,6 +626,13 @@ Introduce agent runtime and the first three target agents on top of stable contr
   - panic-sell / anomalous-allocation Kill Switch escalation rules
 - [ ] Add human approval boundaries for all agents.
 - [ ] Instrument agent runs with OTel GenAI conventions.
+- [ ] Create `web_control_plane/backend/` and `web_control_plane/frontend/` as the long-term home for the control-plane web application while keeping the existing dashboard surface as a compatibility shell during migration.
+- [ ] Add research and approval console workflows for:
+  - backtest run review
+  - factor/model promotion review
+  - agent finding triage
+  - approval queues with dataset, model, and validation provenance
+- [ ] Ensure the web control plane uses authenticated backend APIs and audit logging for every approval or workflow mutation.
 
 ### Deliverables
 
@@ -534,6 +701,7 @@ Implement a production-grade trading system for minute-to-week horizons before i
 - [ ] Introduce model-serving integration contracts for Triton/gRPC.
 - [ ] Expose heavy prediction services as cloud-native microservices callable over gRPC.
 - [ ] Introduce optimizer interfaces for convex position sizing and risk budgeting.
+- [ ] Add a portfolio-construction stage inspired by NVIDIA quantitative portfolio optimization so validated signals can be transformed into bounded allocation decisions before OMS submission.
 - [ ] Define Python-to-native transport patterns for signal handoff:
   - gRPC for low-latency request/response model calls
   - Kafka or ZeroMQ for streaming signals and execution events
@@ -543,6 +711,13 @@ Implement a production-grade trading system for minute-to-week horizons before i
   - TradFi global cancel flows such as `reqGlobalCancel()` and Alpaca `DELETE /v2/orders`
   - DeFi stop-signing behavior for pending or future transactions
   - Flatten or Delta-Hedge logic for emergency containment
+- [ ] Add web control plane execution-oversight views for paper and live trading that can:
+  - display OMS, EMS, RMS, and reconciliation status
+  - pause strategies
+  - halt new signal intake
+  - trigger bounded reconciliation and panic-button workflows
+  - review alerts and incidents
+- [ ] Explicitly forbid raw browser-driven trade entry or any web path that bypasses OMS, EMS, RMS, gateway, or approval policies.
 
 ### Deliverables
 
@@ -703,6 +878,7 @@ Add deployment, orchestration, and environment separation once service boundarie
   - API/model-serving workloads
   - agent runners
   - live trading control-plane services
+- [ ] Add deployment patterns for the `web_control_plane` frontend and backend, including auth, session management, and operator-safe routing to backend control APIs.
 - [ ] Add GPU-backed model-serving deployment patterns for mid-frequency inference services.
 - [ ] Add CI/CD workflows for:
   - package-level lint/test/build
@@ -710,6 +886,7 @@ Add deployment, orchestration, and environment separation once service boundarie
   - IaC scanning
   - code review agent integration
   - staged deployment promotion
+- [ ] Add optional RTK-style operator tooling or wrappers for compact CI, Docker, and backtest failure summaries to reduce review noise for humans and agents.
 - [ ] Add factor-library promotion gates so every PR from a human or agent triggers:
   - unit tests
   - leakage and look-ahead checks
@@ -758,6 +935,7 @@ Retire the legacy single-package structure after all critical modules are stable
 
 - [ ] Replace direct `src/*` imports with package-local imports from the monorepo modules.
 - [ ] Keep a compatibility CLI during transition.
+- [ ] Retire the legacy standalone dashboard by absorbing its responsibilities into `web_control_plane`, leaving only compatibility routes where needed.
 - [ ] Port existing tests into module-scoped suites.
 - [ ] Add contract tests across:
   - research -> backtest engine
@@ -784,6 +962,7 @@ Retire the legacy single-package structure after all critical modules are stable
 
 - [ ] Legacy `src/*` dependencies are either removed or intentionally retained behind compatibility wrappers
 - [ ] Parity validation is documented for data, backtests, reporting, and execution-control paths
+- [ ] The web control plane is the primary operator interface for managed runs, approvals, reporting, and bounded execution oversight
 - [ ] The repository can be reasoned about by package/domain instead of legacy module inheritance
 
 ## Recommended Execution Order
