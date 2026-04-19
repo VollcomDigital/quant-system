@@ -137,3 +137,44 @@
   notebook outputs" custom into an enforceable policy. The Phase 3
   static test that domain code cannot import from
   `alpha_research.notebooks` closes the corresponding type-level leak.
+
+### Phase 4 — Backtest Engine Modularization
+
+- **Strategy as Protocol, not ABC, keeps the engine testable.**
+  Anything with `on_bar(bar, context)` satisfies the simulator. Tests
+  can pass inline classes without subclassing; production strategies
+  can still inherit from a helper if they want to.
+- **Decimal-safe money ledger paid off in Phase 4.** The Phase 1
+  `Money` class refused floats from every call site. The portfolio
+  implementation fell out cleanly because cash, fees, and PnL all use
+  the same type and cross-currency mistakes become type errors.
+- **Equity has two valid definitions; pick one.** `equity = cash +
+  unrealized_pnl` differs from `equity = cash + market_value` by the
+  cost basis. We standardized on `cash + market_value` because it's
+  what brokers report, matches Phase 6's expected OMS reconciliation
+  flow, and avoids double-counting when positions flip.
+- **Look-ahead leakage has three independent axes.** A single "no
+  future peeking" check isn't enough; we need (a) signal_ts ≤ fill_ts,
+  (b) factor.as_of ≤ signal.generated_at, and (c) stable replay
+  ordering with insertion-index tiebreak. Each has its own test and
+  reason.
+- **NDJSON record/replay is the right record-and-replay format for
+  Phase 4.** One JSON object per line, flushed after each payload.
+  The Phase 6 OMS can tail the same file in paper mode. Pickle is
+  tempting but locks us to one Python version and is impossible to
+  diff.
+- **PEP 695 generic syntax (Python 3.12+) bit us.** The pytest sandbox
+  runs 3.11. Reverted `def foo[T](...)` to `TypeVar` and silenced the
+  resulting ruff `UP047` with a scoped noqa. Phase 1's stack promises
+  Python 3.12+ in the long run, but the Python the *test runner* uses
+  is independent of the domain package's declared `requires-python`.
+- **Bootstrap CI needs a seed parameter.** Without it, tests for
+  "CI contains the sample mean" become flaky at small sample sizes.
+  Pass `seed=<int>` into every `bootstrap_confidence_interval` call
+  in tests; production callers can omit it for non-deterministic
+  sampling.
+- **The web-shell scope doc is as load-bearing as the code.** By
+  testing for `## Explicitly Out of Scope` and `no execution`, we
+  turned "don't add trade buttons in Phase 4" from a PR-review custom
+  into a merge-blocking invariant. Future PRs that try to smuggle
+  execution controls into the web shell will fail CI.
