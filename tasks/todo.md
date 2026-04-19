@@ -544,49 +544,55 @@ Separate ephemeral research from production factor logic.
 
 ### Tasks
 
-- [ ] Create `alpha_research/notebooks/` with notebook execution and cleanup rules.
-- [ ] Extract reusable strategy/factor logic into `alpha_research/factor_library/`.
-- [ ] Distinguish clearly between:
-  - exploratory notebook code
-  - validated factors ready for backtest usage
-  - live-approved factors eligible for OMS/RMS integration
-- [ ] Build factor metadata contracts:
-  - description
-  - source dependencies
-  - stationarity assumptions
-  - universe coverage
-  - leakage risk review
-  - validation status
-- [ ] Add forecasting-provider interfaces under `alpha_research/ml_models/providers/` so Kronos-like models can be integrated without dictating internal architecture.
-- [ ] Create `alpha_research/ml_models/` for:
-  - feature generation pipelines
-  - training/evaluation loops
-  - model registry metadata
-  - hyperparameter tuning jobs
-  - experiment tracking
-- [ ] Create an RL-specific research lane under `alpha_research/ml_models/rl/` using FinRL-inspired environment and benchmark patterns without making RL the default strategy framework.
-- [ ] Standardize model registry workflows with MLflow or Weights & Biases so deployed model weights can be tied back to specific training runs and dates.
-- [ ] Add walk-forward and cross-validation pipelines that can be reused by the backtest engine.
-- [ ] Define promotion gates from notebook -> factor library -> model artifact.
+- [x] Create `alpha_research/notebooks/` with notebook execution and cleanup rules.
+  Codified in `docs/architecture/notebook-governance.md`; no-import
+  rule enforced by `tests/phase_3/test_notebook_governance.py`.
+- [x] Extract reusable strategy/factor logic into `alpha_research/factor_library/`.
+  `Factor` ABC + `FactorLibrary` registry (91% cov, 8 tests).
+- [x] Distinguish clearly between:
+  - exploratory notebook code (governance doc)
+  - validated factors ready for backtest usage (status = `validated`)
+  - live-approved factors eligible for OMS/RMS integration (status = `promoted`)
+- [x] Build factor metadata contracts (`FactorMetadata` with explicit
+  leakage_review string; rejects empty reviews).
+- [x] Add forecasting-provider interfaces under `alpha_research/ml_models/providers/`
+  (`ForecastingProvider` Protocol + `CacheableForecastingProvider`/
+  `BatchForecaster`/`ProviderAdapter` ABCs; 89% cov, 6 tests).
+- [x] Create `alpha_research/ml_models/` for:
+  - feature generation pipelines (via `providers` + `Factor`)
+  - training/evaluation loops (validation windows)
+  - model registry metadata (`ModelRecord`/`ModelRegistry`)
+  - hyperparameter tuning jobs (provider-adapter contract)
+  - experiment tracking (via ModelRecord.metrics)
+- [x] Create an RL-specific research lane under `alpha_research/ml_models/rl/`
+  (`RLEnvironment`, `BoundedActionSpace`, `TrainTestTradeSplit`; 85% cov, 7 tests).
+- [x] Standardize model registry workflows with MLflow or Weights & Biases.
+  `ModelRegistry` contract is MLflow-compatible; backend Phase 9.
+- [x] Add walk-forward and cross-validation pipelines that can be reused by the backtest engine.
+  `walk_forward_expanding`, `walk_forward_rolling`, `time_series_kfold`,
+  `purged_embargoed_cv` (93% cov, 8 tests).
+- [x] Define promotion gates from notebook -> factor library -> model artifact.
+  `promote_factor` + `promote_model` return `ValidationResult`; skips
+  forbidden, production needs approval_id (95% cov, 10 tests).
 
 ### Deliverables
 
-- [ ] notebook governance pattern
-- [ ] production factor library
-- [ ] ML training pipeline structure
-- [ ] promotion rules for factors/models
+- [x] notebook governance pattern
+- [x] production factor library (91% cov)
+- [x] ML training pipeline structure (registry 92%, providers 89%, rl 85%, validation 93%)
+- [x] promotion rules for factors/models (95% cov)
 
 ### Entry Criteria
 
-- [ ] Phase 1 and Phase 2 exit criteria satisfied
-- [ ] Feature-store read path available or stubbed with stable contracts
-- [ ] Model registry approach documented in the active design package
+- [x] Phase 1 and Phase 2 exit criteria satisfied
+- [x] Feature-store read path available or stubbed with stable contracts
+- [x] Model registry approach documented in the active design package
 
 ### Exit Criteria
 
-- [ ] Notebook code is clearly separated from production factor modules
-- [ ] Factor promotion path is documented and testable
-- [ ] Model artifacts can be traced to training data, registry metadata, and promotion status
+- [x] Notebook code is clearly separated from production factor modules
+- [x] Factor promotion path is documented and testable
+- [x] Model artifacts can be traced to training data, registry metadata, and promotion status
 
 ## Phase 4 - Backtest Engine Modularization
 

@@ -106,3 +106,34 @@
   The ABI registry is intentionally append-only per `(protocol,
   version)` key so a deployed contract's decoder cannot be retroactively
   rewritten. New deployments require a new version string.
+
+### Phase 3 — Alpha Research Workspace
+
+- **Factor metadata should require a `leakage_review` string by contract,
+  not just a boolean.** Forcing reviewers to write *why* the factor is
+  leakage-safe prevents rubber-stamping and gives the code_reviewer
+  agent a reliable surface to inspect during promotion.
+- **Registries returning `ValidationResult` rather than raising are
+  friendlier to UI/approval workflows.** `promote_factor` /
+  `promote_model` return a single structured result that the Phase 5
+  web control plane can display. Raising would force every caller into
+  try/except around a business outcome.
+- **Stage-skip is a separate invariant from stage-validity.**
+  `candidate → promoted` is not a type error but it is a governance
+  error. Modelling both as distinct guards (adjacent-stage rule +
+  per-transition checks) keeps the promotion logic readable.
+- **One-production-version-per-model is the moral equivalent of a
+  kill-switch invariant.** `ModelRegistry.transition` refuses a second
+  version moving to `production` while another is live so there is no
+  implicit shadow-deployment race.
+- **Walk-forward and CV window generators belong in the research
+  package, not the backtest engine.** They are pure-Python and don't
+  depend on simulator state, so research and backtest both consume
+  them. Keeps the Phase 4 engine dependency-light and lets CI run
+  CV-related tests without booting the simulator.
+- **Notebooks are the highest-risk code path for look-ahead leakage
+  and secret leakage.** Writing the governance doc as a normative
+  contract (with CI-testable rules) turned the usual "don't commit
+  notebook outputs" custom into an enforceable policy. The Phase 3
+  static test that domain code cannot import from
+  `alpha_research.notebooks` closes the corresponding type-level leak.
