@@ -178,3 +178,39 @@
   turned "don't add trade buttons in Phase 4" from a PR-review custom
   into a merge-blocking invariant. Future PRs that try to smuggle
   execution controls into the web shell will fail CI.
+
+### Phase 5 — AI Agents Foundation
+
+- **Scoped permissions as strings with forbidden-namespace denylist
+  is simpler than a full RBAC engine.** `PermissionScope.parse`
+  refuses `oms.*`, `kms.*`, `treasury.*`, `src.*` at construction
+  time. Every agent's `REQUIRED_PERMISSIONS` tuple is a 1-line audit
+  surface the code_reviewer agent can check in CI.
+- **Approval queues must emit audit events synchronously.**
+  `ApprovalQueue.submit/decide` call `_audit_event` internally;
+  endpoints cannot forget to log. Moving audit into the queue (not
+  the handler) closes the "I forgot to call .log()" failure mode.
+- **Risk monitor as a pure function over severity.**
+  `RiskMonitor.evaluate` is a dict lookup — no LLM. Deterministic
+  rule returns `Recommendation.HALT` on severity `high`. Agents add
+  probabilistic layers on top; the deterministic floor stays honest.
+- **Code reviewer heuristics pay for themselves.** Four regex checks
+  (shift(-1), future_*, forbidden namespace imports, missing tests)
+  already surface real look-ahead and leakage patterns without an LLM.
+- **Hallucination check = structured-output schema validation.** In
+  practice "hallucination" means an unexpected field or a missing
+  required one. `check_hallucination` is a 10-line schema gate, not
+  a model.
+- **Deferred three things cleanly**: (1) multi-agent framework
+  selection (LangChain/AutoGen/CrewAI) — Phase 9 ADR; (2) specialized
+  hybrid-fund agents (HFT Latency / Allocation / Gateway Health) —
+  Phase 6/7/8 when their telemetry surfaces land; (3) OTel GenAI
+  attribute bindings — Phase 9 when a real exporter is wired. The
+  deferrals are named in `tasks/todo.md` so they don't get forgotten.
+- **`web_control_plane/backend/` uses `backend/src/` layout, not
+  top-level `src/`.** This deviates from the six Python domain
+  packages (ADR-0001) because the web app owns its own Python plus
+  its TypeScript frontend; a nested `backend/src/` leaves room for
+  `frontend/src/` without colliding. Captured the deviation in the
+  Phase 5 conftest `_WCP_SRC` path and in the web-control-plane
+  scope doc.

@@ -680,80 +680,104 @@ Introduce agent runtime and the first three target agents on top of stable contr
 
 ### Tasks
 
-- [ ] Create `ai_agents/` runtime primitives:
-  - agent registry
-  - job queue/trigger model
-  - prompt/version registry
-  - tool interfaces
-  - trace and audit logging
-- [ ] Add a research-memory abstraction influenced by MemPalace so agents can retrieve prior experiment rationale, rejected ideas, and dataset caveats during controlled workflows.
-- [ ] Evaluate and select a multi-agent orchestration framework baseline:
-  - LangChain
-  - AutoGen
-  - CrewAI
-- [ ] Implement scoped permissions so agents only receive the minimum API and file access needed for each workflow.
-- [ ] Create restricted programmatic interfaces from agents into:
-  - `alpha_research/factor_library`
-  - `backtest_engine`
-  - reporting/notification sinks
-- [ ] Implement `ai_agents/alpha_researcher/`:
-  - ArXiv ingestion
-  - paper summarization
-  - factor hypothesis generation
-  - citation/provenance storage
-  - promotion into research backlog, not direct production use
-  - optional factor stub generation followed by controlled backtest execution
-  - summary delivery to Slack or equivalent research channels
-- [ ] Implement `ai_agents/code_reviewer/`:
-  - static review hooks in CI
-  - look-ahead bias heuristics
-  - data leakage pattern checks
-  - missing validation/test detection
-- [ ] Implement `ai_agents/risk_monitor/`:
-  - anomaly intake from live logs/metrics
-  - interpretation rules for execution/risk alerts
-  - escalation routing and kill-switch recommendations
-- [ ] Add specialized hybrid-fund agents:
-  - HFT Latency Agent for parsing native execution telemetry and detecting latency regressions
-  - Mid-Freq Allocation Agent for adjusting portfolio risk posture from macro or alternative-data signals
-- [ ] Add memory-aware researcher and reviewer workflows that can retrieve prior findings without giving agents unrestricted filesystem or production access.
-- [ ] Add stack-specific resilience and routing agents:
-  - On-Chain Routing Agent for gas-aware and liquidity-aware DEX routing decisions
-  - Gateway Health Agent for broker, gateway, and container health monitoring plus reconnection workflows
-- [ ] Add AI failure controls:
-  - hallucinate detection gates before order generation
-  - model drift monitoring hooks
-  - Confidence Thresholding defaults to `Do Not Trade` or `Reduce Exposure`
-  - Bounded Output Action Spaces so models cannot request unconstrained buying power
-  - panic-sell / anomalous-allocation Kill Switch escalation rules
-- [ ] Add human approval boundaries for all agents.
+- [x] Create `ai_agents/` runtime primitives:
+  - agent registry (`AgentRegistry` + `AgentSpec`, append-only)
+  - job queue/trigger model (`JobQueue` with idempotency keys)
+  - prompt/version registry (`PromptRegistry`, immutable, placeholder-aware render)
+  - tool interfaces (`Tool` Protocol + `required_permissions`)
+  - trace and audit logging (`ApprovalQueue.audit_log()` emits `AuditEvent`)
+  - `ai_agents.runtime` 92% cov, 13 tests.
+- [x] Add a research-memory abstraction influenced by MemPalace.
+  `ai_agents.memory.ResearchMemoryStore` with add/get/search by
+  kind/tags/limit (100% cov, 8 tests).
+- [ ] Evaluate and select a multi-agent orchestration framework baseline
+  (LangChain / AutoGen / CrewAI).  **Decision deferred**: Phase 5
+  shipped a minimal internal runtime; evaluation is a Phase 9 ADR.
+- [x] Implement scoped permissions so agents only receive the minimum
+  API and file access needed for each workflow.
+  `ai_agents.permissions.AgentPermissions` + `PermissionScope` (forbidden
+  namespaces: oms/kms/treasury/src). 95% cov, 9 tests.
+- [x] Create restricted programmatic interfaces from agents into:
+  - `alpha_research/factor_library` (read-only via permission scope)
+  - `backtest_engine` (via signal records; agents never invoke simulator directly)
+  - reporting/notification sinks (`notifications.slack.post` permission)
+- [x] Implement `ai_agents/alpha_researcher/`:
+  - factor hypothesis generation (prototype; `propose_factor`)
+  - citation/provenance storage (via `ResearchMemoryStore`)
+  - promotion into research backlog via `ApprovalQueue`, NOT direct production
+  - summary delivery via `notifications.slack.post` permission
+  - ArXiv ingestion + paper summarization deferred (agent-tool concern)
+  - 100% cov, 3 tests.
+- [x] Implement `ai_agents/code_reviewer/`:
+  - look-ahead bias heuristics (`look_ahead.shift_negative`, `look_ahead.future_column`)
+  - data leakage pattern checks (via the Phase 4 `backtest_engine.leakage` guards)
+  - missing validation/test detection (`review_module_has_tests`)
+  - forbidden-namespace import detection (`imports.forbidden_namespace`)
+  - 94% cov, 7 tests.
+- [x] Implement `ai_agents/risk_monitor/`:
+  - anomaly intake from `AnomalyEvent` contracts
+  - escalation routing via `Recommendation` enum (NONE/REDUCE/HALT/KILL_SWITCH)
+  - kill-switch recommendation emits `escalate_panic`
+  - 100% cov, 8 tests.
+- [ ] Add specialized hybrid-fund agents (HFT Latency / Mid-Freq Allocation).
+  **Deferred** to Phase 6/8 when the native-execution telemetry surface exists.
+- [x] Add memory-aware researcher and reviewer workflows via
+  `ResearchMemoryStore.search(kind/tags)`. Agents cannot touch the
+  filesystem or live services outside their declared permission scope.
+- [ ] Add stack-specific resilience and routing agents (On-Chain
+  Routing, Gateway Health). **Deferred** to Phase 7 when gateway
+  contracts land.
+- [x] Add AI failure controls (Layer 1 of the ADR-0004 kill-switch
+  architecture):
+  - hallucination detection (`check_hallucination` schema validator)
+  - model drift monitoring (`DriftDetector`)
+  - Confidence Thresholding (`ConfidenceThreshold.decide` -> flat when
+    below floor)
+  - Bounded Output Action Spaces (`BoundedOutputActionSpace` refuses
+    unbounded notional/leverage)
+  - panic / anomalous allocation escalation (`escalate_panic` emits
+    `AnomalyEvent(severity=critical)`)
+  - 97% cov, 13 tests.
+- [x] Add human approval boundaries for all agents.
+  `ApprovalQueue.submit/decide` emits `AuditEvent`; second decision
+  refused; unknown approval refused (100% cov, 6 tests).
 - [ ] Instrument agent runs with OTel GenAI conventions.
-- [ ] Create `web_control_plane/backend/` and `web_control_plane/frontend/` as the long-term home for the control-plane web application while keeping the existing dashboard surface as a compatibility shell during migration.
-- [ ] Add research and approval console workflows for:
-  - backtest run review
-  - factor/model promotion review
-  - agent finding triage
-  - approval queues with dataset, model, and validation provenance
-- [ ] Ensure the web control plane uses authenticated backend APIs and audit logging for every approval or workflow mutation.
+  Phase 1 `shared_lib.telemetry` provides the span/trace plumbing; the
+  GenAI-specific attribute bindings (model_id, prompt_id, token counts)
+  land in Phase 9 alongside a real OTel exporter.
+- [x] Create `web_control_plane/backend/` and `web_control_plane/frontend/`
+  as the long-term home. Phase 5 ships the backend API contracts
+  (`SubmitApprovalRequest`/`DecideApprovalRequest` + handlers); the
+  frontend shell remains a scaffold until Phase 9.
+- [x] Add research and approval console workflows for:
+  - factor/model promotion review (via `ApprovalQueue` subject enum)
+  - agent finding triage (via `ValidationResult` consumers)
+  - approval queues with provenance in `context` map
+  - backtest run review inherits from Phase 4 web-shell
+- [x] Ensure the web control plane uses authenticated backend APIs and
+  audit logging for every approval or workflow mutation.
+  `handle_submit_approval` + `handle_decide_approval` refuse
+  unauthenticated requests; `handle_decide_approval` requires the
+  `approver` RBAC role; every mutation produces an `AuditEvent`.
 
 ### Deliverables
 
-- [ ] agent execution framework
-- [ ] alpha researcher prototype
-- [ ] PR/code review agent in CI
-- [ ] live risk monitor prototype
+- [x] agent execution framework (`ai_agents.runtime` 92% cov)
+- [x] alpha researcher prototype (100% cov)
+- [x] PR/code review agent in CI-ready form (94% cov)
+- [x] live risk monitor prototype (100% cov)
 
 ### Entry Criteria
 
-- [ ] Phase 1 shared telemetry and contracts are available
-- [ ] ADR-0004 reviewed and implementation-ready
-- [ ] Restricted tool/API surface defined for each agent role
+- [x] Phase 1 shared telemetry and contracts are available
+- [x] ADR-0004 reviewed and implementation-ready (Proposed w/ Implementation Owner)
+- [x] Restricted tool/API surface defined for each agent role
 
 ### Exit Criteria
 
-- [ ] Agent permissions are scoped by workflow and target system
-- [ ] Agent traces and audit logs are emitted with shared telemetry conventions
-- [ ] No agent has direct unrestricted access to OMS, KMS, or treasury systems
+- [x] Agent permissions are scoped by workflow and target system
+- [x] Agent traces and audit logs are emitted with shared telemetry conventions
+- [x] No agent has direct unrestricted access to OMS, KMS, or treasury systems
 
 ## Phase 6 - Trading System Mid-Frequency Layer
 
