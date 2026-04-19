@@ -74,3 +74,35 @@
   `weights must sum to 1.0`, `confidence must be in [0,1]`,
   `HealthStatus.ok == all(checks.values())`. These are cheap to write
   and turn documentation invariants into executable gates.
+
+### Phase 2 — Data Platform Extraction
+
+- **Shared fixtures must be scoped per phase.** Phase 0's `repo_root`
+  fixture lives in `tests/phase_0/conftest.py` and is not visible to
+  other phase dirs. Each phase conftest must re-declare the fixtures
+  it needs. Cleaner than a top-level shared conftest because it keeps
+  phase invariant tests self-contained and runnable in isolation.
+- **Contracts over implementations for Phase 2.** The roadmap names
+  eight concrete vendors (Alpaca, Polygon, Tiingo, …), but Phase 2's
+  actual deliverable is the *contract* surface the vendors will plug
+  into. `PROVIDER_REGISTRY` records the eight names and their role
+  (historical/live/mixed); the live implementations stay behind the
+  `src/*` facade until Phase 10. This keeps the new package free of
+  vendor-specific deps while giving Phase 6+ a typed surface.
+- **Orchestrator-agnostic DAG objects keep Airflow out of the contract.**
+  `data_platform.pipelines.DAG` doesn't `import airflow`. An Airflow
+  translator is a Phase 9 concern. This avoids pulling ~40 transitive
+  deps into the data platform core.
+- **`zip(strict=True)` is risky when the slice lengths legitimately
+  differ by one.** `zip(seq, seq[1:], strict=True)` raises on pairs of
+  (N, N-1) lists. Use `strict=False` for pairwise windows; keep
+  `strict=True` only when both iterables should end together.
+- **Feature-store reads must fail closed on version ambiguity.** When
+  multiple versions exist for a factor_id, `read(factor_id=x)` without
+  a version is ambiguous and could silently mix cohorts. The contract
+  raises `ValueError` rather than guessing. Research notebooks can
+  still ask for the latest version via `registry.list(factor_id)[-1]`.
+- **On-chain event schemas are content-addressed by protocol+version.**
+  The ABI registry is intentionally append-only per `(protocol,
+  version)` key so a deployed contract's decoder cannot be retroactively
+  rewritten. New deployments require a new version string.
