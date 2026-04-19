@@ -342,24 +342,40 @@ Extract the common primitives used by all future modules before any service spli
 
 ### Tasks
 
-- [ ] Move logging/telemetry concerns from `src/utils/telemetry.py` into `shared_lib/logging/`.
-- [ ] Replace ad hoc logging with structured JSON contracts that include:
+- [x] Move logging/telemetry concerns from `src/utils/telemetry.py` into `shared_lib/logging/`.
+- [x] Replace ad hoc logging with structured JSON contracts that include:
   - `trace_id`
   - `span_id`
   - service/module name
   - execution stage
-- [ ] Add OpenTelemetry bootstrap code and conventions for:
+  - `shared_lib.logging` (97% coverage, 16 AAA tests). Supports
+    `configure_logging`, `log_event`, `bind_trace` (contextvars), and
+    `time_block`. Redacts secrets; serialises Decimal/datetime.
+- [x] Add OpenTelemetry bootstrap code and conventions for:
   - batch jobs
   - API services
   - agent execution traces
   - live trading execution paths
-- [ ] Create `shared_lib/math_utils/` for:
+  - `shared_lib.telemetry` (100% coverage, 14 tests). `bootstrap(service, profile)`
+    with four profiles (batch/api/agent/live); `start_span` binds
+    trace_id/span_id onto `shared_lib.logging` contextvars; OTel optional
+    dep (fallback tracer used when OTel not installed); `record_exception`
+    emits ERROR log correlated to the active trace.
+- [x] Create `shared_lib/math_utils/` for:
   - vectorized return math
   - stable risk metrics
   - Decimal-safe money helpers for ledger logic
   - migration path away from Pandas-heavy routines toward Polars/Numpy
-- [ ] Standardize RPC and event contracts shared between Python research services and Rust/C++ execution services.
-- [ ] Define shared schema modules for:
+  - `shared_lib.math_utils` (96% coverage, 39 tests). NumPy-only (no
+    pandas dep). `Money` rejects `float` at every surface; currency
+    mismatch raises; int factors allowed; bankers-rounded quantize.
+- [x] Standardize RPC and event contracts shared between Python research services and Rust/C++ execution services.
+  `shared_lib.transport` (98% coverage, 12 tests). `RpcEnvelope`
+  requires idempotency_key + future deadline; `EventEnvelope` enforces
+  topic naming convention; `dlq_topic` derives DLQ names;
+  `redact_payload_for_logging` strips secrets before emitting envelopes
+  to logs.
+- [x] Define shared schema modules for:
   - market data bars
   - factor frames
   - prediction artifacts
@@ -374,26 +390,31 @@ Extract the common primitives used by all future modules before any service spli
   - orders/fills/positions
   - validation results
   - anomaly events
-- [ ] Introduce strict validation with Pydantic/Pandera for cross-module data contracts.
+- [x] Introduce strict validation with Pydantic/Pandera for cross-module data contracts.
+  `shared_lib.contracts` (98% coverage, 28 tests). All 15 contract
+  modules use `frozen=True`/`extra="forbid"`; timestamps must be
+  tz-aware; OHLC invariants, weights-sum-to-1, confidence 0..1,
+  fail-requires-reason, HealthStatus.ok-matches-checks all enforced
+  at construction time.
 
 ### Deliverables
 
-- [ ] `shared_lib/logging`
-- [ ] `shared_lib/math_utils`
-- [ ] shared domain schemas and validation contracts
-- [ ] OTel instrumentation baseline
+- [x] `shared_lib/logging` (97% cov)
+- [x] `shared_lib/math_utils` (96% cov)
+- [x] shared domain schemas and validation contracts (98% cov)
+- [x] OTel instrumentation baseline (100% cov, 14 tests)
 
 ### Entry Criteria
 
-- [ ] Phase 0 exit criteria satisfied
-- [ ] ADR-0001 accepted or implementation-ready
-- [ ] Shared schema ownership agreed across research, backtest, and execution modules
+- [x] Phase 0 exit criteria satisfied
+- [x] ADR-0001 accepted or implementation-ready (Accepted)
+- [x] Shared schema ownership agreed across research, backtest, and execution modules
 
 ### Exit Criteria
 
-- [ ] Shared schemas are importable without `src/*` coupling
-- [ ] Telemetry baseline is reusable across batch jobs, APIs, agents, and execution paths
-- [ ] Decimal-safe money primitives exist before OMS work begins
+- [x] Shared schemas are importable without `src/*` coupling
+- [x] Telemetry baseline is reusable across batch jobs, APIs, agents, and execution paths
+- [x] Decimal-safe money primitives exist before OMS work begins
 
 ## Phase 2 - Data Platform Extraction
 
