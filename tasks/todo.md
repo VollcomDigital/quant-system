@@ -104,7 +104,9 @@ The migration plan should be implemented alongside a lightweight design package 
 - ADR-0004: `docs/adr/0004-agent-permissions-and-control-plane.md`
 - ADR-0005: `docs/adr/0005-tradfi-and-web3-gateway-architecture.md`
 - ADR-0006: `docs/adr/0006-execution-signing-custody-and-kill-switches.md`
+- ADR-0007: `docs/adr/0007-third-party-integration-governance.md`
 - Phase 0 scaffold: `docs/architecture/phase-0-scaffold.md`
+- Third-party integration plan: `docs/architecture/third-party-integration-plan.md`
 
 ### Delivery Rule
 

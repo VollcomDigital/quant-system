@@ -28,3 +28,4 @@ when a material architectural choice changes.
 - `0004-agent-permissions-and-control-plane.md`
 - `0005-tradfi-and-web3-gateway-architecture.md`
 - `0006-custody-signing-and-kill-switch-architecture.md`
+- `0007-third-party-integration-governance.md`
