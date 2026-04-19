@@ -8,6 +8,7 @@ Evolve the current single-package backtesting application into a staged monorepo
 - data ingestion and feature management
 - a reusable backtest engine
 - autonomous AI agents
+- a web control plane for management, reporting, approvals, and execution oversight
 - a production trading system split between mid-frequency and HFT concerns
 - infrastructure and deployment automation
 
@@ -76,6 +77,7 @@ The current repository already contains the seeds of several target domains:
 
 - `src/data/*` -> `data_platform/connectors`
 - `src/backtest/*` -> `backtest_engine/simulator` and `backtest_engine/analytics`
+- `src/dashboard/*` -> `web_control_plane/backend` initial compatibility shell
 - `src/reporting/*` -> `backtest_engine/analytics` and shared reporting interfaces
 - `src/utils/telemetry.py` -> `shared_lib/logging`
 - `src/config.py` -> shared contracts/config packages
@@ -86,6 +88,7 @@ The largest missing capabilities are:
 - a true monorepo package layout with internal contracts
 - a data platform with orchestration and feature-store abstractions
 - research training and model-serving pipelines
+- a first-class web application for operator workflows and approvals
 - OMS/EMS separation for live trading
 - agent runtime and review/risk agents
 - low-latency gateway/HFT foundations
@@ -113,6 +116,7 @@ This means:
 - upstream repositories are treated as architecture donors, bounded providers, or external operator tools
 - direct integration is allowed only where the upstream capability is already naturally artifact- or service-shaped
 - execution, custody, OMS, RMS, and treasury boundaries remain internal and deterministic
+- the web application is an operator surface and must not bypass backend enforcement for approvals, OMS, RMS, gateways, or custody controls
 
 ### Repository Classification
 
@@ -225,6 +229,8 @@ Primary phases: Phase 6 through Phase 10
 - upstream projects must not define internal schemas for orders, fills, positions, or risk events
 - forecasting, optimization, memory, RL, and simulation remain optional modules
 - agents may propose, validate, and summarize, but may not bypass OMS, RMS, KMS/HSM, approval gates, or treasury controls
+- the web control plane may launch, monitor, approve, pause, reconcile, and halt workflows, but every mutating action must resolve through authenticated backend control APIs
+- the browser must never hold broker credentials, exchange credentials, private keys, or signing authority
 - portfolio optimization is a distinct stage after alpha generation and before execution
 - scenario simulation is an enhancement to stress testing, not a replacement for replay- and market-mechanics-based backtesting
 - if licensing or dependency drag becomes material, revert to pattern adoption and avoid direct integration
@@ -268,6 +274,7 @@ Create the monorepo skeleton without breaking the existing CLI or backtesting fl
   - `data_platform/`
   - `alpha_research/`
   - `backtest_engine/`
+- `web_control_plane/`
   - `trading_system/`
   - `infrastructure/`
   - `shared_lib/`
@@ -338,6 +345,10 @@ Extract the common primitives used by all future modules before any service spli
   - portfolio optimization requests/responses
   - research memory records
   - RL environment metadata
+  - run metadata and job status payloads
+  - approval requests and approval decisions
+  - audit events and operator actions
+  - UI-facing execution and health status payloads
   - trade signals
   - orders/fills/positions
   - validation results
@@ -538,6 +549,7 @@ Convert the current runner into a reusable engine with explicit simulator, mecha
 - [ ] Add statistical robustness and post-backtest validation modules inspired by Vibe-Trading, including walk-forward, confidence intervals, and stability checks where they provide real signal quality value.
 - [ ] Add an engine API boundary so research factors and live execution systems can consume the same contracts.
 - [ ] Ensure the simulator can emit and replay the exact API payloads and order payloads that `trading_system` will submit in paper and live modes.
+- [ ] Evolve the current FastAPI dashboard into an authenticated initial web shell that exposes managed run browsing, run comparison, report access, and job/provenance views without introducing direct execution controls yet.
 
 ### Deliverables
 
@@ -614,6 +626,13 @@ Introduce agent runtime and the first three target agents on top of stable contr
   - panic-sell / anomalous-allocation Kill Switch escalation rules
 - [ ] Add human approval boundaries for all agents.
 - [ ] Instrument agent runs with OTel GenAI conventions.
+- [ ] Create `web_control_plane/backend/` and `web_control_plane/frontend/` as the long-term home for the control-plane web application while keeping the existing dashboard surface as a compatibility shell during migration.
+- [ ] Add research and approval console workflows for:
+  - backtest run review
+  - factor/model promotion review
+  - agent finding triage
+  - approval queues with dataset, model, and validation provenance
+- [ ] Ensure the web control plane uses authenticated backend APIs and audit logging for every approval or workflow mutation.
 
 ### Deliverables
 
@@ -692,6 +711,13 @@ Implement a production-grade trading system for minute-to-week horizons before i
   - TradFi global cancel flows such as `reqGlobalCancel()` and Alpaca `DELETE /v2/orders`
   - DeFi stop-signing behavior for pending or future transactions
   - Flatten or Delta-Hedge logic for emergency containment
+- [ ] Add web control plane execution-oversight views for paper and live trading that can:
+  - display OMS, EMS, RMS, and reconciliation status
+  - pause strategies
+  - halt new signal intake
+  - trigger bounded reconciliation and panic-button workflows
+  - review alerts and incidents
+- [ ] Explicitly forbid raw browser-driven trade entry or any web path that bypasses OMS, EMS, RMS, gateway, or approval policies.
 
 ### Deliverables
 
@@ -852,6 +878,7 @@ Add deployment, orchestration, and environment separation once service boundarie
   - API/model-serving workloads
   - agent runners
   - live trading control-plane services
+- [ ] Add deployment patterns for the `web_control_plane` frontend and backend, including auth, session management, and operator-safe routing to backend control APIs.
 - [ ] Add GPU-backed model-serving deployment patterns for mid-frequency inference services.
 - [ ] Add CI/CD workflows for:
   - package-level lint/test/build
@@ -908,6 +935,7 @@ Retire the legacy single-package structure after all critical modules are stable
 
 - [ ] Replace direct `src/*` imports with package-local imports from the monorepo modules.
 - [ ] Keep a compatibility CLI during transition.
+- [ ] Retire the legacy standalone dashboard by absorbing its responsibilities into `web_control_plane`, leaving only compatibility routes where needed.
 - [ ] Port existing tests into module-scoped suites.
 - [ ] Add contract tests across:
   - research -> backtest engine
@@ -934,6 +962,7 @@ Retire the legacy single-package structure after all critical modules are stable
 
 - [ ] Legacy `src/*` dependencies are either removed or intentionally retained behind compatibility wrappers
 - [ ] Parity validation is documented for data, backtests, reporting, and execution-control paths
+- [ ] The web control plane is the primary operator interface for managed runs, approvals, reporting, and bounded execution oversight
 - [ ] The repository can be reasoned about by package/domain instead of legacy module inheritance
 
 ## Recommended Execution Order
