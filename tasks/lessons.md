@@ -246,3 +246,37 @@
   fills wire up. (2) Flatten/Delta-Hedge logic — Phase 7/8, needs
   live position deltas. (3) gRPC/Triton transport for model serving —
   Phase 9 infra; Phase 6 shipped the contract.
+
+### Phase 7 — Shared Market Connectivity
+
+- **Adapter pattern for vendor SDKs.** `BrokerClient` Protocol with
+  `FakeBrokerClient`, `RpcClient` Protocol with `FakeRpcClient`,
+  `SigningClient` Protocol with `FakeSigningClient`. Vendor types
+  never cross into gateway logic; Phase 9 swaps real SDKs in without
+  touching the test suite.
+- **Web3 gateway never holds private keys.** `Web3Gateway.execute`
+  calls `signer.sign(tx, signer_role=...)`; the signer rejects
+  unauthorised roles. The gateway is a coordinator: simulate, request
+  signature, broadcast. Custody lives behind KMS / Vault per ADR-0006.
+- **Single `Gateway` Protocol, two paradigms.** TradFi adapters and
+  the Web3 gateway both produce `OrderAck` / `TxReceipt` and
+  `HealthStatus`. The Phase 6 EMS / KillSwitch see the same shape
+  regardless of paradigm. Enforced by the Phase 7 exit-criteria
+  static test ("no Web3 type leaks into TradFi" and vice versa).
+- **`cancel_all` returns the cancelled ids, not the count.** Phase 6
+  PanicPlaybook attaches the list to its result, the audit log
+  records every id, and the operator UI can list them. Returning a
+  count would have hidden the per-order trail.
+- **FIX parsing vs FIX state are different objects.**
+  `parse_fix_message(raw) -> FixMessage` is pure;
+  `FixSession` owns sequence numbers + login state. Tests can
+  exercise either without a live socket.
+- **`HeartbeatTracker` is a value-object, not a thread.**
+  `is_timed_out(at=...)` takes the current time as an argument so
+  tests stay deterministic and the production caller can drive it
+  from a single event loop.
+- **Phase 7 deferred three things cleanly**: (1) real `alpaca-py` /
+  `ib_insync` SDK wiring — Phase 9 alongside KMS / Vault credential
+  management. (2) IB Gateway container build — Phase 9 deployable.
+  (3) Concrete protocol adapters (Uniswap V3 router, Aave, etc.) —
+  per-strategy as needs land; ABIRegistry already accepts them.
