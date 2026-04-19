@@ -1,0 +1,15 @@
+[project]
+name = "trading_system"
+version = "0.0.0"
+description = "trading_system domain package (Phase 0 scaffold; no runtime code yet)."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+authors = [{ name = "Platform" }]
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

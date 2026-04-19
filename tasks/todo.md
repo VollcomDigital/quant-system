@@ -266,52 +266,73 @@ Create the monorepo skeleton without breaking the existing CLI or backtesting fl
 
 ### Tasks
 
-- [ ] Define the monorepo package strategy:
+- [x] Define the monorepo package strategy:
   - single root `pyproject.toml` with workspace-style internal packages, or
   - poly-package layout with package-local manifests and shared build tooling
-- [ ] Create the top-level directory structure:
+  - **Decision:** Hybrid root workspace + package-local manifests per domain;
+    native code isolated under `trading_system/native/`. Recorded in
+    ADR-0001 (Accepted). Guarded by `tests/phase_0/test_adr_0001_package_strategy.py`.
+- [x] Create the top-level directory structure:
   - `ai_agents/`
   - `data_platform/`
   - `alpha_research/`
   - `backtest_engine/`
-- `web_control_plane/`
+  - `web_control_plane/`
   - `trading_system/`
   - `infrastructure/`
   - `shared_lib/`
-- [ ] Introduce internal package naming and import conventions.
-- [ ] Add architecture decision records for:
-  - package boundaries
-  - Python vs Rust/C++ ownership
-  - runtime orchestration model
-  - shared contracts and schemas
-  - two-speed execution separation and ownership boundaries
-  - shared research foundation vs divergent execution pathways
-- [ ] Define service-to-service communication standards for:
+  - Skeleton guarded by `tests/phase_0/test_monorepo_skeleton.py`
+    (34 structural invariants, all green).
+- [x] Introduce internal package naming and import conventions. Codified in
+  `docs/architecture/package-and-import-conventions.md`. Guarded by
+  `tests/phase_0/test_import_naming_conventions.py`.
+- [x] Add architecture decision records for:
+  - package boundaries (ADR-0001 Accepted)
+  - Python vs Rust/C++ ownership (ADR-0003 Accepted)
+  - runtime orchestration model (ADR-0002 Proposed, owner: Data Platform)
+  - shared contracts and schemas (ADR-0001 + Phase 1 work)
+  - two-speed execution separation and ownership boundaries (ADR-0003 Accepted)
+  - shared research foundation vs divergent execution pathways (ADR-0003 Accepted)
+  - agents (ADR-0004), gateways (ADR-0005), custody/kill-switches (ADR-0006)
+    all Proposed with explicit Implementation Owners.
+  - Guarded by `tests/phase_0/test_adr_status_and_owners.py`.
+- [x] Define service-to-service communication standards for:
   - gRPC request/response services
   - Kafka or ZeroMQ event streaming
   - synchronous vs asynchronous control-plane traffic
-- [ ] Document the latency boundary where Python is removed from the HFT critical path.
-- [ ] Preserve the current CLI as a compatibility facade until downstream modules are extracted.
+  - Codified in `docs/architecture/service-communication-standards.md` with
+    a binding Transport Matrix. Guarded by
+    `tests/phase_0/test_service_communication_standards.py`.
+- [x] Document the latency boundary where Python is removed from the HFT critical path.
+  Codified in `docs/architecture/hft-latency-boundary.md` with a normative
+  latency-budget table and explicit Python-forbidden zones. Guarded by
+  `tests/phase_0/test_hft_latency_boundary.py`.
+- [x] Preserve the current CLI as a compatibility facade until downstream
+  modules are extracted. Strategy documented in
+  `docs/architecture/cli-compatibility-facade.md`. Guarded by
+  `tests/phase_0/test_cli_compatibility_facade.py` (includes static import
+  rule: no domain package may import `src.*`).
 
 ### Deliverables
 
-- [ ] Monorepo skeleton committed
-- [ ] Internal package naming standard documented
-- [ ] Compatibility strategy for existing `src.main` documented
+- [x] Monorepo skeleton committed
+- [x] Internal package naming standard documented
+- [x] Compatibility strategy for existing `src.main` documented
 
 ### Entry Criteria
 
-- [ ] ADR-0001 reviewed
-- [ ] ADR-0003 reviewed
-- [ ] `docs/architecture/phase-0-scaffold.md` agreed as the initial package skeleton
-- [ ] Existing branch and release compatibility constraints documented
+- [x] ADR-0001 reviewed (Accepted)
+- [x] ADR-0003 reviewed (Accepted)
+- [x] `docs/architecture/phase-0-scaffold.md` agreed as the initial package skeleton
+- [x] Existing branch and release compatibility constraints documented
+  (`docs/architecture/cli-compatibility-facade.md`)
 
 ### Exit Criteria
 
-- [ ] Top-level monorepo directories created or approved for creation
-- [ ] Package/import naming conventions fixed in writing
-- [ ] Current CLI compatibility facade strategy documented
-- [ ] No Phase 1 extraction starts without an approved package-boundary direction
+- [x] Top-level monorepo directories created or approved for creation
+- [x] Package/import naming conventions fixed in writing
+- [x] Current CLI compatibility facade strategy documented
+- [x] No Phase 1 extraction starts without an approved package-boundary direction
 
 ## Phase 1 - Shared Contracts, Telemetry, and Core Utilities
 

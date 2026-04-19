@@ -1,8 +1,9 @@
 # ADR 0006: Execution Signing, Custody, and Kill Switches
 
-## Status
-
-Proposed
+- Status: Proposed
+- Owners: Execution, Platform, Risk, Security
+- Implementation Owner: Security (signing/custody), Execution (kill switches)
+- Target phase: Phase 6 / Phase 7 / Phase 9
 
 ## Context
 
@@ -18,9 +19,10 @@ The architecture must decide:
 - how transactions are signed
 - where treasury assets are held
 - what automated and human kill-switch powers exist
-- how the system fails closed during model drift, hallucination, broker outages, or on-chain exploit risk
+- how the system fails closed during model drift, hallucination, broker
+  outages, or on-chain exploit risk
 
-## Decision
+## Decision (pending)
 
 Decision required on:
 
