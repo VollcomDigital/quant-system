@@ -1588,77 +1588,115 @@ def _merge_lookahead_shuffle_test_config(
     )
 
 
+def _normalized_global_validation_policies(
+    validation_cfg: ValidationConfig | None,
+) -> tuple[
+    ValidationDataQualityConfig | None,
+    OptimizationPolicyConfig | None,
+    ResultConsistencyConfig | None,
+]:
+    if validation_cfg is None:
+        return None, None, None
+    dq = (
+        _merge_data_quality_config(validation_cfg.data_quality, None)
+        if validation_cfg.data_quality is not None
+        else None
+    )
+    opt = (
+        _merge_optimization_config(validation_cfg.optimization, None)
+        if validation_cfg.optimization is not None
+        else None
+    )
+    rc = (
+        _merge_result_consistency_config(validation_cfg.result_consistency, None)
+        if validation_cfg.result_consistency is not None
+        else None
+    )
+    return dq, opt, rc
+
+
+def _apply_resolved_validation_to_collection(
+    collection: CollectionConfig,
+    global_data_quality: ValidationDataQualityConfig | None,
+    global_optimization: OptimizationPolicyConfig | None,
+    global_result_consistency: ResultConsistencyConfig | None,
+) -> None:
+    collection_validation = collection.validation
+    resolved_data_quality = _merge_data_quality_config(
+        global_data_quality,
+        collection_validation.data_quality if collection_validation else None,
+    )
+    resolved_optimization = _merge_optimization_config(
+        global_optimization,
+        collection_validation.optimization if collection_validation else None,
+    )
+    resolved_result_consistency = _merge_result_consistency_config(
+        global_result_consistency,
+        collection_validation.result_consistency if collection_validation else None,
+    )
+    # Special case: data-integrity audit activation is collection-scoped because
+    # `reference_source` exists only on CollectionConfig. Global validation can
+    # still define/override thresholds, but enabling the audit requires a
+    # collection-level reference source.
+    resolved_result_consistency = _ensure_reference_source_data_integrity_policy(
+        collection,
+        resolved_result_consistency,
+    )
+    if (
+        resolved_data_quality is None
+        and resolved_optimization is None
+        and resolved_result_consistency is None
+    ):
+        return
+    collection.validation = ValidationConfig(
+        data_quality=resolved_data_quality,
+        optimization=resolved_optimization,
+        result_consistency=resolved_result_consistency,
+    )
+
+
+def _ensure_reference_source_data_integrity_policy(
+    collection: CollectionConfig,
+    resolved_result_consistency: ResultConsistencyConfig | None,
+) -> ResultConsistencyConfig | None:
+    """Inject default data-integrity audit only when collection has a reference source.
+
+    Thresholds/rules may come from global validation and collection overrides,
+    but the audit itself is only meaningful when a collection-level
+    `reference_source` exists.
+    """
+    if not collection.reference_source:
+        return resolved_result_consistency
+
+    base_policy = (
+        resolved_result_consistency
+        if resolved_result_consistency is not None
+        else ResultConsistencyConfig()
+    )
+    if getattr(base_policy, "data_integrity_audit", None) is not None:
+        return resolved_result_consistency
+
+    with_default_audit = ResultConsistencyConfig(
+        min_metric=base_policy.min_metric,
+        min_trades=base_policy.min_trades,
+        outlier_dependency=base_policy.outlier_dependency,
+        execution_price_variance=base_policy.execution_price_variance,
+        lookahead_shuffle_test=base_policy.lookahead_shuffle_test,
+        transaction_cost_robustness=base_policy.transaction_cost_robustness,
+        data_integrity_audit=_default_data_integrity_audit_config(),
+    )
+    return _merge_result_consistency_config(with_default_audit, None)
+
+
 def resolve_validation_overrides(cfg: Config) -> None:
     """Resolve effective collection-level validation policies.
 
     For each module (`data_quality`, `optimization`, `result_consistency`):
     effective policy = merge(global_policy, collection_override).
     """
-    validation_cfg = cfg.validation
-    if validation_cfg is None:
-        global_data_quality_policy = None
-        global_optimization_policy = None
-        global_result_consistency_policy = None
-    else:
-        # Build normalized runtime globals without mutating the source config object.
-        global_data_quality_policy = (
-            _merge_data_quality_config(validation_cfg.data_quality, None)
-            if validation_cfg.data_quality is not None
-            else None
-        )
-        global_optimization_policy = (
-            _merge_optimization_config(validation_cfg.optimization, None)
-            if validation_cfg.optimization is not None
-            else None
-        )
-        global_result_consistency_policy = (
-            _merge_result_consistency_config(validation_cfg.result_consistency, None)
-            if validation_cfg.result_consistency is not None
-            else None
-        )
-
+    dq, opt, rc = _normalized_global_validation_policies(cfg.validation)
     for collection in cfg.collections:
-        collection_validation = collection.validation
-        resolved_data_quality = _merge_data_quality_config(
-            global_data_quality_policy,
-            getattr(collection_validation, "data_quality", None),
-        )
-        resolved_optimization = _merge_optimization_config(
-            global_optimization_policy,
-            getattr(collection_validation, "optimization", None),
-        )
-        resolved_result_consistency = _merge_result_consistency_config(
-            global_result_consistency_policy,
-            getattr(collection_validation, "result_consistency", None),
-        )
-        if collection.reference_source:
-            base_policy = (
-                resolved_result_consistency
-                if resolved_result_consistency is not None
-                else ResultConsistencyConfig()
-            )
-            if getattr(base_policy, "data_integrity_audit", None) is None:
-                base_policy = ResultConsistencyConfig(
-                    min_metric=base_policy.min_metric,
-                    min_trades=base_policy.min_trades,
-                    outlier_dependency=base_policy.outlier_dependency,
-                    execution_price_variance=base_policy.execution_price_variance,
-                    lookahead_shuffle_test=base_policy.lookahead_shuffle_test,
-                    transaction_cost_robustness=base_policy.transaction_cost_robustness,
-                    data_integrity_audit=_default_data_integrity_audit_config(),
-                )
-            resolved_result_consistency = _merge_result_consistency_config(base_policy, None)
-        if (
-            resolved_data_quality is None
-            and resolved_optimization is None
-            and resolved_result_consistency is None
-        ):
-            continue
-        collection.validation = ValidationConfig(
-            data_quality=resolved_data_quality,
-            optimization=resolved_optimization,
-            result_consistency=resolved_result_consistency,
-        )
+        _apply_resolved_validation_to_collection(collection, dq, opt, rc)
 
 
 def require_mapping(raw: Any, prefix: str) -> dict[str, Any]:
