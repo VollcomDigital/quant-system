@@ -646,8 +646,9 @@ class BacktestRunner:
             active.add("result_consistency.execution_price_variance")
         if getattr(result_consistency, "lookahead_shuffle_test", None) is not None:
             active.add("result_consistency.lookahead_shuffle_test")
-        # Data integrity audit activation is collection-scoped via reference_source.
-        if has_reference_source:
+        # Data integrity audit activation is collection-scoped via reference_source
+        # and requires a resolved policy to keep gate reporting aligned with execution.
+        if has_reference_source and getattr(result_consistency, "data_integrity_audit", None) is not None:
             active.add("result_consistency.data_integrity_audit")
         if getattr(result_consistency, "transaction_cost_robustness", None) is not None:
             active.add("result_consistency.transaction_cost_robustness")
