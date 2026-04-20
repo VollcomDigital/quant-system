@@ -105,9 +105,13 @@ collections:
 
   # Crypto (Binance via ccxt)
   - name: crypto
-    source: binance
-    reference_source: bybit  # optional golden source; activates data_integrity_audit defaults if unset
+    source: ccxt
+    # For ccxt collections, `exchange` selects the primary venue adapter.
+    # Set `reference_source: ccxt` + `reference_exchange` to compare venues
+    # in data_integrity_audit (for example Binance vs Bybit).
+    reference_source: ccxt
     exchange: binance
+    reference_exchange: bybit
     quote: USDT
     symbols: ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT"]
     fees: 0.0006  # approx Bybit/Binance taker

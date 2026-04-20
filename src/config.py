@@ -20,10 +20,11 @@ class StrategyConfig:
 @dataclass
 class CollectionConfig:
     name: str
-    source: str  # yfinance, ccxt, custom
+    source: str  # yfinance, ccxt, custom (also supports ccxt exchange aliases like binance/bybit)
     symbols: list[str]
     reference_source: str | None = None
     exchange: str | None = None  # for ccxt
+    reference_exchange: str | None = None  # for ccxt reference_source
     currency: str | None = None
     quote: str | None = None  # for ccxt symbols e.g., USDT
     fees: float | None = None
@@ -2521,6 +2522,9 @@ def _parse_collections(raw_collections: Any) -> list[CollectionConfig]:
                     collection_raw, "reference_source", normalize=False
                 ),
                 exchange=parse_optional_str(collection_raw, "exchange", normalize=False),
+                reference_exchange=parse_optional_str(
+                    collection_raw, "reference_exchange", normalize=False
+                ),
                 currency=parse_optional_str(collection_raw, "currency", normalize=False),
                 quote=parse_optional_str(collection_raw, "quote", normalize=False),
                 fees=(

@@ -3538,6 +3538,29 @@ def test_data_integrity_reference_collection_preserves_exchange_for_reference_so
     assert reference.reference_source is None
 
 
+def test_data_integrity_reference_collection_uses_reference_exchange_override():
+    collection = CollectionConfig(
+        name="integration_crypto",
+        source="ccxt",
+        symbols=["BTC/USDT"],
+        reference_source="ccxt",
+        exchange="binance",
+        reference_exchange="bybit",
+        currency=None,
+        quote="USDT",
+        fees=0.0,
+        slippage=0.0,
+        validation=None,
+    )
+
+    reference = BacktestRunner._data_integrity_audit_reference_collection(collection)
+
+    assert reference is not None
+    assert reference.source == "ccxt"
+    assert reference.exchange == "bybit"
+    assert reference.reference_source is None
+
+
 def test_data_integrity_threshold_details_uses_defaults_for_none_values():
     policy = ResultConsistencyDataIntegrityAuditConfig(
         min_overlap_ratio=None,

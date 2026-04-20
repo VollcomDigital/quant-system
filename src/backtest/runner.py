@@ -284,11 +284,11 @@ class BacktestRunner:
         self._runtime_signal_error_counts: dict[tuple[str, str, str, str], int] = {}
         self._runtime_signal_error_capped: set[tuple[str, str, str, str]] = set()
         self._strategy_fingerprint_cache: dict[type[BaseStrategy], str] = {}
-        # Cache data-integrity audit outcomes per job/source pair and effective
-        # threshold values. This preserves reuse across strategies while
-        # preventing stale hits when audit thresholds differ.
+        # Cache data-integrity audit outcomes per job/source+exchange identity
+        # and effective threshold values. This preserves reuse across strategies
+        # while preventing stale hits when source routing or thresholds differ.
         self._data_integrity_audit_cache: dict[
-            tuple[str, str, str, str, str, float, float, float],
+            tuple[str, str, str, str, str, str, str, float, float, float],
             tuple[str | None, dict[str, Any]],
         ] = {}
         self.validation_metadata: dict[str, Any] = {}
@@ -4027,8 +4027,8 @@ class BacktestRunner:
     def _data_integrity_audit_cache_key(
         context: ValidationContext,
         policy: ResultConsistencyDataIntegrityAuditConfig,
-    ) -> tuple[str, str, str, str, str, float, float, float]:
-        """Return cache key: job/source identity + normalized audit thresholds."""
+    ) -> tuple[str, str, str, str, str, str, str, float, float, float]:
+        """Return cache key: job/source+exchange identity + normalized thresholds."""
         thresholds = BacktestRunner._data_integrity_threshold_details(policy)
         return (
             context.job.collection.name,
@@ -4036,6 +4036,8 @@ class BacktestRunner:
             context.job.timeframe,
             str(context.job.collection.source),
             str(context.job.collection.reference_source),
+            str(context.job.collection.exchange),
+            str(context.job.collection.reference_exchange),
             thresholds["min_overlap_ratio"],
             thresholds["max_median_ohlc_diff_bps"],
             thresholds["max_p95_ohlc_diff_bps"],
@@ -4055,6 +4057,8 @@ class BacktestRunner:
             "reason": reason,
             "source": collection.source,
             "reference_source": collection.reference_source,
+            "exchange": collection.exchange,
+            "reference_exchange": collection.reference_exchange,
         }
         meta.update(BacktestRunner._data_integrity_threshold_details(policy))
         if details:
@@ -4070,7 +4074,8 @@ class BacktestRunner:
             source=collection.reference_source,
             symbols=list(collection.symbols),
             reference_source=None,
-            exchange=collection.exchange,
+            exchange=collection.reference_exchange or collection.exchange,
+            reference_exchange=None,
             currency=collection.currency,
             quote=collection.quote,
             fees=collection.fees,

@@ -406,6 +406,7 @@ collections:
   - name: test
     source: yfinance
     reference_source: alphavantage
+    reference_exchange: bybit
     symbols: ['AAPL']
 timeframes: ['1d']
 metric: sharpe
@@ -415,6 +416,7 @@ metric: sharpe
 
     cfg = load_config(path)
     assert cfg.collections[0].reference_source == "alphavantage"
+    assert cfg.collections[0].reference_exchange == "bybit"
     assert cfg.collections[0].validation is not None
     assert cfg.collections[0].validation.result_consistency is not None
     audit = cfg.collections[0].validation.result_consistency.data_integrity_audit

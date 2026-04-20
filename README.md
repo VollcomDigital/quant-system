@@ -257,6 +257,14 @@ See new collection examples under `config/collections/` for FX intraday via Finn
   - `data_integrity_audit` (optional thresholds module; gate is active when `collections[].reference_source` is set):
     - purpose: compare canonicalized bars from the primary `source` and a secondary `reference_source`
       to catch bad prints / ghost bars before accepting strategy results
+    - source routing:
+      - primary fetch uses `collections[].source` (+ `collections[].exchange` for ccxt)
+      - reference fetch uses `collections[].reference_source`
+      - for ccxt-vs-ccxt venue comparisons, set:
+        - `reference_source: ccxt`
+        - `reference_exchange: <venue>`
+      - when `reference_source` is ccxt and `reference_exchange` is unset, the runner falls back to
+        `collections[].exchange`
     - `min_overlap_ratio` (optional, default `0.99`, `0..1`): minimum fraction of primary-source bars that must have matching reference-source timestamps (`overlap_bars / primary_bars`)
     - `max_median_ohlc_diff_bps` (optional, default `5.0`, `>=0`): maximum allowed median OHLC drift (bps)
     - `max_p95_ohlc_diff_bps` (optional, default `20.0`, `>=0`): maximum allowed p95 OHLC drift (bps)
