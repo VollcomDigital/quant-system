@@ -3959,12 +3959,12 @@ class BacktestRunner:
 
         reasons = self._collect_strategy_validation_reasons(context, outcome)
         if reasons:
-            # Fail fast on cheap result-consistency gates before expensive shuffle checks.
-            return self._strategy_validation_reject_or_continue(reasons)
-        self._run_lookahead_shuffle_validation(context, plan, outcome, reasons)
-        if reasons:
+            # Fail fast on result-consistency gates before expensive shuffle checks.
             return self._strategy_validation_reject_or_continue(reasons)
         self._run_data_integrity_audit_validation(context, outcome, reasons)
+        if reasons:
+            return self._strategy_validation_reject_or_continue(reasons)
+        self._run_lookahead_shuffle_validation(context, plan, outcome, reasons)
         if reasons:
             return self._strategy_validation_reject_or_continue(reasons)
         self._run_transaction_cost_robustness_validation(context, plan, outcome, reasons)
