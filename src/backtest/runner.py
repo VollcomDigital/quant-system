@@ -618,7 +618,11 @@ class BacktestRunner:
         return {"optimization.feasibility"}
 
     @staticmethod
-    def _active_result_consistency_gates(result_consistency: Any) -> set[str]:
+    def _active_result_consistency_gates(
+        result_consistency: Any,
+        *,
+        has_reference_source: bool = False,
+    ) -> set[str]:
         if result_consistency is None:
             return set()
         active: set[str] = set()
@@ -632,7 +636,8 @@ class BacktestRunner:
             active.add("result_consistency.execution_price_variance")
         if getattr(result_consistency, "lookahead_shuffle_test", None) is not None:
             active.add("result_consistency.lookahead_shuffle_test")
-        if getattr(result_consistency, "data_integrity_audit", None) is not None:
+        # Data integrity audit activation is collection-scoped via reference_source.
+        if has_reference_source:
             active.add("result_consistency.data_integrity_audit")
         if getattr(result_consistency, "transaction_cost_robustness", None) is not None:
             active.add("result_consistency.transaction_cost_robustness")
@@ -650,7 +655,10 @@ class BacktestRunner:
             collection_active = self._active_data_quality_gates(collection_dq)
             collection_active.update(self._active_optimization_gates(collection_optimization))
             collection_active.update(
-                self._active_result_consistency_gates(collection_result_consistency)
+                self._active_result_consistency_gates(
+                    collection_result_consistency,
+                    has_reference_source=bool(getattr(collection, "reference_source", None)),
+                )
             )
             active_gates_union.update(collection_active)
             collection_profiles.append(
