@@ -4059,7 +4059,7 @@ class BacktestRunner:
             source=collection.reference_source,
             symbols=list(collection.symbols),
             reference_source=None,
-            exchange=None,
+            exchange=collection.exchange,
             currency=collection.currency,
             quote=collection.quote,
             fees=collection.fees,

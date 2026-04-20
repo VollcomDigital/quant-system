@@ -3427,6 +3427,28 @@ def test_run_all_data_integrity_audit_reuses_job_level_cache_across_strategies(t
     assert fetch_counts["reference"] == 1
 
 
+def test_data_integrity_reference_collection_preserves_exchange_for_reference_source():
+    collection = CollectionConfig(
+        name="integration_crypto",
+        source="ccxt",
+        symbols=["BTC/USDT"],
+        reference_source="ccxt",
+        exchange="binance",
+        currency=None,
+        quote="USDT",
+        fees=0.0,
+        slippage=0.0,
+        validation=None,
+    )
+
+    reference = BacktestRunner._data_integrity_audit_reference_collection(collection)
+
+    assert reference is not None
+    assert reference.source == "ccxt"
+    assert reference.exchange == "binance"
+    assert reference.reference_source is None
+
+
 def test_transaction_cost_robustness_result_attaches_meta_without_cache_pollution(
     tmp_path, monkeypatch
 ):
