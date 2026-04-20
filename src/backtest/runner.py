@@ -4159,7 +4159,10 @@ class BacktestRunner:
                 collection=context.job.collection,
                 policy=policy,
             )
-        only_cached = bool(getattr(context, "only_cached", getattr(self, "only_cached", False)))
+        only_cached = bool(getattr(context, "only_cached", self._run_only_cached))
+        _, _, _, _, _, _, _, _, _, _, calendar_timezone = self._load_data_quality_policy(
+            context.job.collection
+        )
         try:
             reference_source = self._make_source(reference_collection)
             reference_raw_df = reference_source.fetch(
@@ -4167,9 +4170,6 @@ class BacktestRunner:
                 context.job.timeframe,
                 only_cached=only_cached,
             )
-        try:
-            reference_source = self._make_source(reference_collection)
-            reference_raw_df = reference_source.fetch(context.job.symbol, context.job.timeframe, only_cached=False)
             reference_df, reference_canonicalization = self._canonicalize_validation_frame(
                 reference_raw_df,
                 calendar_timezone=calendar_timezone,
