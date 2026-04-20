@@ -3451,6 +3451,8 @@ def test_data_integrity_reference_collection_preserves_exchange_for_reference_so
     assert reference.source == "ccxt"
     assert reference.exchange == "binance"
     assert reference.reference_source is None
+
+
 def test_data_integrity_threshold_details_uses_defaults_for_none_values():
     policy = ResultConsistencyDataIntegrityAuditConfig(
         min_overlap_ratio=None,
