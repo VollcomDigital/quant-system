@@ -4052,6 +4052,7 @@ class BacktestRunner:
             "status": "indeterminate",
             "reason": reason,
             "source": collection.source,
+            "reference_source": collection.reference_source,
         }
         meta.update(BacktestRunner._data_integrity_threshold_details(policy))
         if details:
