@@ -1,0 +1,27 @@
+# Root workspace manifest for the HFT engine (ADR-0001 + ADR-0003).
+#
+# This is the ONLY build surface for native HFT code. Python is excluded
+# from the tick-to-trade critical path; see
+# docs/architecture/hft-latency-boundary.md.
+
+[workspace]
+resolver = "2"
+members = [
+    "hft_engine/core",
+    "hft_engine/network",
+    "hft_engine/fast_inference",
+]
+
+# Latency-critical release profile. Real benchmarks run with these
+# settings; debug builds are for development only.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+strip = true
+
+[profile.bench]
+lto = "fat"
+codegen-units = 1
+opt-level = 3

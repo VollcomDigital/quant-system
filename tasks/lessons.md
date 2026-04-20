@@ -280,3 +280,45 @@
   management. (2) IB Gateway container build — Phase 9 deployable.
   (3) Concrete protocol adapters (Uniswap V3 router, Aave, etc.) —
   per-strategy as needs land; ABIRegistry already accepts them.
+
+### Phase 8 — HFT Engine Foundations
+
+- **A static test is the cheapest Python-exclusion enforcement.**
+  `test_no_python_files_anywhere_under_native` + the domain-wide
+  `import trading_system.native.*` scanner turn ADR-0003's
+  Python-exclusion rule into a CI-blocking invariant. We never need
+  to install Rust in CI to keep the boundary honest.
+- **Ship the native crate skeleton, not the implementation.** Rust
+  builds aren't available in this sandbox, but the Cargo workspace
+  + `lib.rs` markers + `[profile.release]` pins are enough to keep
+  the Phase 9 infra work honest. Real lock-free queues / ring
+  buffers land when native toolchain ownership is assigned.
+- **Model cards are how Python talks about native models.** The HFT
+  critical path can't run Python, but the Phase 5 approval queue +
+  the Phase 5 code_reviewer agent need a typed surface to talk about
+  model eligibility. `HFTModelCard` with `compiled_target ∈ {onnx,
+  cpp_kernel, fpga}` refuses raw PyTorch at construction;
+  `is_live_eligible(card, measured_p99_us)` returns a
+  `ValidationResult` the approval queue already knows how to
+  display.
+- **Latency budgets must be monotonic.** A `LatencyBudget` with
+  `p50 > p95` is a typo, not a valid policy. The dataclass
+  `__post_init__` refuses it rather than silently letting a
+  pass/fail outcome depend on author order.
+- **NumPy percentile behaviour is surprising at small n.** The
+  linear-interp quantile of a 99-one / 1-hundred sample lands near
+  1.99, not 100. Re-wrote the test to use 90% × 1us + 10% × 50us so
+  the p99 actually lives in the outlier bucket.
+- **Co-location rules belong in a separate doc from the latency
+  boundary doc.** `hft-latency-boundary.md` (Phase 0) owns the
+  budget table; `hft-colocation-phase-8.md` owns CPU pinning,
+  hugepages, PTP, IOMMU, and the explicit separation from
+  Kubernetes. Merging them would have obscured which invariant
+  belongs to which layer.
+- **Phase 8 deferred**: (1) concrete lock-free queues / ring buffer
+  implementations — land when native toolchain ownership is
+  assigned; (2) DPDK / io_uring / AF_XDP driver wiring — Phase 9
+  bare-metal infra; (3) FPGA bitstream — only after software
+  benchmarks show headroom; (4) HFT Latency Agent concrete class —
+  Phase 5 shipped guardrails, the agent wire-up waits for real
+  native telemetry.
