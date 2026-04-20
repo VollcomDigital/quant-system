@@ -281,6 +281,10 @@ class BacktestRunner:
         self._runtime_signal_error_counts: dict[tuple[str, str, str, str], int] = {}
         self._runtime_signal_error_capped: set[tuple[str, str, str, str]] = set()
         self._strategy_fingerprint_cache: dict[type[BaseStrategy], str] = {}
+        self._data_integrity_audit_cache: dict[
+            tuple[str, str, str, str, str],
+            tuple[str | None, dict[str, Any]],
+        ] = {}
         self.validation_metadata: dict[str, Any] = {}
         self.active_validation_gates: list[str] = []
         self.inactive_validation_gates: list[str] = []
@@ -3999,10 +4003,30 @@ class BacktestRunner:
         policy = self._load_data_integrity_audit_policy(context.job.collection)
         if policy is None:
             return
-        audit_reason, audit_meta = self._data_integrity_audit_result(context, policy)
+        cache_key = self._data_integrity_audit_cache_key(context, policy)
+        cached = self._data_integrity_audit_cache.get(cache_key)
+        if cached is None:
+            audit_reason, audit_meta = self._data_integrity_audit_result(context, policy)
+            self._data_integrity_audit_cache[cache_key] = (audit_reason, copy.deepcopy(audit_meta))
+        else:
+            audit_reason, cached_meta = cached
+            audit_meta = copy.deepcopy(cached_meta)
         self._attach_post_run_meta(outcome, "data_integrity_audit", audit_meta)
         if audit_reason is not None:
             reasons.append(audit_reason)
+
+    @staticmethod
+    def _data_integrity_audit_cache_key(
+        context: ValidationContext,
+        _policy: ResultConsistencyDataIntegrityAuditConfig,
+    ) -> tuple[str, str, str, str, str]:
+        return (
+            context.job.collection.name,
+            context.job.symbol,
+            context.job.timeframe,
+            str(context.job.collection.source),
+            str(context.job.collection.reference_source),
+        )
 
     @staticmethod
     def _data_integrity_audit_indeterminate(
@@ -4394,6 +4418,7 @@ class BacktestRunner:
         self._evaluation_cache_write_failures = 0
         self._runtime_signal_error_counts = {}
         self._runtime_signal_error_capped = set()
+        self._data_integrity_audit_cache = {}
         self._evaluator = None
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}

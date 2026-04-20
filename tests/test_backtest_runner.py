@@ -3382,6 +3382,51 @@ def test_run_all_data_integrity_audit_rejects_on_low_overlap(tmp_path, monkeypat
     assert "overlap_ratio_below_threshold" in failure["error"]
 
 
+def test_run_all_data_integrity_audit_reuses_job_level_cache_across_strategies(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.collections[0].reference_source = "alphavantage"
+
+    class _AltStrategy(BaseStrategy):
+        name = "alt"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    runner.external_index = {"dummy": _DummyStrategy, "alt": _AltStrategy}
+    primary = _make_trending_ohlcv(30)
+    reference = primary.copy()
+    fetch_counts = {"primary": 0, "reference": 0}
+
+    class _Source:
+        def __init__(self, df: pd.DataFrame, *, is_reference: bool):
+            self._df = df
+            self._is_reference = is_reference
+
+        def fetch(self, symbol, timeframe, only_cached=False):
+            key = "reference" if self._is_reference else "primary"
+            fetch_counts[key] += 1
+            return self._df.copy()
+
+    def _make_source(self, col):
+        if col.source == "alphavantage":
+            return _Source(reference, is_reference=True)
+        return _Source(primary, is_reference=False)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", _make_source)
+    _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+
+    assert len(results) == 2
+    assert fetch_counts["primary"] == 1
+    assert fetch_counts["reference"] == 1
+
+
 def test_transaction_cost_robustness_result_attaches_meta_without_cache_pollution(
     tmp_path, monkeypatch
 ):
