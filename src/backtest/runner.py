@@ -285,7 +285,7 @@ class BacktestRunner:
         self._runtime_signal_error_capped: set[tuple[str, str, str, str]] = set()
         self._strategy_fingerprint_cache: dict[type[BaseStrategy], str] = {}
         self._data_integrity_audit_cache: dict[
-            tuple[str, str, str, str, str],
+            tuple[str, str, str, str, str, float, float, float],
             tuple[str | None, dict[str, Any]],
         ] = {}
         self.validation_metadata: dict[str, Any] = {}
@@ -4022,16 +4022,17 @@ class BacktestRunner:
     def _data_integrity_audit_cache_key(
         context: ValidationContext,
         policy: ResultConsistencyDataIntegrityAuditConfig,
-    ) -> tuple[str, str, str, str, str, str, str, str]:
+    ) -> tuple[str, str, str, str, str, float, float, float]:
+        thresholds = BacktestRunner._data_integrity_threshold_details(policy)
         return (
             context.job.collection.name,
             context.job.symbol,
             context.job.timeframe,
             str(context.job.collection.source),
             str(context.job.collection.reference_source),
-            repr(policy.min_overlap_ratio),
-            repr(policy.max_median_ohlc_diff_bps),
-            repr(policy.max_p95_ohlc_diff_bps),
+            thresholds["min_overlap_ratio"],
+            thresholds["max_median_ohlc_diff_bps"],
+            thresholds["max_p95_ohlc_diff_bps"],
         )
 
     @staticmethod
