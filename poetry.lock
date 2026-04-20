@@ -2411,14 +2411,24 @@ xml = ["lxml (>=4.9.2)"]
 
 [[package]]
 name = "peewee"
-version = "3.18.2"
+version = "4.0.4"
 description = "a little orm"
 optional = false
 python-versions = "*"
 groups = ["main"]
 files = [
-    {file = "peewee-3.18.2.tar.gz", hash = "sha256:77a54263eb61aff2ea72f63d2eeb91b140c25c1884148e28e4c0f7c4f64996a0"},
+    {file = "peewee-4.0.4-py3-none-any.whl", hash = "sha256:37ccd3f89e523c7b42eed023cd90b48d088753ddff1d74e854a9c6445e7bd797"},
+    {file = "peewee-4.0.4.tar.gz", hash = "sha256:70e07c14a10bec8d663514bda5854e44ef15d5b03974b41f7218066b6fd3a065"},
 ]
+
+[package.extras]
+aiomysql = ["aiomysql", "greenlet"]
+aiosqlite = ["aiosqlite", "greenlet"]
+asyncpg = ["asyncpg", "greenlet"]
+cysqlite = ["cysqlite"]
+mysql = ["pymysql"]
+postgres = ["psycopg2-binary"]
+psycopg3 = ["psycopg[binary]"]
 
 [[package]]
 name = "platformdirs"
