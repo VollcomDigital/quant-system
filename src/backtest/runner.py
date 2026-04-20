@@ -4036,15 +4036,16 @@ class BacktestRunner:
         policy: ResultConsistencyDataIntegrityAuditConfig,
         details: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
+        thresholds = BacktestRunner._data_integrity_threshold_details(policy)
         meta: dict[str, Any] = {
             "is_complete": False,
             "status": "indeterminate",
             "reason": reason,
             "source": collection.source,
             "reference_source": collection.reference_source,
-            "min_overlap_ratio": policy.min_overlap_ratio,
-            "max_median_ohlc_diff_bps": policy.max_median_ohlc_diff_bps,
-            "max_p95_ohlc_diff_bps": policy.max_p95_ohlc_diff_bps,
+            "min_overlap_ratio": thresholds["min_overlap_ratio"],
+            "max_median_ohlc_diff_bps": thresholds["max_median_ohlc_diff_bps"],
+            "max_p95_ohlc_diff_bps": thresholds["max_p95_ohlc_diff_bps"],
         }
         if details:
             meta.update(details)
