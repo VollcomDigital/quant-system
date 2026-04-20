@@ -2246,19 +2246,15 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
         min_value=RESULT_CONSISTENCY_MIN_TRADES_MIN,
     )
 
-    outlier_dependency_raw = parsed_raw.get("outlier_dependency")
-    if outlier_dependency_raw is not None and not isinstance(outlier_dependency_raw, dict):
-        raise ValueError(f"Invalid `{prefix}.outlier_dependency`: expected a mapping")
-    execution_price_variance_raw = parsed_raw.get("execution_price_variance")
-    if execution_price_variance_raw is not None and not isinstance(execution_price_variance_raw, dict):
-        raise ValueError(f"Invalid `{prefix}.execution_price_variance`: expected a mapping")
+    outlier_dependency_raw = _optional_mapping_field(parsed_raw, prefix, "outlier_dependency")
+    execution_price_variance_raw = _optional_mapping_field(parsed_raw, prefix, "execution_price_variance")
 
     outlier_dependency = (
         _parse_result_consistency_outlier_dependency(
             outlier_dependency_raw,
             f"{prefix}.outlier_dependency",
         )
-        if isinstance(outlier_dependency_raw, dict)
+        if outlier_dependency_raw is not None
         else None
     )
     execution_price_variance = (
@@ -2266,45 +2262,36 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
             execution_price_variance_raw,
             f"{prefix}.execution_price_variance",
         )
-        if isinstance(execution_price_variance_raw, dict)
+        if execution_price_variance_raw is not None
         else None
     )
-    lookahead_shuffle_test_raw = parsed_raw.get("lookahead_shuffle_test")
-    if lookahead_shuffle_test_raw is not None and not isinstance(lookahead_shuffle_test_raw, dict):
-        raise ValueError(f"Invalid `{prefix}.lookahead_shuffle_test`: expected a mapping")
+    lookahead_shuffle_test_raw = _optional_mapping_field(parsed_raw, prefix, "lookahead_shuffle_test")
     lookahead_shuffle_test = (
         _parse_lookahead_shuffle_test(
             lookahead_shuffle_test_raw,
             f"{prefix}.lookahead_shuffle_test",
         )
-        if isinstance(lookahead_shuffle_test_raw, dict)
+        if lookahead_shuffle_test_raw is not None
         else None
     )
-    data_integrity_audit_raw = parsed_raw.get("data_integrity_audit")
-    if data_integrity_audit_raw is not None and not isinstance(data_integrity_audit_raw, dict):
-        raise ValueError(f"Invalid `{prefix}.data_integrity_audit`: expected a mapping")
+    data_integrity_audit_raw = _optional_mapping_field(parsed_raw, prefix, "data_integrity_audit")
     data_integrity_audit = (
         _parse_result_consistency_data_integrity_audit(
             data_integrity_audit_raw,
             f"{prefix}.data_integrity_audit",
         )
-        if isinstance(data_integrity_audit_raw, dict)
+        if data_integrity_audit_raw is not None
         else None
     )
-    transaction_cost_robustness_raw = parsed_raw.get("transaction_cost_robustness")
-    if (
-        transaction_cost_robustness_raw is not None
-        and not isinstance(transaction_cost_robustness_raw, dict)
-    ):
-        raise ValueError(
-            f"Invalid `{prefix}.transaction_cost_robustness`: expected a mapping"
-        )
+    transaction_cost_robustness_raw = _optional_mapping_field(
+        parsed_raw, prefix, "transaction_cost_robustness"
+    )
     transaction_cost_robustness = (
         _parse_result_consistency_transaction_cost_robustness(
             transaction_cost_robustness_raw,
             f"{prefix}.transaction_cost_robustness",
         )
-        if isinstance(transaction_cost_robustness_raw, dict)
+        if transaction_cost_robustness_raw is not None
         else None
     )
 
@@ -2320,6 +2307,15 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
         ),
         prefix,
     )
+
+
+def _optional_mapping_field(raw: dict[str, Any], prefix: str, key: str) -> dict[str, Any] | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"Invalid `{prefix}.{key}`: expected a mapping")
+    return cast(dict[str, Any], value)
 
 
 def _parse_result_consistency_outlier_dependency(

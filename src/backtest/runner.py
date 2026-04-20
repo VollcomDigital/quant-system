@@ -4105,6 +4105,45 @@ class BacktestRunner:
                 collection=context.job.collection,
                 policy=policy,
             )
+        reference_outcome = self._load_reference_frame_for_data_integrity(context, policy)
+        if not isinstance(reference_outcome[0], pd.DataFrame):
+            return reference_outcome
+        reference_df, reference_canonicalization = reference_outcome
+        primary_df = validated_data.raw_df
+        invalid_input = self._validate_data_integrity_inputs(primary_df, reference_df, context, policy)
+        if invalid_input is not None:
+            return invalid_input
+        overlap_details = self._data_integrity_overlap_details(primary_df, reference_df)
+        divergence = overlap_details["divergence"]
+        threshold_details = self._data_integrity_threshold_details(policy)
+        failed_checks = self._data_integrity_failed_checks(overlap_details, divergence, threshold_details)
+        meta: dict[str, Any] = {
+            "is_complete": True,
+            "status": "complete",
+            "source": context.job.collection.source,
+            "reference_source": context.job.collection.reference_source,
+            "primary_bars": overlap_details["primary_bars"],
+            "reference_bars": overlap_details["reference_bars"],
+            "overlap_bars": overlap_details["overlap_bars"],
+            "overlap_ratio": overlap_details["overlap_ratio"],
+            "missing_primary_bar_pct": overlap_details["missing_primary_bar_pct"],
+            "min_overlap_ratio": threshold_details["min_overlap_ratio"],
+            "max_median_ohlc_diff_bps": threshold_details["max_median_ohlc_diff_bps"],
+            "max_p95_ohlc_diff_bps": threshold_details["max_p95_ohlc_diff_bps"],
+            "reference_canonicalization": reference_canonicalization,
+            **divergence,
+            "failed_checks": list(failed_checks),
+        }
+        if failed_checks:
+            reason = "data_integrity_audit_failed(" + "; ".join(failed_checks) + ")"
+            return reason, meta
+        return None, meta
+
+    def _load_reference_frame_for_data_integrity(
+        self,
+        context: ValidationContext,
+        policy: ResultConsistencyDataIntegrityAuditConfig,
+    ) -> tuple[pd.DataFrame, dict[str, int]] | tuple[str | None, dict[str, Any]]:
         reference_collection = self._data_integrity_audit_reference_collection(context.job.collection)
         if reference_collection is None:
             return self._data_integrity_audit_indeterminate(
@@ -4129,7 +4168,15 @@ class BacktestRunner:
                 policy=policy,
                 details={"error": str(exc)},
             )
-        primary_df = validated_data.raw_df
+        return reference_df, reference_canonicalization
+
+    def _validate_data_integrity_inputs(
+        self,
+        primary_df: pd.DataFrame,
+        reference_df: pd.DataFrame,
+        context: ValidationContext,
+        policy: ResultConsistencyDataIntegrityAuditConfig,
+    ) -> tuple[str | None, dict[str, Any]] | None:
         if primary_df.empty or reference_df.empty:
             return self._data_integrity_audit_indeterminate(
                 "empty_frame",
@@ -4153,6 +4200,14 @@ class BacktestRunner:
                 policy=policy,
                 details={"missing_columns": missing_columns},
             )
+        return None
+
+    def _data_integrity_overlap_details(
+        self,
+        primary_df: pd.DataFrame,
+        reference_df: pd.DataFrame,
+    ) -> dict[str, Any]:
+        required_columns = ["Open", "High", "Low", "Close"]
         overlap_index = primary_df.index.intersection(reference_df.index)
         primary_bars = int(len(primary_df))
         reference_bars = int(len(reference_df))
@@ -4162,10 +4217,36 @@ class BacktestRunner:
         overlap_primary = primary_df.loc[overlap_index, required_columns]
         overlap_reference = reference_df.loc[overlap_index, required_columns]
         divergence = self._data_integrity_ohlc_diff_metrics(overlap_primary, overlap_reference)
-        max_median = float(policy.max_median_ohlc_diff_bps or 0.0)
-        max_p95 = float(policy.max_p95_ohlc_diff_bps or 0.0)
-        min_overlap = float(policy.min_overlap_ratio or 0.0)
+        return {
+            "primary_bars": primary_bars,
+            "reference_bars": reference_bars,
+            "overlap_bars": overlap_bars,
+            "overlap_ratio": overlap_ratio,
+            "missing_primary_bar_pct": missing_primary_bar_pct,
+            "divergence": divergence,
+        }
+
+    @staticmethod
+    def _data_integrity_threshold_details(
+        policy: ResultConsistencyDataIntegrityAuditConfig,
+    ) -> dict[str, float]:
+        return {
+            "max_median_ohlc_diff_bps": float(policy.max_median_ohlc_diff_bps or 0.0),
+            "max_p95_ohlc_diff_bps": float(policy.max_p95_ohlc_diff_bps or 0.0),
+            "min_overlap_ratio": float(policy.min_overlap_ratio or 0.0),
+        }
+
+    @staticmethod
+    def _data_integrity_failed_checks(
+        overlap_details: dict[str, Any],
+        divergence: dict[str, float],
+        thresholds: dict[str, float],
+    ) -> list[str]:
         failed_checks: list[str] = []
+        overlap_ratio = float(overlap_details["overlap_ratio"])
+        min_overlap = float(thresholds["min_overlap_ratio"])
+        overlap_bars = int(overlap_details["overlap_bars"])
+        primary_bars = int(overlap_details["primary_bars"])
         if overlap_ratio < min_overlap:
             failed_checks.append(
                 "overlap_ratio_below_threshold("
@@ -4173,38 +4254,20 @@ class BacktestRunner:
                 f"primary_bars={primary_bars})"
             )
         median_diff = divergence["median_ohlc_diff_bps"]
+        max_median = float(thresholds["max_median_ohlc_diff_bps"])
         if np.isfinite(median_diff) and median_diff > max_median:
             failed_checks.append(
                 "median_ohlc_diff_bps_exceeded("
                 f"max_allowed={max_median}, available={median_diff})"
             )
         p95_diff = divergence["p95_ohlc_diff_bps"]
+        max_p95 = float(thresholds["max_p95_ohlc_diff_bps"])
         if np.isfinite(p95_diff) and p95_diff > max_p95:
             failed_checks.append(
                 "p95_ohlc_diff_bps_exceeded("
                 f"max_allowed={max_p95}, available={p95_diff})"
             )
-        meta: dict[str, Any] = {
-            "is_complete": True,
-            "status": "complete",
-            "source": context.job.collection.source,
-            "reference_source": context.job.collection.reference_source,
-            "primary_bars": primary_bars,
-            "reference_bars": reference_bars,
-            "overlap_bars": overlap_bars,
-            "overlap_ratio": overlap_ratio,
-            "missing_primary_bar_pct": missing_primary_bar_pct,
-            "min_overlap_ratio": min_overlap,
-            "max_median_ohlc_diff_bps": max_median,
-            "max_p95_ohlc_diff_bps": max_p95,
-            "reference_canonicalization": reference_canonicalization,
-            **divergence,
-            "failed_checks": list(failed_checks),
-        }
-        if failed_checks:
-            reason = "data_integrity_audit_failed(" + "; ".join(failed_checks) + ")"
-            return reason, meta
-        return None, meta
+        return failed_checks
 
     def _run_transaction_cost_robustness_validation(
         self,
