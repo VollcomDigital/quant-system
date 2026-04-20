@@ -4021,14 +4021,17 @@ class BacktestRunner:
     @staticmethod
     def _data_integrity_audit_cache_key(
         context: ValidationContext,
-        _policy: ResultConsistencyDataIntegrityAuditConfig,
-    ) -> tuple[str, str, str, str, str]:
+        policy: ResultConsistencyDataIntegrityAuditConfig,
+    ) -> tuple[str, str, str, str, str, str, str, str]:
         return (
             context.job.collection.name,
             context.job.symbol,
             context.job.timeframe,
             str(context.job.collection.source),
             str(context.job.collection.reference_source),
+            repr(policy.min_overlap_ratio),
+            repr(policy.max_median_ohlc_diff_bps),
+            repr(policy.max_p95_ohlc_diff_bps),
         )
 
     @staticmethod
