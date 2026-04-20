@@ -26,8 +26,12 @@ from src.backtest.runner import (
 from src.config import (
     CollectionConfig,
     Config,
+    DATA_INTEGRITY_AUDIT_MAX_MEDIAN_OHLC_DIFF_BPS_DEFAULT,
+    DATA_INTEGRITY_AUDIT_MAX_P95_OHLC_DIFF_BPS_DEFAULT,
+    DATA_INTEGRITY_AUDIT_MIN_OVERLAP_RATIO_DEFAULT,
     OptimizationPolicyConfig,
     ResultConsistencyConfig,
+    ResultConsistencyDataIntegrityAuditConfig,
     ResultConsistencyExecutionPriceVarianceConfig,
     ResultConsistencyTransactionCostBreakevenConfig,
     ResultConsistencyTransactionCostRobustnessConfig,
@@ -3425,6 +3429,22 @@ def test_run_all_data_integrity_audit_reuses_job_level_cache_across_strategies(t
     assert len(results) == 2
     assert fetch_counts["primary"] == 1
     assert fetch_counts["reference"] == 1
+
+
+def test_data_integrity_threshold_details_uses_defaults_for_none_values():
+    policy = ResultConsistencyDataIntegrityAuditConfig(
+        min_overlap_ratio=None,
+        max_median_ohlc_diff_bps=None,
+        max_p95_ohlc_diff_bps=None,
+    )
+
+    thresholds = BacktestRunner._data_integrity_threshold_details(policy)
+
+    assert thresholds == {
+        "min_overlap_ratio": DATA_INTEGRITY_AUDIT_MIN_OVERLAP_RATIO_DEFAULT,
+        "max_median_ohlc_diff_bps": DATA_INTEGRITY_AUDIT_MAX_MEDIAN_OHLC_DIFF_BPS_DEFAULT,
+        "max_p95_ohlc_diff_bps": DATA_INTEGRITY_AUDIT_MAX_P95_OHLC_DIFF_BPS_DEFAULT,
+    }
 
 
 def test_transaction_cost_robustness_result_attaches_meta_without_cache_pollution(

@@ -19,6 +19,9 @@ import pandas as pd
 from ..config import (
     CollectionConfig,
     Config,
+    DATA_INTEGRITY_AUDIT_MAX_MEDIAN_OHLC_DIFF_BPS_DEFAULT,
+    DATA_INTEGRITY_AUDIT_MAX_P95_OHLC_DIFF_BPS_DEFAULT,
+    DATA_INTEGRITY_AUDIT_MIN_OVERLAP_RATIO_DEFAULT,
     ResultConsistencyConfig,
     ResultConsistencyDataIntegrityAuditConfig,
     ResultConsistencyExecutionPriceVarianceConfig,
@@ -4231,9 +4234,21 @@ class BacktestRunner:
         policy: ResultConsistencyDataIntegrityAuditConfig,
     ) -> dict[str, float]:
         return {
-            "max_median_ohlc_diff_bps": float(policy.max_median_ohlc_diff_bps or 0.0),
-            "max_p95_ohlc_diff_bps": float(policy.max_p95_ohlc_diff_bps or 0.0),
-            "min_overlap_ratio": float(policy.min_overlap_ratio or 0.0),
+            "max_median_ohlc_diff_bps": float(
+                policy.max_median_ohlc_diff_bps
+                if policy.max_median_ohlc_diff_bps is not None
+                else DATA_INTEGRITY_AUDIT_MAX_MEDIAN_OHLC_DIFF_BPS_DEFAULT
+            ),
+            "max_p95_ohlc_diff_bps": float(
+                policy.max_p95_ohlc_diff_bps
+                if policy.max_p95_ohlc_diff_bps is not None
+                else DATA_INTEGRITY_AUDIT_MAX_P95_OHLC_DIFF_BPS_DEFAULT
+            ),
+            "min_overlap_ratio": float(
+                policy.min_overlap_ratio
+                if policy.min_overlap_ratio is not None
+                else DATA_INTEGRITY_AUDIT_MIN_OVERLAP_RATIO_DEFAULT
+            ),
         }
 
     @staticmethod
