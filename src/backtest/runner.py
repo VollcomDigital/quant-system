@@ -4054,7 +4054,6 @@ class BacktestRunner:
             "source": collection.source,
         }
         meta.update(BacktestRunner._data_integrity_threshold_details(policy))
-        
         if details:
             meta.update(details)
         return f"data_integrity_audit_indeterminate(reason={reason})", meta
