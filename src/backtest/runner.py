@@ -4098,10 +4098,17 @@ class BacktestRunner:
                 "p95_ohlc_diff_bps": float("nan"),
                 "max_ohlc_diff_bps": float("nan"),
             }
+        finite_diffs = all_diffs[np.isfinite(all_diffs)]
+        if finite_diffs.size == 0:
+            return {
+                "median_ohlc_diff_bps": float("nan"),
+                "p95_ohlc_diff_bps": float("nan"),
+                "max_ohlc_diff_bps": float("nan"),
+            }
         return {
-            "median_ohlc_diff_bps": float(np.nanmedian(all_diffs)),
-            "p95_ohlc_diff_bps": float(np.nanpercentile(all_diffs, 95)),
-            "max_ohlc_diff_bps": float(np.nanmax(all_diffs)),
+            "median_ohlc_diff_bps": float(np.median(finite_diffs)),
+            "p95_ohlc_diff_bps": float(np.percentile(finite_diffs, 95)),
+            "max_ohlc_diff_bps": float(np.max(finite_diffs)),
         }
 
     def _data_integrity_audit_result(
