@@ -81,6 +81,24 @@ The root `pyproject.toml` continues to include `src` as a package until
 Phase 10 cutover. Removing that include is a Phase 10 action gated by the
 `## Retirement Plan` section of the Phase 10 todo.
 
+## Phase 10 Cutover
+
+The binding cutover plan — the concrete removal schedule for every
+legacy `src/*` module — lives in
+[`phase-10-parity-report.md`](./phase-10-parity-report.md). That
+document is the authoritative record of:
+
+- which legacy module is at which retirement stage;
+- the coverage deltas between the legacy implementation and the new
+  domain package;
+- the contract tests under `tests/phase_10/` that prove parity;
+- the `DeprecationWarning` rollout schedule.
+
+The root `pyproject.toml` keeps `src` in its packages list until the
+parity report lists every legacy module at stage 5 (removed). Any PR
+that touches `pyproject.toml`'s packages entry must also update the
+parity report.
+
 ## Enforcement
 
 - `tests/phase_0/test_cli_compatibility_facade.py` verifies:

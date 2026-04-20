@@ -366,3 +366,66 @@
   itself ships with the first paper-tier deployment; (4) live KMS
   key ARNs — populated per-env out-of-band, not committed to the
   repo.
+
+## Phase 10 Lessons
+
+- **Phase 10 is integration, not construction.** Every Phase 10
+  contract test imports already-shipped code from Phase 1–9 and
+  composes it across package boundaries. Each of the five contract
+  suites (research→backtest, backtest→OMS/EMS, OMS/EMS→gateways,
+  agents→CI/telemetry, parity+cutover) passed on the *first* run
+  after the test was written. That is the payoff of test-first
+  contract design: integration is a ratification of earlier
+  commitments, not a re-fabrication of them.
+- **`ValidationResult` is the universal pass/fail language.** The
+  agent layer, RMS, backtest promotion gates, code-reviewer CI,
+  Phase 9 hard-kill, and Phase 10 exit-criteria verification all
+  emit or consume `ValidationResult`. One pydantic model threaded
+  through ten phases eliminates an entire class of adapter glue.
+- **Identity-coded wire shapes keep phases honest.** The Phase 4
+  `OrderPayload` appears verbatim in Phase 6 EMS, Phase 7 TradFi
+  and DeFi gateways, and Phase 10 contract tests. Because every
+  phase reuses the same dataclass, the Phase 10 test needs *no*
+  adapter between EMS child orders and the SimulatedGateway
+  `submit`. When a phase is tempted to duplicate a DTO, it's a
+  design smell — fix the contract instead.
+- **`Gateway` Protocol + `runtime_checkable` is the load-bearing
+  beam for the OMS/EMS/gateways seam.** Phase 7's
+  `trading_system.shared_gateways.Gateway` is the one protocol
+  shared between `SimulatedGateway`, `AlpacaGateway`, `IBKRGateway`,
+  and (orthogonally) `Web3Gateway`'s higher-level `execute`. The
+  Phase 10 test uses `isinstance(gateway, Gateway)` checks; these
+  cost nothing but lock adapters to the contract.
+- **Panic-path wiring is a cross-phase concern.** The Phase 10
+  kill-switch test wires EMS → SimulatedGateway → PanicPlaybook →
+  KillSwitch through *exactly* the `cancel_all_orders` callable
+  hand-off Phase 6 designed for. Passing `gateway.cancel_all` as a
+  `Callable[[], tuple[str, ...]]` decouples the playbook from any
+  gateway implementation and is the blueprint for the real
+  broker/Web3 cancel paths in Phase 11+ production deploys.
+- **Parity reports belong in the architecture tree, not the PR
+  description.** `docs/architecture/phase-10-parity-report.md`
+  records retirement stage per legacy `src/*` module, the exact
+  gates that flip a module from stage 4 to stage 5, and the
+  cumulative test counts per phase. This is the canonical answer
+  to "can we delete this yet?" — and it's now tested by
+  `test_parity_report_and_cli_cutover.py` so drift breaks CI.
+- **Path discovery fixtures must be module-scoped for phase
+  suites.** `tests/phase_10/conftest.py` sets `sys.path` for the
+  six Python domain packages *without* inheriting legacy
+  `src/*` pandas/requests dependencies; if any Phase 10 test
+  imports pandas, the legacy CLI tests collide with it. A thin
+  per-phase conftest is the cleanest cut.
+- **Ruff UP037 will strip `-> "object"` guards.** Defensive quoted
+  annotations for deferred imports are seen as dead quoting in
+  Python 3.12+. Either declare real types at module scope or
+  accept Ruff's unquoted form — quoting-to-avoid-import has no
+  upside on the phase fixtures.
+- **Phase 10 retirement rollout is staged, not big-bang.**
+  `src/backtest/*` enters the deprecation-warning batch (stage 4)
+  on the back of the Phase 10 parity proof; other legacy areas
+  wait for their own contract evidence. Keeping the root
+  `pyproject.toml` `packages = ["src", ...]` entry intact during
+  the deprecation window is the guard rail that keeps downstream
+  consumers buildable.
+

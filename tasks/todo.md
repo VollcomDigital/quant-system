@@ -1134,37 +1134,37 @@ Retire the legacy single-package structure after all critical modules are stable
 
 ### Tasks
 
-- [ ] Replace direct `src/*` imports with package-local imports from the monorepo modules.
-- [ ] Keep a compatibility CLI during transition.
-- [ ] Retire the legacy standalone dashboard by absorbing its responsibilities into `web_control_plane`, leaving only compatibility routes where needed.
-- [ ] Port existing tests into module-scoped suites.
-- [ ] Add contract tests across:
+- [x] Replace direct `src/*` imports with package-local imports from the monorepo modules.
+- [x] Keep a compatibility CLI during transition.
+- [x] Retire the legacy standalone dashboard by absorbing its responsibilities into `web_control_plane`, leaving only compatibility routes where needed.
+- [x] Port existing tests into module-scoped suites.
+- [x] Add contract tests across:
   - research -> backtest engine
   - backtest engine -> OMS/EMS
   - OMS/EMS -> gateways
   - agents -> CI/live telemetry
-- [ ] Decommission legacy folders once:
+- [x] Decommission legacy folders once:
   - parity is proven
   - coverage remains above gate
   - packaging and deploy flows are stable
 
 ### Deliverables
 
-- [ ] compatibility CLI preserved during migration
-- [ ] legacy module retirement checklist
-- [ ] parity validation report
+- [x] compatibility CLI preserved during migration
+- [x] legacy module retirement checklist
+- [x] parity validation report
 
 ### Entry Criteria
 
-- [ ] Phases 1 through 9 provide stable replacement boundaries for legacy `src/*` functionality
-- [ ] Migration test coverage and contract tests exist for all critical flows
+- [x] Phases 1 through 9 provide stable replacement boundaries for legacy `src/*` functionality
+- [x] Migration test coverage and contract tests exist for all critical flows
 
 ### Exit Criteria
 
-- [ ] Legacy `src/*` dependencies are either removed or intentionally retained behind compatibility wrappers
-- [ ] Parity validation is documented for data, backtests, reporting, and execution-control paths
-- [ ] The web control plane is the primary operator interface for managed runs, approvals, reporting, and bounded execution oversight
-- [ ] The repository can be reasoned about by package/domain instead of legacy module inheritance
+- [x] Legacy `src/*` dependencies are either removed or intentionally retained behind compatibility wrappers
+- [x] Parity validation is documented for data, backtests, reporting, and execution-control paths
+- [x] The web control plane is the primary operator interface for managed runs, approvals, reporting, and bounded execution oversight
+- [x] The repository can be reasoned about by package/domain instead of legacy module inheritance
 
 ## Recommended Execution Order
 
