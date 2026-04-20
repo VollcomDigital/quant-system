@@ -4129,6 +4129,25 @@ class BacktestRunner:
         # Keep raw divergence values for gate checks; sanitize only metadata payload
         # so persisted/report JSON remains strict and downstream-safe.
         divergence_meta = self._sanitize_non_finite_metrics_for_json(divergence)
+        non_finite_divergence = [
+            name for name, value in divergence.items() if not np.isfinite(float(value))
+        ]
+        if non_finite_divergence:
+            return self._data_integrity_audit_indeterminate(
+                "non_finite_divergence_metrics",
+                collection=context.job.collection,
+                policy=policy,
+                details={
+                    "non_finite_metrics": sorted(non_finite_divergence),
+                    "primary_bars": overlap_details["primary_bars"],
+                    "reference_bars": overlap_details["reference_bars"],
+                    "overlap_bars": overlap_details["overlap_bars"],
+                    "overlap_ratio": overlap_details["overlap_ratio"],
+                    "missing_primary_bar_pct": overlap_details["missing_primary_bar_pct"],
+                    "reference_canonicalization": reference_canonicalization,
+                    **divergence_meta,
+                },
+            )
         threshold_details = self._data_integrity_threshold_details(policy)
         failed_checks = self._data_integrity_failed_checks(overlap_details, divergence, threshold_details)
         meta: dict[str, Any] = {
