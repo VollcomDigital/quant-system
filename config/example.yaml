@@ -55,7 +55,7 @@ validation:
     min_metric: 0.5  # fail fast: require at least this metric before expensive checks
     min_trades: 20  # fail fast: require at least this many closed trades
     data_integrity_audit:
-      min_overlap_ratio: 0.99  # min shared timestamps between source and reference_source
+      min_overlap_ratio: 0.99  # min fraction of primary bars covered by reference timestamps (overlap_bars / primary_bars)
       max_median_ohlc_diff_bps: 5.0  # median OHLC drift tolerance (bps)
       max_p95_ohlc_diff_bps: 20.0  # tail OHLC drift tolerance (bps)
     outlier_dependency:
