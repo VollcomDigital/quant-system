@@ -1,0 +1,42 @@
+name: factor-promotion
+on:
+  pull_request:
+    paths:
+      - "alpha_research/src/alpha_research/factor_library/**"
+      - "alpha_research/src/alpha_research/promotion/**"
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  promotion-gate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff pytest pytest-cov numpy pydantic
+      - name: Run code_reviewer agent against diff
+        run: |
+          python - <<'PY'
+          import subprocess, sys
+          from ai_agents.code_reviewer import review_source
+          diff = subprocess.check_output(
+              ["git", "diff", "--unified=0", "origin/main", "--",
+               "alpha_research/src/alpha_research/factor_library/"]
+          ).decode()
+          findings = [r for r in review_source(diff) if not r.passed]
+          if findings:
+              for f in findings:
+                  print(f"::error:: {f.check_id}: {f.reason}")
+              sys.exit(1)
+          PY
+      - name: Run promotion + leakage + OOS tests
+        run: |
+          pytest tests/phase_3/ -k "promotion or leakage or validation" --cov-fail-under=80

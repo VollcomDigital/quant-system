@@ -322,3 +322,47 @@
   benchmarks show headroom; (4) HFT Latency Agent concrete class —
   Phase 5 shipped guardrails, the agent wire-up waits for real
   native telemetry.
+
+### Phase 9 — Infrastructure and Platform Delivery
+
+- **Static Terraform + Kubernetes tests beat a live `plan`** in CI
+  for Phase 9 scaffolding. The Phase 9 tests scan module / overlay
+  structure, required files, `required_providers`, `runAsNonRoot`,
+  resource limits. We do not need Terraform / kubectl installed in
+  CI to keep the baseline honest; the Phase 9 `iac-scan.yml`
+  workflow does that alongside deployment.
+- **Separate `backend.tf` per env means separate S3 keys, not just
+  separate names.** Tests assert `dev.backend.tf != production.backend.tf`
+  and that `production.backend.tf` enables encryption. Copy-pasting
+  a backend block across envs is the classic way to silently
+  co-mingle state.
+- **`environment:` in GitHub Actions is the real approval gate.**
+  `staged-deploy.yml` declares `environment: dev / paper /
+  production`; the platform's GitHub Environment protection rules
+  (required approvers, wait timers) do the work. The test checks
+  each env name appears; actual approver config lives in the GitHub
+  UI.
+- **`factor-promotion.yml` runs the Phase 5 code_reviewer agent
+  against `git diff`.** Phase 5 shipped the agent as a pure
+  function over source text; the CI step pipes the diff through
+  `review_source()` and surfaces findings as `::error::`
+  annotations. The agent that was a contract in Phase 5 becomes a
+  CI gate in Phase 9 without any new code.
+- **Out-of-band hard-kill must always leave an audit trail, even on
+  revoker failure.** `execute_hard_kill` records what it managed
+  to revoke before the exception bubbles up. A clean pass/fail
+  would have hidden which roles / keys were already disabled when
+  the Lambda crashed.
+- **Signer-tier segregation is an IAM problem, not a Python
+  problem.** `custody-treasury-phase-9.md` names three signer
+  roles (`trading_signer`, `treasury_signer`, `kill_switch_signer`)
+  and commits to separate KMS keys per role. Phase 9 Python never
+  needs to enforce this at runtime because the AWS IAM policy does.
+- **Phase 9 deferred**: (1) RTK-style operator wrappers — optional
+  per-team tooling, not a platform contract; (2) real MLflow / W&B
+  backend — wires in alongside the first GPU model-serving
+  deployment; (3) actual IB Gateway container image build — Phase 9
+  has the playbook + restart automation surface but the Docker image
+  itself ships with the first paper-tier deployment; (4) live KMS
+  key ARNs — populated per-env out-of-band, not committed to the
+  repo.

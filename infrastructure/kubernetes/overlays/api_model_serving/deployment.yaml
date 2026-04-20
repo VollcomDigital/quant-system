@@ -1,0 +1,32 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-serving-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: model-serving-api
+  template:
+    metadata:
+      labels:
+        app: model-serving-api
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10002
+      containers:
+        - name: triton
+          image: quant-system/model-serving:placeholder
+          resources:
+            requests:
+              cpu: "2"
+              memory: "8Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "4"
+              memory: "16Gi"
+              nvidia.com/gpu: "1"
+          env:
+            - name: SHARED_LIB_SERVICE
+              value: "trading_system.mid_freq_engine.model_serving"

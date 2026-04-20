@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-control-plane-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web-control-plane-backend
+  template:
+    metadata:
+      labels:
+        app: web-control-plane-backend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10004
+      containers:
+        - name: backend
+          image: quant-system/web-control-plane:placeholder
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          env:
+            - name: SHARED_LIB_SERVICE
+              value: "web_control_plane.backend"
+            - name: AUTH_SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: web-control-plane-session
+                  key: secret

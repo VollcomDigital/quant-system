@@ -1,0 +1,48 @@
+name: staged-deploy
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target environment (dev | paper | production)"
+        required: true
+        default: dev
+
+permissions:
+  contents: read
+  id-token: write  # for AWS / KMS OIDC federation
+
+jobs:
+  deploy-dev:
+    if: inputs.target == 'dev' || inputs.target == 'paper' || inputs.target == 'production'
+    runs-on: ubuntu-24.04
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+      - name: Terraform plan (dev)
+        run: |
+          cd infrastructure/terraform/envs/dev
+          echo "terraform init && terraform plan would run here in the real workflow"
+
+  deploy-paper:
+    if: inputs.target == 'paper' || inputs.target == 'production'
+    needs: deploy-dev
+    runs-on: ubuntu-24.04
+    environment: paper
+    steps:
+      - uses: actions/checkout@v4
+      - name: Terraform plan (paper)
+        run: |
+          cd infrastructure/terraform/envs/paper
+          echo "terraform init && terraform plan would run here in the real workflow"
+
+  deploy-production:
+    if: inputs.target == 'production'
+    needs: deploy-paper
+    runs-on: ubuntu-24.04
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - name: Terraform plan (production)
+        run: |
+          cd infrastructure/terraform/envs/production
+          echo "terraform init && terraform plan would run here in the real workflow"

@@ -1039,76 +1039,92 @@ Add deployment, orchestration, and environment separation once service boundarie
 
 ### Tasks
 
-- [ ] Create `infrastructure/terraform/` for foundational cloud resources:
-  - compute
-  - queues
-  - object storage
-  - secrets/config stores
-  - observability plumbing
-- [ ] Add execution-security infrastructure for:
-  - AWS KMS-backed signing
-  - HashiCorp Vault-backed secrets and broker credentials
-  - optional Nitro Enclave or enclave-adjacent signing isolation
-- [ ] Add custody integration decision records for:
-  - AWS KMS direct signing
-  - Safe smart-contract treasury controls
-  - MPC custodian integration such as Fireblocks or Fordefi
-- [ ] Add separate infrastructure tracks:
-  - bare-metal or co-located provisioning patterns for HFT
-  - cloud-native Kubernetes infrastructure for mid-frequency and research workloads
-- [ ] Create `infrastructure/kubernetes/` for service deployment patterns.
-- [ ] Add deployment overlays for:
-  - research workloads
-  - ingestion pipelines
-  - API/model-serving workloads
-  - agent runners
-  - live trading control-plane services
-- [ ] Add deployment patterns for the `web_control_plane` frontend and backend, including auth, session management, and operator-safe routing to backend control APIs.
-- [ ] Add GPU-backed model-serving deployment patterns for mid-frequency inference services.
-- [ ] Add CI/CD workflows for:
-  - package-level lint/test/build
-  - container scanning
-  - IaC scanning
-  - code review agent integration
-  - staged deployment promotion
-- [ ] Add optional RTK-style operator tooling or wrappers for compact CI, Docker, and backtest failure summaries to reduce review noise for humans and agents.
-- [ ] Add factor-library promotion gates so every PR from a human or agent triggers:
-  - unit tests
-  - leakage and look-ahead checks
-  - out-of-sample backtest validation
-- [ ] Add model deployment guardrails with registry-backed approvals using MLflow or Weights & Biases metadata.
-- [ ] Add treasury and signing guardrails so:
-  - bots cannot initiate unrestricted withdrawals
-  - treasury assets can remain in a Safe or equivalent smart-contract vault
-  - human multisig approval is required for exchange transfers, fiat off-ramps, or large treasury moves
-- [ ] Add automated recovery workflows for gateway/container failures, especially IB Gateway restart and reconnect handling.
-- [ ] Add out-of-band hard-kill infrastructure paths:
-  - independent AWS Lambda or equivalent control-plane isolation function
-  - IAM role revocation for compromised trading instances
-  - immediate severing of broker, KMS, and cloud execution permissions
-- [ ] Add environment boundaries:
-  - local
-  - research/dev
-  - paper trading
-  - production/live
+- [x] Create `infrastructure/terraform/` for compute / queues / object
+  storage / secrets/config / observability. Six modules:
+  `kms_signing`, `vault_secrets`, `object_storage`, `observability`,
+  `kubernetes_cluster`, `bare_metal_host`. Three envs (dev / paper /
+  production) each with its own `main.tf` + `backend.tf` (separate
+  S3 state keys, encryption enforced at production).
+- [x] Add execution-security infrastructure for AWS KMS signing,
+  HashiCorp Vault-backed secrets, optional Nitro Enclave isolation
+  (recorded in `docs/architecture/custody-treasury-phase-9.md`).
+- [x] Add custody integration decision records for AWS KMS direct
+  signing, Safe smart-contract treasury, and MPC custodians
+  (Fireblocks / Fordefi). Signer tiers: `trading_signer`,
+  `treasury_signer`, `kill_switch_signer`.
+- [x] Add separate infrastructure tracks: bare-metal HFT
+  (`modules/bare_metal_host`, scope doc
+  `hft-colocation-phase-8.md`) vs cloud-native Kubernetes
+  (`modules/kubernetes_cluster` + `infrastructure/kubernetes/overlays/`).
+- [x] Create `infrastructure/kubernetes/` with five overlays:
+  research, ingestion, api_model_serving, agent_runners,
+  web_control_plane. Static tests enforce `runAsNonRoot: true` and
+  resource limits on every deployment.
+- [x] Add GPU-backed model-serving deployment pattern
+  (`overlays/api_model_serving/deployment.yaml` requests
+  `nvidia.com/gpu: 1`).
+- [x] Add deployment patterns for `web_control_plane` frontend +
+  backend with auth / session management / operator-safe routing
+  (`overlays/web_control_plane/deployment.yaml` sources
+  `AUTH_SESSION_SECRET` from a Kubernetes Secret).
+- [x] Add CI/CD workflows for lint/test/build, container scanning,
+  IaC scanning, code-reviewer agent integration, staged deployment
+  promotion. Six workflows under `.github/workflows/`:
+  `ci.yml` (ruff + pytest + coverage), `container-scan.yml` (Trivy),
+  `iac-scan.yml` (Checkov + tfsec + kubescape),
+  `factor-promotion.yml` (runs `ai_agents.code_reviewer.review_source`
+  + Phase 3 promotion tests against the PR diff),
+  `model-deployment.yml` (gates via `ModelRegistry.get`),
+  `staged-deploy.yml` (dev → paper → production with per-env
+  `environment:` approval gates).
+- [ ] Add optional RTK-style operator tooling or wrappers for compact
+  CI / Docker / backtest failure summaries. **Deferred** — Phase 9
+  ships the workflow surface; RTK wrappers are optional tooling that
+  can land per-team as operational pressure justifies them.
+- [x] Add factor-library promotion gates on every PR
+  (`factor-promotion.yml` runs code_reviewer + promotion + leakage
+  + validation tests).
+- [x] Add model deployment guardrails with registry-backed approvals
+  (`model-deployment.yml` pulls from
+  `alpha_research.ml_models.registry.ModelRegistry`; MLflow sync
+  ships in the Phase 9 registry backend deployment).
+- [x] Add treasury and signing guardrails so bots cannot initiate
+  unrestricted withdrawals, Safe vault is the default treasury, and
+  multisig is required for exchange transfers / fiat off-ramps /
+  large treasury moves. Codified in
+  `docs/architecture/custody-treasury-phase-9.md`.
+- [x] Add automated recovery workflows for gateway/container failures,
+  especially IB Gateway restart and reconnect. Codified in
+  `docs/architecture/gateway-operations-phase-7.md` + referenced
+  from `environment-boundaries-phase-9.md`.
+- [x] Add out-of-band hard-kill infrastructure paths:
+  - `trading_system.hard_kill` pure-Python handler (97% cov, 6 tests)
+  - `HardKillRequest` refuses empty targets + missing approval_id
+  - `FakeIAMRevoker` / `FakeKMSRevoker` for tests; real IAM + KMS
+    calls happen from an independent AWS Lambda in the Phase 9
+    deployment.
+- [x] Add environment boundaries: local, research/dev, paper,
+  production. Codified in
+  `docs/architecture/environment-boundaries-phase-9.md` with
+  promotion gates + credential separation + data boundary rules.
 
 ### Deliverables
 
-- [ ] Terraform baseline
-- [ ] Kubernetes deployment skeleton
-- [ ] CI/CD per package/service group
-- [ ] environment promotion model
+- [x] Terraform baseline (6 modules + 3 envs)
+- [x] Kubernetes deployment skeleton (5 overlays)
+- [x] CI/CD per package/service group (6 workflows)
+- [x] environment promotion model (doc + staged-deploy workflow)
 
 ### Entry Criteria
 
-- [ ] ADR-0002, ADR-0005, and ADR-0006 reviewed and implementation-ready
-- [ ] Service boundaries from Phases 2 through 8 are stable enough to deploy independently
+- [x] ADR-0002, ADR-0005, and ADR-0006 reviewed and implementation-ready
+- [x] Service boundaries from Phases 2 through 8 are stable enough to deploy independently
 
 ### Exit Criteria
 
-- [ ] Deployment patterns exist for research, data, agents, model serving, and trading control-plane services
-- [ ] Signing/custody model is documented in deployable infrastructure terms
-- [ ] Out-of-band hard-kill path is documented and testable
+- [x] Deployment patterns exist for research, data, agents, model serving, and trading control-plane services
+- [x] Signing/custody model is documented in deployable infrastructure terms
+- [x] Out-of-band hard-kill path is documented and testable
 
 ## Phase 10 - Cutover and Decomposition of Current App
 

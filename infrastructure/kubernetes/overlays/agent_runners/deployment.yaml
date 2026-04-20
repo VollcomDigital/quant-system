@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai-agents-runner
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai-agents-runner
+  template:
+    metadata:
+      labels:
+        app: ai-agents-runner
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10003
+      containers:
+        - name: agent-runtime
+          image: quant-system/ai-agents:placeholder
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          env:
+            - name: SHARED_LIB_SERVICE
+              value: "ai_agents.runtime"

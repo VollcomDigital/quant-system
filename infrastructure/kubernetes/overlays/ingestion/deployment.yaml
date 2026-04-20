@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-platform-ingestion
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: data-platform-ingestion
+  template:
+    metadata:
+      labels:
+        app: data-platform-ingestion
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: airflow-worker
+          image: quant-system/data-platform:placeholder
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"
+          env:
+            - name: SHARED_LIB_SERVICE
+              value: "data_platform.pipelines"

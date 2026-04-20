@@ -1,0 +1,8 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: quant-ingestion
+resources:
+  - deployment.yaml
+commonLabels:
+  app.kubernetes.io/part-of: quant-system
+  app.kubernetes.io/component: ingestion

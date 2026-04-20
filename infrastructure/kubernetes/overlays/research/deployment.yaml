@@ -1,0 +1,31 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alpha-research-workspace
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: alpha-research-workspace
+  template:
+    metadata:
+      labels:
+        app: alpha-research-workspace
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10000
+        fsGroup: 10000
+      containers:
+        - name: notebook
+          image: quant-system/alpha-research:placeholder
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+            limits:
+              cpu: "2"
+              memory: "8Gi"
+          env:
+            - name: SHARED_LIB_SERVICE
+              value: "alpha_research"
