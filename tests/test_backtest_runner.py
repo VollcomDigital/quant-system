@@ -3516,6 +3516,22 @@ def test_data_integrity_threshold_details_uses_defaults_for_none_values():
     }
 
 
+def test_data_integrity_sanitize_non_finite_metrics_for_json_converts_to_none():
+    values = {
+        "median_ohlc_diff_bps": float("nan"),
+        "p95_ohlc_diff_bps": float("inf"),
+        "max_ohlc_diff_bps": 1.25,
+    }
+
+    sanitized = BacktestRunner._sanitize_non_finite_metrics_for_json(values)
+
+    assert sanitized == {
+        "median_ohlc_diff_bps": None,
+        "p95_ohlc_diff_bps": None,
+        "max_ohlc_diff_bps": 1.25,
+    }
+
+
 def test_transaction_cost_robustness_result_attaches_meta_without_cache_pollution(
     tmp_path, monkeypatch
 ):

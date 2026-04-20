@@ -4126,6 +4126,9 @@ class BacktestRunner:
             return invalid_input
         overlap_details = self._data_integrity_overlap_details(primary_df, reference_df)
         divergence = overlap_details["divergence"]
+        # Keep raw divergence values for gate checks; sanitize only metadata payload
+        # so persisted/report JSON remains strict and downstream-safe.
+        divergence_meta = self._sanitize_non_finite_metrics_for_json(divergence)
         threshold_details = self._data_integrity_threshold_details(policy)
         failed_checks = self._data_integrity_failed_checks(overlap_details, divergence, threshold_details)
         meta: dict[str, Any] = {
@@ -4142,7 +4145,7 @@ class BacktestRunner:
             "max_median_ohlc_diff_bps": threshold_details["max_median_ohlc_diff_bps"],
             "max_p95_ohlc_diff_bps": threshold_details["max_p95_ohlc_diff_bps"],
             "reference_canonicalization": reference_canonicalization,
-            **divergence,
+            **divergence_meta,
             "failed_checks": list(failed_checks),
         }
         if failed_checks:
@@ -4241,6 +4244,15 @@ class BacktestRunner:
             "missing_primary_bar_pct": missing_primary_bar_pct,
             "divergence": divergence,
         }
+
+    @staticmethod
+    def _sanitize_non_finite_metrics_for_json(values: dict[str, float]) -> dict[str, float | None]:
+        """Convert non-finite float metrics to JSON-safe nulls."""
+        sanitized: dict[str, float | None] = {}
+        for key, value in values.items():
+            parsed = float(value)
+            sanitized[key] = parsed if np.isfinite(parsed) else None
+        return sanitized
 
     @staticmethod
     def _data_integrity_threshold_details(
