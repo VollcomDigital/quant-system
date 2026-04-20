@@ -284,6 +284,9 @@ class BacktestRunner:
         self._runtime_signal_error_counts: dict[tuple[str, str, str, str], int] = {}
         self._runtime_signal_error_capped: set[tuple[str, str, str, str]] = set()
         self._strategy_fingerprint_cache: dict[type[BaseStrategy], str] = {}
+        # Cache data-integrity audit outcomes per job/source pair and effective
+        # threshold values. This preserves reuse across strategies while
+        # preventing stale hits when audit thresholds differ.
         self._data_integrity_audit_cache: dict[
             tuple[str, str, str, str, str, float, float, float],
             tuple[str | None, dict[str, Any]],
@@ -4023,6 +4026,7 @@ class BacktestRunner:
         context: ValidationContext,
         policy: ResultConsistencyDataIntegrityAuditConfig,
     ) -> tuple[str, str, str, str, str, float, float, float]:
+        """Return cache key: job/source identity + normalized audit thresholds."""
         thresholds = BacktestRunner._data_integrity_threshold_details(policy)
         return (
             context.job.collection.name,
@@ -4043,7 +4047,6 @@ class BacktestRunner:
         policy: ResultConsistencyDataIntegrityAuditConfig,
         details: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, Any]]:
-        thresholds = BacktestRunner._data_integrity_threshold_details(policy)
         meta: dict[str, Any] = {
             "is_complete": False,
             "status": "indeterminate",
