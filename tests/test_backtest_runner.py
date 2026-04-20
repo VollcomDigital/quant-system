@@ -3433,6 +3433,44 @@ def test_run_all_data_integrity_audit_indeterminate_rejects_and_attaches_meta(
     assert captured_meta["reason"] == "reference_fetch_failed"
 
 
+def test_run_all_data_integrity_audit_indeterminate_on_non_finite_divergence(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.collections[0].reference_source = "alphavantage"
+    primary = _make_trending_ohlcv(30)
+    reference = primary.copy()
+    primary[["Open", "High", "Low", "Close"]] = np.nan
+    reference[["Open", "High", "Low", "Close"]] = np.nan
+    _patch_primary_and_reference_sources(
+        monkeypatch,
+        primary_df=primary,
+        reference_df=reference,
+        reference_source="alphavantage",
+    )
+    captured_meta: dict[str, object] = {}
+    original_attach = runner._attach_post_run_meta
+
+    def _capture_attach(self, outcome, key, meta):
+        if key == "data_integrity_audit":
+            captured_meta.update(meta)
+        return original_attach(outcome, key, meta)
+
+    monkeypatch.setattr(runner, "_attach_post_run_meta", MethodType(_capture_attach, runner))
+    _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+
+    assert results == []
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["stage"] == "strategy_validation"
+    assert "data_integrity_audit_indeterminate(reason=non_finite_divergence_metrics)" in failure["error"]
+    assert captured_meta["status"] == "indeterminate"
+    assert captured_meta["is_complete"] is False
+    assert captured_meta["reason"] == "non_finite_divergence_metrics"
+
+
 def test_run_all_data_integrity_audit_reuses_job_level_cache_across_strategies(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
     runner.cfg.collections[0].reference_source = "alphavantage"
