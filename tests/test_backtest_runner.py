@@ -3386,6 +3386,53 @@ def test_run_all_data_integrity_audit_rejects_on_low_overlap(tmp_path, monkeypat
     assert "overlap_ratio_below_threshold" in failure["error"]
 
 
+def test_run_all_data_integrity_audit_indeterminate_rejects_and_attaches_meta(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.collections[0].reference_source = "alphavantage"
+    primary = _make_trending_ohlcv(30)
+
+    class _Source:
+        def __init__(self, df: pd.DataFrame | None, *, should_fail: bool):
+            self._df = df
+            self._should_fail = should_fail
+
+        def fetch(self, symbol, timeframe, only_cached=False):
+            if self._should_fail:
+                raise RuntimeError("reference fetch boom")
+            assert self._df is not None
+            return self._df.copy()
+
+    def _make_source(self, col):
+        if col.source == "alphavantage":
+            return _Source(None, should_fail=True)
+        return _Source(primary, should_fail=False)
+
+    captured_meta: dict[str, object] = {}
+    original_attach = runner._attach_post_run_meta
+
+    def _capture_attach(self, outcome, key, meta):
+        if key == "data_integrity_audit":
+            captured_meta.update(meta)
+        return original_attach(outcome, key, meta)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", _make_source)
+    monkeypatch.setattr(runner, "_attach_post_run_meta", MethodType(_capture_attach, runner))
+    _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+
+    assert results == []
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["stage"] == "strategy_validation"
+    assert "data_integrity_audit_indeterminate(reason=reference_fetch_failed)" in failure["error"]
+    assert captured_meta["status"] == "indeterminate"
+    assert captured_meta["is_complete"] is False
+    assert captured_meta["reason"] == "reference_fetch_failed"
+
+
 def test_run_all_data_integrity_audit_reuses_job_level_cache_across_strategies(tmp_path, monkeypatch):
     runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
     runner.cfg.collections[0].reference_source = "alphavantage"

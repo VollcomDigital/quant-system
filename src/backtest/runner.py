@@ -295,6 +295,7 @@ class BacktestRunner:
         self.active_validation_gates: list[str] = []
         self.inactive_validation_gates: list[str] = []
         self._evaluator: BacktestEvaluator | None = None
+        self._run_only_cached = False
 
     def _ensure_pybroker(self) -> tuple[Any, ...]:
         if self._pybroker_components is None:
@@ -4161,7 +4162,7 @@ class BacktestRunner:
                 collection=context.job.collection,
                 policy=policy,
             )
-        only_cached = bool(getattr(context, "only_cached", self._run_only_cached))
+        only_cached = bool(getattr(context, "only_cached", getattr(self, "_run_only_cached", False)))
         _, _, _, _, _, _, _, _, _, _, calendar_timezone = self._load_data_quality_policy(
             context.job.collection
         )
@@ -4509,6 +4510,7 @@ class BacktestRunner:
         self._runtime_signal_error_counts = {}
         self._runtime_signal_error_capped = set()
         self._data_integrity_audit_cache = {}
+        self._run_only_cached = only_cached
         self._evaluator = None
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}
