@@ -400,6 +400,77 @@ def test_load_config_lookahead_shuffle_test_defaults(tmp_path: Path):
     )
 
 
+def test_load_config_reference_source_enables_data_integrity_audit_defaults(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    reference_source: alphavantage
+    reference_exchange: bybit
+    symbols: ['AAPL']
+timeframes: ['1d']
+metric: sharpe
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.collections[0].reference_source == "alphavantage"
+    assert cfg.collections[0].reference_exchange == "bybit"
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.result_consistency is not None
+    audit = cfg.collections[0].validation.result_consistency.data_integrity_audit
+    assert audit is not None
+    assert audit.min_overlap_ratio == pytest.approx(0.99)
+    assert audit.max_median_ohlc_diff_bps == pytest.approx(5.0)
+    assert audit.max_p95_ohlc_diff_bps == pytest.approx(20.0)
+
+
+def test_load_config_data_integrity_audit_rejects_non_mapping(tmp_path: Path):
+    with pytest.raises(
+        ValueError,
+        match=r"validation\.result_consistency\.data_integrity_audit",
+    ):
+        _load_from_blocks(
+            tmp_path,
+            validation_block={
+                "result_consistency": _result_consistency_block(data_integrity_audit=True)
+            },
+        )
+
+
+def test_load_config_data_integrity_audit_collection_override_inherits_global(tmp_path: Path):
+    config_text = """
+collections:
+  - name: test
+    source: yfinance
+    reference_source: alphavantage
+    symbols: ['AAPL']
+    validation:
+      result_consistency:
+        data_integrity_audit:
+          min_overlap_ratio: 0.97
+timeframes: ['1d']
+metric: sharpe
+validation:
+  result_consistency:
+    data_integrity_audit:
+      max_median_ohlc_diff_bps: 2.0
+      max_p95_ohlc_diff_bps: 10.0
+"""
+    path = tmp_path / "config.yaml"
+    path.write_text(config_text)
+
+    cfg = load_config(path)
+    assert cfg.collections[0].validation is not None
+    assert cfg.collections[0].validation.result_consistency is not None
+    audit = cfg.collections[0].validation.result_consistency.data_integrity_audit
+    assert audit is not None
+    assert audit.min_overlap_ratio == pytest.approx(0.97)
+    assert audit.max_median_ohlc_diff_bps == pytest.approx(2.0)
+    assert audit.max_p95_ohlc_diff_bps == pytest.approx(10.0)
+
+
 def test_load_config_transaction_cost_robustness_inherits_global_overrides(tmp_path: Path):
     cfg = _load_from_blocks(
         tmp_path,

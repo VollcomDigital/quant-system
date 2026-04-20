@@ -54,6 +54,10 @@ validation:
   result_consistency:
     min_metric: 0.5  # fail fast: require at least this metric before expensive checks
     min_trades: 20  # fail fast: require at least this many closed trades
+    data_integrity_audit:
+      min_overlap_ratio: 0.99  # min fraction of primary bars covered by reference timestamps (overlap_bars / primary_bars)
+      max_median_ohlc_diff_bps: 5.0  # median OHLC drift tolerance (bps)
+      max_p95_ohlc_diff_bps: 20.0  # tail OHLC drift tolerance (bps)
     outlier_dependency:
       slices: 5  # split trade history into N equal time-slices for diagnostics
       profit_share_threshold: 0.80
@@ -80,6 +84,7 @@ collections:
   # Stocks (large-cap growth)
   - name: stocks_large_cap_growth
     source: yfinance
+    reference_source: twelvedata  # optional golden source for post-run data-integrity audit
     symbols: ["CNDX.L", "AAPL", "MSFT", "NVDA"]
     fees: 0.0005  # approx IBKR
     slippage: 0.0005
@@ -100,8 +105,13 @@ collections:
 
   # Crypto (Binance via ccxt)
   - name: crypto
-    source: binance
+    source: ccxt
+    # For ccxt collections, `exchange` selects the primary venue adapter.
+    # Set `reference_source: ccxt` + `reference_exchange` to compare venues
+    # in data_integrity_audit (for example Binance vs Bybit).
+    reference_source: ccxt
     exchange: binance
+    reference_exchange: bybit
     quote: USDT
     symbols: ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT"]
     fees: 0.0006  # approx Bybit/Binance taker

@@ -254,6 +254,22 @@ See new collection examples under `config/collections/` for FX intraday via Finn
   - collection-level overrides are supported via `collections[].validation.optimization`
     and are resolved against global `validation.optimization` during config loading.
 - `validation.result_consistency` controls strategy-result concentration checks:
+  - `data_integrity_audit` (optional thresholds module; gate is active when `collections[].reference_source` is set):
+    - purpose: compare canonicalized bars from the primary `source` and a secondary `reference_source`
+      to catch bad prints / ghost bars before accepting strategy results
+    - source routing:
+      - primary fetch uses `collections[].source` (+ `collections[].exchange` for ccxt)
+      - reference fetch uses `collections[].reference_source`
+      - for ccxt-vs-ccxt venue comparisons, set:
+        - `reference_source: ccxt`
+        - `reference_exchange: <venue>`
+      - when `reference_source` is ccxt and `reference_exchange` is unset, the runner falls back to
+        `collections[].exchange`
+    - `min_overlap_ratio` (optional, default `0.99`, `0..1`): minimum fraction of primary-source bars that must have matching reference-source timestamps (`overlap_bars / primary_bars`)
+    - `max_median_ohlc_diff_bps` (optional, default `5.0`, `>=0`): maximum allowed median OHLC drift (bps)
+    - `max_p95_ohlc_diff_bps` (optional, default `20.0`, `>=0`): maximum allowed p95 OHLC drift (bps)
+    - action: fixed to `reject_result` when overlap/drift thresholds are breached (or comparison is indeterminate)
+    - diagnostics are attached under `post_run_meta.data_integrity_audit`
   - `outlier_dependency` (optional module; active when configured):
     - `slices` (required, `>=2`): number of equal time-slices used for diagnostics
     - `profit_share_threshold` (required, `0..1`)
@@ -297,7 +313,7 @@ Structured logs reflect this directly via gate actions:
 - `data_validation_gate` can emit `skip_optimization` (job-level optimization disable).
 - `strategy_optimization_gate` can emit `baseline_only` (strategy-level baseline fallback) or `skip_job`.
 - `strategy_validation_gate` can emit `reject_result` for outlier dependency,
-  execution price variance, and lookahead shuffle testing.
+  execution price variance, lookahead shuffle testing, data integrity audit, and transaction-cost robustness.
 
 Numeric config parsing follows `src/config.py` coercion helpers:
 - numeric fields are strict types: use YAML numbers, not quoted numeric strings

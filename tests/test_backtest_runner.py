@@ -26,8 +26,12 @@ from src.backtest.runner import (
 from src.config import (
     CollectionConfig,
     Config,
+    DATA_INTEGRITY_AUDIT_MAX_MEDIAN_OHLC_DIFF_BPS_DEFAULT,
+    DATA_INTEGRITY_AUDIT_MAX_P95_OHLC_DIFF_BPS_DEFAULT,
+    DATA_INTEGRITY_AUDIT_MIN_OVERLAP_RATIO_DEFAULT,
     OptimizationPolicyConfig,
     ResultConsistencyConfig,
+    ResultConsistencyDataIntegrityAuditConfig,
     ResultConsistencyExecutionPriceVarianceConfig,
     ResultConsistencyTransactionCostBreakevenConfig,
     ResultConsistencyTransactionCostRobustnessConfig,
@@ -292,6 +296,7 @@ def _result_consistency_config(**overrides) -> ResultConsistencyConfig:
         "outlier_dependency": None,
         "execution_price_variance": None,
         "lookahead_shuffle_test": None,
+        "data_integrity_audit": None,
         "transaction_cost_robustness": None,
     }
     payload.update(overrides)
@@ -616,6 +621,11 @@ def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
             seed=1337,
             max_failed_permutations=2,
         ),
+        data_integrity_audit=SimpleNamespace(
+            min_overlap_ratio=0.99,
+            max_median_ohlc_diff_bps=5.0,
+            max_p95_ohlc_diff_bps=20.0,
+        ),
         transaction_cost_robustness=SimpleNamespace(
             mode="analytics",
             stress_multipliers=[2.0, 5.0],
@@ -638,6 +648,7 @@ def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
         "outlier_dependency",
         "execution_price_variance",
         "lookahead_shuffle_test",
+        "data_integrity_audit",
         "transaction_cost_robustness",
     ]
     assert payload["min_metric"] == pytest.approx(0.5)
@@ -653,6 +664,11 @@ def test_serialize_result_consistency_profile_keeps_schema_and_key_order():
         "pvalue_max": 0.05,
         "seed": 1337,
         "max_failed_permutations": 2,
+    }
+    assert payload["data_integrity_audit"] == {
+        "min_overlap_ratio": 0.99,
+        "max_median_ohlc_diff_bps": 5.0,
+        "max_p95_ohlc_diff_bps": 20.0,
     }
     assert payload["transaction_cost_robustness"] == {
         "mode": "analytics",
@@ -1849,6 +1865,28 @@ def _patch_trending_source(monkeypatch, bars: int = 25) -> None:
             return _make_trending_ohlcv(bars)
 
     monkeypatch.setattr(BacktestRunner, "_make_source", lambda self, col: _Source())
+
+
+def _patch_primary_and_reference_sources(
+    monkeypatch,
+    *,
+    primary_df: pd.DataFrame,
+    reference_df: pd.DataFrame,
+    reference_source: str = "alphavantage",
+) -> None:
+    class _Source:
+        def __init__(self, df: pd.DataFrame):
+            self._df = df
+
+        def fetch(self, symbol, timeframe, only_cached=False):
+            return self._df.copy()
+
+    def _make_source(self, col):
+        if col.source == reference_source:
+            return _Source(reference_df)
+        return _Source(primary_df)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", _make_source)
 
 
 def _lookahead_shuffle_test_config(
@@ -3272,6 +3310,287 @@ def test_run_all_lookahead_shuffle_test_does_not_mutate_cached_stats_payload(
     post_run_meta = results[0].stats.get("post_run_meta")
     assert post_run_meta is not None
     assert post_run_meta["lookahead_shuffle_test"]["is_complete"] is True
+
+
+def test_run_all_data_integrity_audit_passes_and_attaches_meta(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.collections[0].reference_source = "alphavantage"
+    primary = _make_trending_ohlcv(30)
+    reference = primary.copy()
+    _patch_primary_and_reference_sources(
+        monkeypatch,
+        primary_df=primary,
+        reference_df=reference,
+        reference_source="alphavantage",
+    )
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+
+    assert len(results) == 1
+    assert eval_calls["count"] == 2
+    post_run_meta = results[0].stats.get("post_run_meta")
+    assert post_run_meta is not None
+    audit_meta = post_run_meta["data_integrity_audit"]
+    assert audit_meta["is_complete"] is True
+    assert audit_meta["status"] == "complete"
+    assert audit_meta["overlap_ratio"] == pytest.approx(1.0)
+    assert audit_meta["median_ohlc_diff_bps"] == pytest.approx(0.0)
+    assert "result_consistency.data_integrity_audit" in runner.active_validation_gates
+
+
+def test_run_all_data_integrity_audit_rejects_on_ohlc_drift(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.collections[0].reference_source = "alphavantage"
+    primary = _make_trending_ohlcv(30)
+    reference = primary.copy()
+    reference[["Open", "High", "Low", "Close"]] = reference[["Open", "High", "Low", "Close"]] * 1.02
+    _patch_primary_and_reference_sources(
+        monkeypatch,
+        primary_df=primary,
+        reference_df=reference,
+        reference_source="alphavantage",
+    )
+    eval_calls = _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+
+    assert results == []
+    assert eval_calls["count"] == 2
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["stage"] == "strategy_validation"
+    assert "data_integrity_audit_failed(" in failure["error"]
+    assert "median_ohlc_diff_bps_exceeded" in failure["error"]
+
+
+def test_run_all_data_integrity_audit_rejects_on_low_overlap(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.collections[0].reference_source = "alphavantage"
+    primary = _make_trending_ohlcv(30)
+    reference = primary.iloc[::2].copy()
+    _patch_primary_and_reference_sources(
+        monkeypatch,
+        primary_df=primary,
+        reference_df=reference,
+        reference_source="alphavantage",
+    )
+
+    results = runner.run_all()
+
+    assert results == []
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["stage"] == "strategy_validation"
+    assert "data_integrity_audit_failed(" in failure["error"]
+    assert "overlap_ratio_below_threshold" in failure["error"]
+
+
+def test_run_all_data_integrity_audit_indeterminate_rejects_and_attaches_meta(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.collections[0].reference_source = "alphavantage"
+    primary = _make_trending_ohlcv(30)
+
+    class _Source:
+        def __init__(self, df: pd.DataFrame | None, *, should_fail: bool):
+            self._df = df
+            self._should_fail = should_fail
+
+        def fetch(self, symbol, timeframe, only_cached=False):
+            if self._should_fail:
+                raise RuntimeError("reference fetch boom")
+            assert self._df is not None
+            return self._df.copy()
+
+    def _make_source(self, col):
+        if col.source == "alphavantage":
+            return _Source(None, should_fail=True)
+        return _Source(primary, should_fail=False)
+
+    captured_meta: dict[str, object] = {}
+    original_attach = runner._attach_post_run_meta
+
+    def _capture_attach(self, outcome, key, meta):
+        if key == "data_integrity_audit":
+            captured_meta.update(meta)
+        return original_attach(outcome, key, meta)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", _make_source)
+    monkeypatch.setattr(runner, "_attach_post_run_meta", MethodType(_capture_attach, runner))
+    _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+
+    assert results == []
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["stage"] == "strategy_validation"
+    assert "data_integrity_audit_indeterminate(reason=reference_fetch_failed)" in failure["error"]
+    assert captured_meta["status"] == "indeterminate"
+    assert captured_meta["is_complete"] is False
+    assert captured_meta["reason"] == "reference_fetch_failed"
+
+
+def test_run_all_data_integrity_audit_indeterminate_on_non_finite_divergence(
+    tmp_path, monkeypatch
+):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.collections[0].reference_source = "alphavantage"
+    primary = _make_trending_ohlcv(30)
+    reference = primary.copy()
+    primary[["Open", "High", "Low", "Close"]] = np.nan
+    reference[["Open", "High", "Low", "Close"]] = np.nan
+    _patch_primary_and_reference_sources(
+        monkeypatch,
+        primary_df=primary,
+        reference_df=reference,
+        reference_source="alphavantage",
+    )
+    captured_meta: dict[str, object] = {}
+    original_attach = runner._attach_post_run_meta
+
+    def _capture_attach(self, outcome, key, meta):
+        if key == "data_integrity_audit":
+            captured_meta.update(meta)
+        return original_attach(outcome, key, meta)
+
+    monkeypatch.setattr(runner, "_attach_post_run_meta", MethodType(_capture_attach, runner))
+    _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+
+    assert results == []
+    assert len(runner.failures) == 1
+    failure = runner.failures[0]
+    assert failure["stage"] == "strategy_validation"
+    assert "data_integrity_audit_indeterminate(reason=non_finite_divergence_metrics)" in failure["error"]
+    assert captured_meta["status"] == "indeterminate"
+    assert captured_meta["is_complete"] is False
+    assert captured_meta["reason"] == "non_finite_divergence_metrics"
+
+
+def test_run_all_data_integrity_audit_reuses_job_level_cache_across_strategies(tmp_path, monkeypatch):
+    runner = _make_runner(tmp_path, monkeypatch, patch_source=False)
+    runner.cfg.collections[0].reference_source = "alphavantage"
+
+    class _AltStrategy(BaseStrategy):
+        name = "alt"
+
+        def param_grid(self) -> dict[str, list[int]]:
+            return {}
+
+        def generate_signals(self, df: pd.DataFrame, params: dict) -> tuple[pd.Series, pd.Series]:
+            entries = pd.Series([True] + [False] * (len(df.index) - 1), index=df.index)
+            exits = pd.Series([False] * (len(df.index) - 1) + [True], index=df.index)
+            return entries, exits
+
+    runner.external_index = {"dummy": _DummyStrategy, "alt": _AltStrategy}
+    primary = _make_trending_ohlcv(30)
+    reference = primary.copy()
+    fetch_counts = {"primary": 0, "reference": 0}
+
+    class _Source:
+        def __init__(self, df: pd.DataFrame, *, is_reference: bool):
+            self._df = df
+            self._is_reference = is_reference
+
+        def fetch(self, symbol, timeframe, only_cached=False):
+            key = "reference" if self._is_reference else "primary"
+            fetch_counts[key] += 1
+            return self._df.copy()
+
+    def _make_source(self, col):
+        if col.source == "alphavantage":
+            return _Source(reference, is_reference=True)
+        return _Source(primary, is_reference=False)
+
+    monkeypatch.setattr(BacktestRunner, "_make_source", _make_source)
+    _patch_pybroker_simulation(monkeypatch)
+
+    results = runner.run_all()
+
+    assert len(results) == 2
+    assert fetch_counts["primary"] == 1
+    assert fetch_counts["reference"] == 1
+
+
+def test_data_integrity_reference_collection_preserves_exchange_for_reference_source():
+    collection = CollectionConfig(
+        name="integration_crypto",
+        source="ccxt",
+        symbols=["BTC/USDT"],
+        reference_source="ccxt",
+        exchange="binance",
+        currency=None,
+        quote="USDT",
+        fees=0.0,
+        slippage=0.0,
+        validation=None,
+    )
+
+    reference = BacktestRunner._data_integrity_audit_reference_collection(collection)
+
+    assert reference is not None
+    assert reference.source == "ccxt"
+    assert reference.exchange == "binance"
+    assert reference.reference_source is None
+
+
+def test_data_integrity_reference_collection_uses_reference_exchange_override():
+    collection = CollectionConfig(
+        name="integration_crypto",
+        source="ccxt",
+        symbols=["BTC/USDT"],
+        reference_source="ccxt",
+        exchange="binance",
+        reference_exchange="bybit",
+        currency=None,
+        quote="USDT",
+        fees=0.0,
+        slippage=0.0,
+        validation=None,
+    )
+
+    reference = BacktestRunner._data_integrity_audit_reference_collection(collection)
+
+    assert reference is not None
+    assert reference.source == "ccxt"
+    assert reference.exchange == "bybit"
+    assert reference.reference_source is None
+
+
+def test_data_integrity_threshold_details_uses_defaults_for_none_values():
+    policy = ResultConsistencyDataIntegrityAuditConfig(
+        min_overlap_ratio=None,
+        max_median_ohlc_diff_bps=None,
+        max_p95_ohlc_diff_bps=None,
+    )
+
+    thresholds = BacktestRunner._data_integrity_threshold_details(policy)
+
+    assert thresholds == {
+        "min_overlap_ratio": DATA_INTEGRITY_AUDIT_MIN_OVERLAP_RATIO_DEFAULT,
+        "max_median_ohlc_diff_bps": DATA_INTEGRITY_AUDIT_MAX_MEDIAN_OHLC_DIFF_BPS_DEFAULT,
+        "max_p95_ohlc_diff_bps": DATA_INTEGRITY_AUDIT_MAX_P95_OHLC_DIFF_BPS_DEFAULT,
+    }
+
+
+def test_data_integrity_sanitize_non_finite_metrics_for_json_converts_to_none():
+    values = {
+        "median_ohlc_diff_bps": float("nan"),
+        "p95_ohlc_diff_bps": float("inf"),
+        "max_ohlc_diff_bps": 1.25,
+    }
+
+    sanitized = BacktestRunner._sanitize_non_finite_metrics_for_json(values)
+
+    assert sanitized == {
+        "median_ohlc_diff_bps": None,
+        "p95_ohlc_diff_bps": None,
+        "max_ohlc_diff_bps": 1.25,
+    }
 
 
 def test_transaction_cost_robustness_result_attaches_meta_without_cache_pollution(

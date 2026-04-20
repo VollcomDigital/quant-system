@@ -19,7 +19,11 @@ import pandas as pd
 from ..config import (
     CollectionConfig,
     Config,
+    DATA_INTEGRITY_AUDIT_MAX_MEDIAN_OHLC_DIFF_BPS_DEFAULT,
+    DATA_INTEGRITY_AUDIT_MAX_P95_OHLC_DIFF_BPS_DEFAULT,
+    DATA_INTEGRITY_AUDIT_MIN_OVERLAP_RATIO_DEFAULT,
     ResultConsistencyConfig,
+    ResultConsistencyDataIntegrityAuditConfig,
     ResultConsistencyExecutionPriceVarianceConfig,
     ResultConsistencyTransactionCostBreakevenConfig,
     ResultConsistencyTransactionCostRobustnessConfig,
@@ -235,6 +239,7 @@ class BacktestRunner:
         "result_consistency.outlier_dependency",
         "result_consistency.execution_price_variance",
         "result_consistency.lookahead_shuffle_test",
+        "result_consistency.data_integrity_audit",
         "result_consistency.transaction_cost_robustness",
     )
 
@@ -279,10 +284,18 @@ class BacktestRunner:
         self._runtime_signal_error_counts: dict[tuple[str, str, str, str], int] = {}
         self._runtime_signal_error_capped: set[tuple[str, str, str, str]] = set()
         self._strategy_fingerprint_cache: dict[type[BaseStrategy], str] = {}
+        # Cache data-integrity audit outcomes per job/source+exchange identity
+        # and effective threshold values. This preserves reuse across strategies
+        # while preventing stale hits when source routing or thresholds differ.
+        self._data_integrity_audit_cache: dict[
+            tuple[str, str, str, str, str, str, str, float, float, float],
+            tuple[str | None, dict[str, Any]],
+        ] = {}
         self.validation_metadata: dict[str, Any] = {}
         self.active_validation_gates: list[str] = []
         self.inactive_validation_gates: list[str] = []
         self._evaluator: BacktestEvaluator | None = None
+        self._run_only_cached = False
 
     def _ensure_pybroker(self) -> tuple[Any, ...]:
         if self._pybroker_components is None:
@@ -452,6 +465,20 @@ class BacktestRunner:
         }
 
     @staticmethod
+    def _serialize_data_integrity_audit_profile(
+        data_integrity_audit: Any,
+    ) -> dict[str, Any] | None:
+        if data_integrity_audit is None:
+            return None
+        return {
+            "min_overlap_ratio": getattr(data_integrity_audit, "min_overlap_ratio", None),
+            "max_median_ohlc_diff_bps": getattr(
+                data_integrity_audit, "max_median_ohlc_diff_bps", None
+            ),
+            "max_p95_ohlc_diff_bps": getattr(data_integrity_audit, "max_p95_ohlc_diff_bps", None),
+        }
+
+    @staticmethod
     def _serialize_transaction_cost_breakeven_profile(
         breakeven: Any,
     ) -> dict[str, Any] | None:
@@ -561,6 +588,9 @@ class BacktestRunner:
             "lookahead_shuffle_test": BacktestRunner._serialize_lookahead_shuffle_test_profile(
                 getattr(result_consistency, "lookahead_shuffle_test", None)
             ),
+            "data_integrity_audit": BacktestRunner._serialize_data_integrity_audit_profile(
+                getattr(result_consistency, "data_integrity_audit", None)
+            ),
             "transaction_cost_robustness": BacktestRunner._serialize_transaction_cost_robustness_profile(
                 getattr(result_consistency, "transaction_cost_robustness", None)
             ),
@@ -599,7 +629,11 @@ class BacktestRunner:
         return {"optimization.feasibility"}
 
     @staticmethod
-    def _active_result_consistency_gates(result_consistency: Any) -> set[str]:
+    def _active_result_consistency_gates(
+        result_consistency: Any,
+        *,
+        has_reference_source: bool = False,
+    ) -> set[str]:
         if result_consistency is None:
             return set()
         active: set[str] = set()
@@ -613,6 +647,10 @@ class BacktestRunner:
             active.add("result_consistency.execution_price_variance")
         if getattr(result_consistency, "lookahead_shuffle_test", None) is not None:
             active.add("result_consistency.lookahead_shuffle_test")
+        # Data integrity audit activation is collection-scoped via reference_source
+        # and requires a resolved policy to keep gate reporting aligned with execution.
+        if has_reference_source and getattr(result_consistency, "data_integrity_audit", None) is not None:
+            active.add("result_consistency.data_integrity_audit")
         if getattr(result_consistency, "transaction_cost_robustness", None) is not None:
             active.add("result_consistency.transaction_cost_robustness")
         return active
@@ -629,7 +667,10 @@ class BacktestRunner:
             collection_active = self._active_data_quality_gates(collection_dq)
             collection_active.update(self._active_optimization_gates(collection_optimization))
             collection_active.update(
-                self._active_result_consistency_gates(collection_result_consistency)
+                self._active_result_consistency_gates(
+                    collection_result_consistency,
+                    has_reference_source=bool(getattr(collection, "reference_source", None)),
+                )
             )
             active_gates_union.update(collection_active)
             collection_profiles.append(
@@ -1725,6 +1766,19 @@ class BacktestRunner:
         if resolved_rc is not None:
             return getattr(resolved_rc, "lookahead_shuffle_test", None)
         return None
+
+    def _load_data_integrity_audit_policy(
+        self, collection: CollectionConfig
+    ) -> ResultConsistencyDataIntegrityAuditConfig | None:
+        if not collection.reference_source:
+            return None
+        collection_validation = getattr(collection, "validation", None)
+        resolved_rc: ResultConsistencyConfig | None = (
+            getattr(collection_validation, "result_consistency", None) if collection_validation else None
+        )
+        if resolved_rc is None:
+            return None
+        return getattr(resolved_rc, "data_integrity_audit", None)
 
     def _load_transaction_cost_robustness_policy(
         self, collection: CollectionConfig
@@ -3905,7 +3959,10 @@ class BacktestRunner:
 
         reasons = self._collect_strategy_validation_reasons(context, outcome)
         if reasons:
-            # Fail fast on cheap result-consistency gates before expensive shuffle checks.
+            # Fail fast on result-consistency gates before expensive shuffle checks.
+            return self._strategy_validation_reject_or_continue(reasons)
+        self._run_data_integrity_audit_validation(context, outcome, reasons)
+        if reasons:
             return self._strategy_validation_reject_or_continue(reasons)
         self._run_lookahead_shuffle_validation(context, plan, outcome, reasons)
         if reasons:
@@ -3944,6 +4001,344 @@ class BacktestRunner:
         self._attach_post_run_meta(outcome, "lookahead_shuffle_test", lookahead_meta)
         if lookahead_reason is not None:
             reasons.append(lookahead_reason)
+
+    def _run_data_integrity_audit_validation(
+        self,
+        context: ValidationContext,
+        outcome: StrategyEvalOutcome,
+        reasons: list[str],
+    ) -> None:
+        policy = self._load_data_integrity_audit_policy(context.job.collection)
+        if policy is None:
+            return
+        cache_key = self._data_integrity_audit_cache_key(context, policy)
+        cached = self._data_integrity_audit_cache.get(cache_key)
+        if cached is None:
+            audit_reason, audit_meta = self._data_integrity_audit_result(context, policy)
+            self._data_integrity_audit_cache[cache_key] = (audit_reason, copy.deepcopy(audit_meta))
+        else:
+            audit_reason, cached_meta = cached
+            audit_meta = copy.deepcopy(cached_meta)
+        self._attach_post_run_meta(outcome, "data_integrity_audit", audit_meta)
+        if audit_reason is not None:
+            reasons.append(audit_reason)
+
+    @staticmethod
+    def _data_integrity_audit_cache_key(
+        context: ValidationContext,
+        policy: ResultConsistencyDataIntegrityAuditConfig,
+    ) -> tuple[str, str, str, str, str, str, str, float, float, float]:
+        """Return cache key: job/source+exchange identity + normalized thresholds."""
+        thresholds = BacktestRunner._data_integrity_threshold_details(policy)
+        return (
+            context.job.collection.name,
+            context.job.symbol,
+            context.job.timeframe,
+            str(context.job.collection.source),
+            str(context.job.collection.reference_source),
+            str(context.job.collection.exchange),
+            str(context.job.collection.reference_exchange),
+            thresholds["min_overlap_ratio"],
+            thresholds["max_median_ohlc_diff_bps"],
+            thresholds["max_p95_ohlc_diff_bps"],
+        )
+
+    @staticmethod
+    def _data_integrity_audit_indeterminate(
+        reason: str,
+        *,
+        collection: CollectionConfig,
+        policy: ResultConsistencyDataIntegrityAuditConfig,
+        details: dict[str, Any] | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        meta: dict[str, Any] = {
+            "is_complete": False,
+            "status": "indeterminate",
+            "reason": reason,
+            "source": collection.source,
+            "reference_source": collection.reference_source,
+            "exchange": collection.exchange,
+            "reference_exchange": collection.reference_exchange,
+        }
+        meta.update(BacktestRunner._data_integrity_threshold_details(policy))
+        if details:
+            meta.update(details)
+        return f"data_integrity_audit_indeterminate(reason={reason})", meta
+
+    @staticmethod
+    def _data_integrity_audit_reference_collection(collection: CollectionConfig) -> CollectionConfig | None:
+        if not collection.reference_source:
+            return None
+        return CollectionConfig(
+            name=collection.name,
+            source=collection.reference_source,
+            symbols=list(collection.symbols),
+            reference_source=None,
+            exchange=collection.reference_exchange or collection.exchange,
+            reference_exchange=None,
+            currency=collection.currency,
+            quote=collection.quote,
+            fees=collection.fees,
+            slippage=collection.slippage,
+            validation=collection.validation,
+        )
+
+    @staticmethod
+    def _data_integrity_ohlc_diff_metrics(
+        primary: pd.DataFrame,
+        reference: pd.DataFrame,
+    ) -> dict[str, float]:
+        eps = 1e-12
+        columns = ["Open", "High", "Low", "Close"]
+        diffs: list[np.ndarray] = []
+        for column in columns:
+            lhs = primary[column].to_numpy(dtype=float)
+            rhs = reference[column].to_numpy(dtype=float)
+            rel = np.abs(lhs - rhs) / np.maximum(np.abs(rhs), eps)
+            diffs.append(rel * 10000.0)
+        all_diffs = np.concatenate(diffs) if diffs else np.array([], dtype=float)
+        if all_diffs.size == 0:
+            return {
+                "median_ohlc_diff_bps": float("nan"),
+                "p95_ohlc_diff_bps": float("nan"),
+                "max_ohlc_diff_bps": float("nan"),
+            }
+        finite_diffs = all_diffs[np.isfinite(all_diffs)]
+        if finite_diffs.size == 0:
+            return {
+                "median_ohlc_diff_bps": float("nan"),
+                "p95_ohlc_diff_bps": float("nan"),
+                "max_ohlc_diff_bps": float("nan"),
+            }
+        return {
+            "median_ohlc_diff_bps": float(np.median(finite_diffs)),
+            "p95_ohlc_diff_bps": float(np.percentile(finite_diffs, 95)),
+            "max_ohlc_diff_bps": float(np.max(finite_diffs)),
+        }
+
+    def _data_integrity_audit_result(
+        self,
+        context: ValidationContext,
+        policy: ResultConsistencyDataIntegrityAuditConfig,
+    ) -> tuple[str | None, dict[str, Any]]:
+        validated_data = context.validated_data
+        if validated_data is None:
+            return self._data_integrity_audit_indeterminate(
+                "missing_validated_data",
+                collection=context.job.collection,
+                policy=policy,
+            )
+        reference_outcome = self._load_reference_frame_for_data_integrity(context, policy)
+        if not isinstance(reference_outcome[0], pd.DataFrame):
+            return reference_outcome
+        reference_df, reference_canonicalization = reference_outcome
+        primary_df = validated_data.raw_df
+        invalid_input = self._validate_data_integrity_inputs(primary_df, reference_df, context, policy)
+        if invalid_input is not None:
+            return invalid_input
+        overlap_details = self._data_integrity_overlap_details(primary_df, reference_df)
+        divergence = overlap_details["divergence"]
+        # Keep raw divergence values for gate checks; sanitize only metadata payload
+        # so persisted/report JSON remains strict and downstream-safe.
+        divergence_meta = self._sanitize_non_finite_metrics_for_json(divergence)
+        non_finite_divergence = [
+            name for name, value in divergence.items() if not np.isfinite(float(value))
+        ]
+        if non_finite_divergence:
+            return self._data_integrity_audit_indeterminate(
+                "non_finite_divergence_metrics",
+                collection=context.job.collection,
+                policy=policy,
+                details={
+                    "non_finite_metrics": sorted(non_finite_divergence),
+                    "primary_bars": overlap_details["primary_bars"],
+                    "reference_bars": overlap_details["reference_bars"],
+                    "overlap_bars": overlap_details["overlap_bars"],
+                    "overlap_ratio": overlap_details["overlap_ratio"],
+                    "missing_primary_bar_pct": overlap_details["missing_primary_bar_pct"],
+                    "reference_canonicalization": reference_canonicalization,
+                    **divergence_meta,
+                },
+            )
+        threshold_details = self._data_integrity_threshold_details(policy)
+        failed_checks = self._data_integrity_failed_checks(overlap_details, divergence, threshold_details)
+        meta: dict[str, Any] = {
+            "is_complete": True,
+            "status": "complete",
+            "source": context.job.collection.source,
+            "reference_source": context.job.collection.reference_source,
+            "primary_bars": overlap_details["primary_bars"],
+            "reference_bars": overlap_details["reference_bars"],
+            "overlap_bars": overlap_details["overlap_bars"],
+            "overlap_ratio": overlap_details["overlap_ratio"],
+            "missing_primary_bar_pct": overlap_details["missing_primary_bar_pct"],
+            "min_overlap_ratio": threshold_details["min_overlap_ratio"],
+            "max_median_ohlc_diff_bps": threshold_details["max_median_ohlc_diff_bps"],
+            "max_p95_ohlc_diff_bps": threshold_details["max_p95_ohlc_diff_bps"],
+            "reference_canonicalization": reference_canonicalization,
+            **divergence_meta,
+            "failed_checks": list(failed_checks),
+        }
+        if failed_checks:
+            reason = "data_integrity_audit_failed(" + "; ".join(failed_checks) + ")"
+            return reason, meta
+        return None, meta
+
+    def _load_reference_frame_for_data_integrity(
+        self,
+        context: ValidationContext,
+        policy: ResultConsistencyDataIntegrityAuditConfig,
+    ) -> tuple[pd.DataFrame, dict[str, int]] | tuple[str | None, dict[str, Any]]:
+        reference_collection = self._data_integrity_audit_reference_collection(context.job.collection)
+        if reference_collection is None:
+            return self._data_integrity_audit_indeterminate(
+                "missing_reference_source",
+                collection=context.job.collection,
+                policy=policy,
+            )
+        only_cached = bool(getattr(context, "only_cached", getattr(self, "_run_only_cached", False)))
+        _, _, _, _, _, _, _, _, _, _, calendar_timezone = self._load_data_quality_policy(
+            context.job.collection
+        )
+        try:
+            reference_source = self._make_source(reference_collection)
+            reference_raw_df = reference_source.fetch(
+                context.job.symbol,
+                context.job.timeframe,
+                only_cached=only_cached,
+            )
+            reference_df, reference_canonicalization = self._canonicalize_validation_frame(
+                reference_raw_df,
+                calendar_timezone=calendar_timezone,
+            )
+        except Exception as exc:
+            return self._data_integrity_audit_indeterminate(
+                "reference_fetch_failed",
+                collection=context.job.collection,
+                policy=policy,
+                details={"error": str(exc)},
+            )
+        return reference_df, reference_canonicalization
+
+    def _validate_data_integrity_inputs(
+        self,
+        primary_df: pd.DataFrame,
+        reference_df: pd.DataFrame,
+        context: ValidationContext,
+        policy: ResultConsistencyDataIntegrityAuditConfig,
+    ) -> tuple[str | None, dict[str, Any]] | None:
+        if primary_df.empty or reference_df.empty:
+            return self._data_integrity_audit_indeterminate(
+                "empty_frame",
+                collection=context.job.collection,
+                policy=policy,
+                details={
+                    "primary_bars": int(len(primary_df)),
+                    "reference_bars": int(len(reference_df)),
+                },
+            )
+        required_columns = ["Open", "High", "Low", "Close"]
+        missing_columns = [
+            name
+            for name in required_columns
+            if name not in primary_df.columns or name not in reference_df.columns
+        ]
+        if missing_columns:
+            return self._data_integrity_audit_indeterminate(
+                "missing_ohlc_columns",
+                collection=context.job.collection,
+                policy=policy,
+                details={"missing_columns": missing_columns},
+            )
+        return None
+
+    def _data_integrity_overlap_details(
+        self,
+        primary_df: pd.DataFrame,
+        reference_df: pd.DataFrame,
+    ) -> dict[str, Any]:
+        required_columns = ["Open", "High", "Low", "Close"]
+        overlap_index = primary_df.index.intersection(reference_df.index)
+        primary_bars = int(len(primary_df))
+        reference_bars = int(len(reference_df))
+        overlap_bars = int(len(overlap_index))
+        overlap_ratio = float(overlap_bars / primary_bars) if primary_bars > 0 else 0.0
+        missing_primary_bar_pct = float((1.0 - overlap_ratio) * 100.0)
+        overlap_primary = primary_df.loc[overlap_index, required_columns]
+        overlap_reference = reference_df.loc[overlap_index, required_columns]
+        divergence = self._data_integrity_ohlc_diff_metrics(overlap_primary, overlap_reference)
+        return {
+            "primary_bars": primary_bars,
+            "reference_bars": reference_bars,
+            "overlap_bars": overlap_bars,
+            "overlap_ratio": overlap_ratio,
+            "missing_primary_bar_pct": missing_primary_bar_pct,
+            "divergence": divergence,
+        }
+
+    @staticmethod
+    def _sanitize_non_finite_metrics_for_json(values: dict[str, float]) -> dict[str, float | None]:
+        """Convert non-finite float metrics to JSON-safe nulls."""
+        sanitized: dict[str, float | None] = {}
+        for key, value in values.items():
+            parsed = float(value)
+            sanitized[key] = parsed if np.isfinite(parsed) else None
+        return sanitized
+
+    @staticmethod
+    def _data_integrity_threshold_details(
+        policy: ResultConsistencyDataIntegrityAuditConfig,
+    ) -> dict[str, float]:
+        return {
+            "max_median_ohlc_diff_bps": float(
+                policy.max_median_ohlc_diff_bps
+                if policy.max_median_ohlc_diff_bps is not None
+                else DATA_INTEGRITY_AUDIT_MAX_MEDIAN_OHLC_DIFF_BPS_DEFAULT
+            ),
+            "max_p95_ohlc_diff_bps": float(
+                policy.max_p95_ohlc_diff_bps
+                if policy.max_p95_ohlc_diff_bps is not None
+                else DATA_INTEGRITY_AUDIT_MAX_P95_OHLC_DIFF_BPS_DEFAULT
+            ),
+            "min_overlap_ratio": float(
+                policy.min_overlap_ratio
+                if policy.min_overlap_ratio is not None
+                else DATA_INTEGRITY_AUDIT_MIN_OVERLAP_RATIO_DEFAULT
+            ),
+        }
+
+    @staticmethod
+    def _data_integrity_failed_checks(
+        overlap_details: dict[str, Any],
+        divergence: dict[str, float],
+        thresholds: dict[str, float],
+    ) -> list[str]:
+        failed_checks: list[str] = []
+        overlap_ratio = float(overlap_details["overlap_ratio"])
+        min_overlap = float(thresholds["min_overlap_ratio"])
+        overlap_bars = int(overlap_details["overlap_bars"])
+        primary_bars = int(overlap_details["primary_bars"])
+        if overlap_ratio < min_overlap:
+            failed_checks.append(
+                "overlap_ratio_below_threshold("
+                f"required={min_overlap}, available={overlap_ratio}, overlap_bars={overlap_bars}, "
+                f"primary_bars={primary_bars})"
+            )
+        median_diff = divergence["median_ohlc_diff_bps"]
+        max_median = float(thresholds["max_median_ohlc_diff_bps"])
+        if np.isfinite(median_diff) and median_diff > max_median:
+            failed_checks.append(
+                "median_ohlc_diff_bps_exceeded("
+                f"max_allowed={max_median}, available={median_diff})"
+            )
+        p95_diff = divergence["p95_ohlc_diff_bps"]
+        max_p95 = float(thresholds["max_p95_ohlc_diff_bps"])
+        if np.isfinite(p95_diff) and p95_diff > max_p95:
+            failed_checks.append(
+                "p95_ohlc_diff_bps_exceeded("
+                f"max_allowed={max_p95}, available={p95_diff})"
+            )
+        return failed_checks
 
     def _run_transaction_cost_robustness_validation(
         self,
@@ -4157,6 +4552,8 @@ class BacktestRunner:
         self._evaluation_cache_write_failures = 0
         self._runtime_signal_error_counts = {}
         self._runtime_signal_error_capped = set()
+        self._data_integrity_audit_cache = {}
+        self._run_only_cached = only_cached
         self._evaluator = None
         self._strategy_overrides = (
             {s.name: s.params for s in self.cfg.strategies} if self.cfg.strategies else {}

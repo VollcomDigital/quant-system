@@ -20,9 +20,11 @@ class StrategyConfig:
 @dataclass
 class CollectionConfig:
     name: str
-    source: str  # yfinance, ccxt, custom
+    source: str  # yfinance, ccxt, custom (also supports ccxt exchange aliases like binance/bybit)
     symbols: list[str]
+    reference_source: str | None = None
     exchange: str | None = None  # for ccxt
+    reference_exchange: str | None = None  # for ccxt reference_source
     currency: str | None = None
     quote: str | None = None  # for ccxt symbols e.g., USDT
     fees: float | None = None
@@ -152,6 +154,13 @@ class ResultConsistencyTransactionCostRobustnessConfig:
 
 
 @dataclass
+class ResultConsistencyDataIntegrityAuditConfig:
+    min_overlap_ratio: float | None = None
+    max_median_ohlc_diff_bps: float | None = None
+    max_p95_ohlc_diff_bps: float | None = None
+
+
+@dataclass
 class ResultConsistencyConfig:
     min_metric: float | None = None
     min_trades: int | None = None
@@ -159,6 +168,7 @@ class ResultConsistencyConfig:
     execution_price_variance: ResultConsistencyExecutionPriceVarianceConfig | None = None
     lookahead_shuffle_test: ValidationLookaheadShuffleTestConfig | None = None
     transaction_cost_robustness: ResultConsistencyTransactionCostRobustnessConfig | None = None
+    data_integrity_audit: ResultConsistencyDataIntegrityAuditConfig | None = None
 
 
 @dataclass
@@ -195,6 +205,10 @@ LOOKAHEAD_SHUFFLE_TEST_SEED_DEFAULT = 1337
 LOOKAHEAD_SHUFFLE_TEST_SEED_MIN = 0
 LOOKAHEAD_SHUFFLE_TEST_FAILED_PERMUTATIONS_MIN = 0
 LOOKAHEAD_SHUFFLE_TEST_CONFIG_PREFIX = "validation.result_consistency.lookahead_shuffle_test"
+DATA_INTEGRITY_AUDIT_CONFIG_PREFIX = "validation.result_consistency.data_integrity_audit"
+DATA_INTEGRITY_AUDIT_MIN_OVERLAP_RATIO_DEFAULT = 0.99
+DATA_INTEGRITY_AUDIT_MAX_MEDIAN_OHLC_DIFF_BPS_DEFAULT = 5.0
+DATA_INTEGRITY_AUDIT_MAX_P95_OHLC_DIFF_BPS_DEFAULT = 20.0
 TRANSACTION_COST_ROBUSTNESS_MODE_ANALYTICS = "analytics"
 TRANSACTION_COST_ROBUSTNESS_MODE_ENFORCE = "enforce"
 TRANSACTION_COST_ROBUSTNESS_MODES = {
@@ -591,6 +605,99 @@ def _apply_result_consistency_execution_price_variance_defaults(
     )
 
 
+def _normalize_result_consistency_data_integrity_audit_config(
+    cfg: ResultConsistencyDataIntegrityAuditConfig | None,
+    prefix: str,
+) -> ResultConsistencyDataIntegrityAuditConfig | None:
+    if cfg is None:
+        return None
+    min_overlap_ratio_raw = getattr(cfg, "min_overlap_ratio", None)
+    min_overlap_ratio = (
+        _coerce_float(min_overlap_ratio_raw, f"{prefix}.min_overlap_ratio")
+        if min_overlap_ratio_raw is not None
+        else None
+    )
+    if min_overlap_ratio is not None and not (
+        VALIDATION_PROBABILITY_MIN <= min_overlap_ratio <= VALIDATION_PROBABILITY_MAX
+    ):
+        raise ValueError(
+            f"`{prefix}.min_overlap_ratio` must be between {VALIDATION_PROBABILITY_MIN} and "
+            f"{VALIDATION_PROBABILITY_MAX}"
+        )
+    max_median_ohlc_diff_bps_raw = getattr(cfg, "max_median_ohlc_diff_bps", None)
+    max_median_ohlc_diff_bps = (
+        _coerce_float(max_median_ohlc_diff_bps_raw, f"{prefix}.max_median_ohlc_diff_bps")
+        if max_median_ohlc_diff_bps_raw is not None
+        else None
+    )
+    if (
+        max_median_ohlc_diff_bps is not None
+        and max_median_ohlc_diff_bps < VALIDATION_NON_NEGATIVE_FLOAT_MIN
+    ):
+        raise ValueError(
+            f"`{prefix}.max_median_ohlc_diff_bps` must be >= {VALIDATION_NON_NEGATIVE_FLOAT_MIN}"
+        )
+    max_p95_ohlc_diff_bps_raw = getattr(cfg, "max_p95_ohlc_diff_bps", None)
+    max_p95_ohlc_diff_bps = (
+        _coerce_float(max_p95_ohlc_diff_bps_raw, f"{prefix}.max_p95_ohlc_diff_bps")
+        if max_p95_ohlc_diff_bps_raw is not None
+        else None
+    )
+    if max_p95_ohlc_diff_bps is not None and max_p95_ohlc_diff_bps < VALIDATION_NON_NEGATIVE_FLOAT_MIN:
+        raise ValueError(
+            f"`{prefix}.max_p95_ohlc_diff_bps` must be >= {VALIDATION_NON_NEGATIVE_FLOAT_MIN}"
+        )
+    if (
+        max_median_ohlc_diff_bps is not None
+        and max_p95_ohlc_diff_bps is not None
+        and max_p95_ohlc_diff_bps < max_median_ohlc_diff_bps
+    ):
+        raise ValueError(
+            f"`{prefix}.max_p95_ohlc_diff_bps` must be >= `{prefix}.max_median_ohlc_diff_bps`"
+        )
+    return ResultConsistencyDataIntegrityAuditConfig(
+        min_overlap_ratio=min_overlap_ratio,
+        max_median_ohlc_diff_bps=max_median_ohlc_diff_bps,
+        max_p95_ohlc_diff_bps=max_p95_ohlc_diff_bps,
+    )
+
+
+def _apply_result_consistency_data_integrity_audit_defaults(
+    cfg: ResultConsistencyDataIntegrityAuditConfig,
+) -> ResultConsistencyDataIntegrityAuditConfig:
+    min_overlap_ratio = (
+        cfg.min_overlap_ratio
+        if cfg.min_overlap_ratio is not None
+        else DATA_INTEGRITY_AUDIT_MIN_OVERLAP_RATIO_DEFAULT
+    )
+    max_median_ohlc_diff_bps = (
+        cfg.max_median_ohlc_diff_bps
+        if cfg.max_median_ohlc_diff_bps is not None
+        else DATA_INTEGRITY_AUDIT_MAX_MEDIAN_OHLC_DIFF_BPS_DEFAULT
+    )
+    max_p95_ohlc_diff_bps = (
+        cfg.max_p95_ohlc_diff_bps
+        if cfg.max_p95_ohlc_diff_bps is not None
+        else DATA_INTEGRITY_AUDIT_MAX_P95_OHLC_DIFF_BPS_DEFAULT
+    )
+    if max_p95_ohlc_diff_bps < max_median_ohlc_diff_bps:
+        raise ValueError(
+            f"`{DATA_INTEGRITY_AUDIT_CONFIG_PREFIX}.max_p95_ohlc_diff_bps` must be >= "
+            f"`{DATA_INTEGRITY_AUDIT_CONFIG_PREFIX}.max_median_ohlc_diff_bps`"
+        )
+    return ResultConsistencyDataIntegrityAuditConfig(
+        min_overlap_ratio=min_overlap_ratio,
+        max_median_ohlc_diff_bps=max_median_ohlc_diff_bps,
+        max_p95_ohlc_diff_bps=max_p95_ohlc_diff_bps,
+    )
+
+
+def _default_data_integrity_audit_config() -> ResultConsistencyDataIntegrityAuditConfig:
+    return _apply_result_consistency_data_integrity_audit_defaults(
+        ResultConsistencyDataIntegrityAuditConfig()
+    )
+
+
 def _normalize_transaction_cost_breakeven_config(
     cfg: ResultConsistencyTransactionCostBreakevenConfig | None,
     prefix: str,
@@ -918,6 +1025,10 @@ def _normalize_result_consistency_config(
         getattr(cfg, "lookahead_shuffle_test", None),
         f"{prefix}.lookahead_shuffle_test",
     )
+    data_integrity_audit = _normalize_result_consistency_data_integrity_audit_config(
+        getattr(cfg, "data_integrity_audit", None),
+        f"{prefix}.data_integrity_audit",
+    )
     transaction_cost_robustness = _normalize_transaction_cost_robustness_config(
         getattr(cfg, "transaction_cost_robustness", None),
         f"{prefix}.transaction_cost_robustness",
@@ -926,12 +1037,13 @@ def _normalize_result_consistency_config(
         outlier_dependency is None
         and execution_price_variance is None
         and lookahead_shuffle_test is None
+        and data_integrity_audit is None
         and transaction_cost_robustness is None
     ):
         raise ValueError(
             f"Invalid `{prefix}`: expected at least one configured module "
             "(`outlier_dependency`, `execution_price_variance`, `lookahead_shuffle_test`, "
-            "or `transaction_cost_robustness`)"
+            "`data_integrity_audit`, or `transaction_cost_robustness`)"
         )
     min_metric_raw = getattr(cfg, "min_metric", None)
     min_metric = _coerce_float(min_metric_raw, f"{prefix}.min_metric") if min_metric_raw is not None else None
@@ -945,6 +1057,7 @@ def _normalize_result_consistency_config(
         outlier_dependency=outlier_dependency,
         execution_price_variance=execution_price_variance,
         lookahead_shuffle_test=lookahead_shuffle_test,
+        data_integrity_audit=data_integrity_audit,
         transaction_cost_robustness=transaction_cost_robustness,
     )
 
@@ -969,6 +1082,11 @@ def _apply_result_consistency_defaults(cfg: ResultConsistencyConfig) -> ResultCo
                 LOOKAHEAD_SHUFFLE_TEST_CONFIG_PREFIX,
             )
             if cfg.lookahead_shuffle_test is not None
+            else None
+        ),
+        data_integrity_audit=(
+            _apply_result_consistency_data_integrity_audit_defaults(cfg.data_integrity_audit)
+            if cfg.data_integrity_audit is not None
             else None
         ),
         transaction_cost_robustness=(
@@ -1060,6 +1178,10 @@ def _merge_result_consistency_config(
             getattr(base, "lookahead_shuffle_test", None),
             getattr(override, "lookahead_shuffle_test", None),
         ),
+        data_integrity_audit=_merge_result_consistency_data_integrity_audit_config(
+            getattr(base, "data_integrity_audit", None),
+            getattr(override, "data_integrity_audit", None),
+        ),
         transaction_cost_robustness=_merge_transaction_cost_robustness_config(
             getattr(base, "transaction_cost_robustness", None),
             getattr(override, "transaction_cost_robustness", None),
@@ -1069,6 +1191,7 @@ def _merge_result_consistency_config(
         merged.outlier_dependency is None
         and merged.execution_price_variance is None
         and merged.lookahead_shuffle_test is None
+        and merged.data_integrity_audit is None
         and merged.transaction_cost_robustness is None
     ):
         return None
@@ -1099,6 +1222,19 @@ def _merge_result_consistency_execution_price_variance_config(
         return None
     return ResultConsistencyExecutionPriceVarianceConfig(
         price_tolerance_bps=_merged_field(base, override, "price_tolerance_bps"),
+    )
+
+
+def _merge_result_consistency_data_integrity_audit_config(
+    base: ResultConsistencyDataIntegrityAuditConfig | None,
+    override: ResultConsistencyDataIntegrityAuditConfig | None,
+) -> ResultConsistencyDataIntegrityAuditConfig | None:
+    if base is None and override is None:
+        return None
+    return ResultConsistencyDataIntegrityAuditConfig(
+        min_overlap_ratio=_merged_field(base, override, "min_overlap_ratio"),
+        max_median_ohlc_diff_bps=_merged_field(base, override, "max_median_ohlc_diff_bps"),
+        max_p95_ohlc_diff_bps=_merged_field(base, override, "max_p95_ohlc_diff_bps"),
     )
 
 
@@ -1499,6 +1635,14 @@ def _apply_resolved_validation_to_collection(
         global_result_consistency,
         collection_validation.result_consistency if collection_validation else None,
     )
+    # Special case: data-integrity audit activation is collection-scoped because
+    # `reference_source` exists only on CollectionConfig. Global validation can
+    # still define/override thresholds, but enabling the audit requires a
+    # collection-level reference source.
+    resolved_result_consistency = _ensure_reference_source_data_integrity_policy(
+        collection,
+        resolved_result_consistency,
+    )
     if (
         resolved_data_quality is None
         and resolved_optimization is None
@@ -1510,6 +1654,39 @@ def _apply_resolved_validation_to_collection(
         optimization=resolved_optimization,
         result_consistency=resolved_result_consistency,
     )
+
+
+def _ensure_reference_source_data_integrity_policy(
+    collection: CollectionConfig,
+    resolved_result_consistency: ResultConsistencyConfig | None,
+) -> ResultConsistencyConfig | None:
+    """Inject default data-integrity audit only when collection has a reference source.
+
+    Thresholds/rules may come from global validation and collection overrides,
+    but the audit itself is only meaningful when a collection-level
+    `reference_source` exists.
+    """
+    if not collection.reference_source:
+        return resolved_result_consistency
+
+    base_policy = (
+        resolved_result_consistency
+        if resolved_result_consistency is not None
+        else ResultConsistencyConfig()
+    )
+    if getattr(base_policy, "data_integrity_audit", None) is not None:
+        return resolved_result_consistency
+
+    with_default_audit = ResultConsistencyConfig(
+        min_metric=base_policy.min_metric,
+        min_trades=base_policy.min_trades,
+        outlier_dependency=base_policy.outlier_dependency,
+        execution_price_variance=base_policy.execution_price_variance,
+        lookahead_shuffle_test=base_policy.lookahead_shuffle_test,
+        transaction_cost_robustness=base_policy.transaction_cost_robustness,
+        data_integrity_audit=_default_data_integrity_audit_config(),
+    )
+    return _merge_result_consistency_config(with_default_audit, None)
 
 
 def resolve_validation_overrides(cfg: Config) -> None:
@@ -2070,19 +2247,15 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
         min_value=RESULT_CONSISTENCY_MIN_TRADES_MIN,
     )
 
-    outlier_dependency_raw = parsed_raw.get("outlier_dependency")
-    if outlier_dependency_raw is not None and not isinstance(outlier_dependency_raw, dict):
-        raise ValueError(f"Invalid `{prefix}.outlier_dependency`: expected a mapping")
-    execution_price_variance_raw = parsed_raw.get("execution_price_variance")
-    if execution_price_variance_raw is not None and not isinstance(execution_price_variance_raw, dict):
-        raise ValueError(f"Invalid `{prefix}.execution_price_variance`: expected a mapping")
+    outlier_dependency_raw = _optional_mapping_field(parsed_raw, prefix, "outlier_dependency")
+    execution_price_variance_raw = _optional_mapping_field(parsed_raw, prefix, "execution_price_variance")
 
     outlier_dependency = (
         _parse_result_consistency_outlier_dependency(
             outlier_dependency_raw,
             f"{prefix}.outlier_dependency",
         )
-        if isinstance(outlier_dependency_raw, dict)
+        if outlier_dependency_raw is not None
         else None
     )
     execution_price_variance = (
@@ -2090,34 +2263,36 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
             execution_price_variance_raw,
             f"{prefix}.execution_price_variance",
         )
-        if isinstance(execution_price_variance_raw, dict)
+        if execution_price_variance_raw is not None
         else None
     )
-    lookahead_shuffle_test_raw = parsed_raw.get("lookahead_shuffle_test")
-    if lookahead_shuffle_test_raw is not None and not isinstance(lookahead_shuffle_test_raw, dict):
-        raise ValueError(f"Invalid `{prefix}.lookahead_shuffle_test`: expected a mapping")
+    lookahead_shuffle_test_raw = _optional_mapping_field(parsed_raw, prefix, "lookahead_shuffle_test")
     lookahead_shuffle_test = (
         _parse_lookahead_shuffle_test(
             lookahead_shuffle_test_raw,
             f"{prefix}.lookahead_shuffle_test",
         )
-        if isinstance(lookahead_shuffle_test_raw, dict)
+        if lookahead_shuffle_test_raw is not None
         else None
     )
-    transaction_cost_robustness_raw = parsed_raw.get("transaction_cost_robustness")
-    if (
-        transaction_cost_robustness_raw is not None
-        and not isinstance(transaction_cost_robustness_raw, dict)
-    ):
-        raise ValueError(
-            f"Invalid `{prefix}.transaction_cost_robustness`: expected a mapping"
+    data_integrity_audit_raw = _optional_mapping_field(parsed_raw, prefix, "data_integrity_audit")
+    data_integrity_audit = (
+        _parse_result_consistency_data_integrity_audit(
+            data_integrity_audit_raw,
+            f"{prefix}.data_integrity_audit",
         )
+        if data_integrity_audit_raw is not None
+        else None
+    )
+    transaction_cost_robustness_raw = _optional_mapping_field(
+        parsed_raw, prefix, "transaction_cost_robustness"
+    )
     transaction_cost_robustness = (
         _parse_result_consistency_transaction_cost_robustness(
             transaction_cost_robustness_raw,
             f"{prefix}.transaction_cost_robustness",
         )
-        if isinstance(transaction_cost_robustness_raw, dict)
+        if transaction_cost_robustness_raw is not None
         else None
     )
 
@@ -2128,10 +2303,20 @@ def _parse_result_consistency(raw: Any, prefix: str) -> ResultConsistencyConfig 
             outlier_dependency=outlier_dependency,
             execution_price_variance=execution_price_variance,
             lookahead_shuffle_test=lookahead_shuffle_test,
+            data_integrity_audit=data_integrity_audit,
             transaction_cost_robustness=transaction_cost_robustness,
         ),
         prefix,
     )
+
+
+def _optional_mapping_field(raw: dict[str, Any], prefix: str, key: str) -> dict[str, Any] | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"Invalid `{prefix}.{key}`: expected a mapping")
+    return cast(dict[str, Any], value)
 
 
 def _parse_result_consistency_outlier_dependency(
@@ -2181,6 +2366,36 @@ def _parse_result_consistency_execution_price_variance(
     )
     return ResultConsistencyExecutionPriceVarianceConfig(
         price_tolerance_bps=float(price_tolerance_bps),
+    )
+
+
+def _parse_result_consistency_data_integrity_audit(
+    raw: Any,
+    prefix: str,
+) -> ResultConsistencyDataIntegrityAuditConfig | None:
+    if raw is None:
+        return None
+    parsed_raw = require_mapping(raw, prefix)
+    return ResultConsistencyDataIntegrityAuditConfig(
+        min_overlap_ratio=parse_optional_float(
+            parsed_raw,
+            prefix,
+            "min_overlap_ratio",
+            min_value=VALIDATION_PROBABILITY_MIN,
+            max_value=VALIDATION_PROBABILITY_MAX,
+        ),
+        max_median_ohlc_diff_bps=parse_optional_float(
+            parsed_raw,
+            prefix,
+            "max_median_ohlc_diff_bps",
+            min_value=VALIDATION_NON_NEGATIVE_FLOAT_MIN,
+        ),
+        max_p95_ohlc_diff_bps=parse_optional_float(
+            parsed_raw,
+            prefix,
+            "max_p95_ohlc_diff_bps",
+            min_value=VALIDATION_NON_NEGATIVE_FLOAT_MIN,
+        ),
     )
 
 
@@ -2303,7 +2518,13 @@ def _parse_collections(raw_collections: Any) -> list[CollectionConfig]:
                 name=str(collection_raw["name"]).strip(),
                 source=str(collection_raw["source"]).strip(),
                 symbols=[str(symbol).strip() for symbol in symbols_raw],
+                reference_source=parse_optional_str(
+                    collection_raw, "reference_source", normalize=False
+                ),
                 exchange=parse_optional_str(collection_raw, "exchange", normalize=False),
+                reference_exchange=parse_optional_str(
+                    collection_raw, "reference_exchange", normalize=False
+                ),
                 currency=parse_optional_str(collection_raw, "currency", normalize=False),
                 quote=parse_optional_str(collection_raw, "quote", normalize=False),
                 fees=(
